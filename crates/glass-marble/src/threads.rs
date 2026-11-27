@@ -2,6 +2,62 @@ use crate::{ProductState, state::TranscriptEntry};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub const GROUP_CONVERSATION: &str = "group-chats";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupThread {
+    pub members: Vec<String>,
+    #[serde(default)]
+    pub goal: String,
+    #[serde(default)]
+    pub done_when: String,
+    #[serde(default)]
+    pub closed: bool,
+    #[serde(default)]
+    pub suggestions: Vec<MemberSuggestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberSuggestion {
+    pub agent_id: String,
+    pub suggested_by: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupAction {
+    Pass,
+    Suggest(String),
+    Close,
+}
+
+impl GroupAction {
+    pub(crate) fn extract(text: String) -> (Option<Self>, String) {
+        let trimmed = text.trim();
+        if trimmed == "[[PASS]]" {
+            return (Some(Self::Pass), String::new());
+        }
+        if let Some(summary) = trimmed
+            .strip_prefix("[[CLOSE]]\n")
+            .filter(|summary| !summary.trim().is_empty())
+        {
+            return (Some(Self::Close), summary.trim().to_owned());
+        }
+        if let Some((line, answer)) = trimmed.split_once('\n')
+            && let Some(agent) = line
+                .strip_prefix("[[SUGGEST: ")
+                .and_then(|line| line.strip_suffix("]]"))
+        {
+            return (
+                Some(Self::Suggest(agent.trim().to_owned())),
+                answer.trim().to_owned(),
+            );
+        }
+        (None, text)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ThreadEvents(pub Option<crate::EventBus>);
 
@@ -33,6 +89,8 @@ pub struct Thread {
     pub title: String,
     #[serde(default)]
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<GroupThread>,
 }
 
 impl Thread {
@@ -46,6 +104,40 @@ impl Thread {
 }
 
 impl ProductState {
+    pub(crate) fn group_members(&self, members: Vec<String>) -> Result<Vec<String>, &'static str> {
+        if self.prism.get("lead").is_none() {
+            return Err("lead_unavailable");
+        }
+        let mut result = vec!["lead".to_owned()];
+        for member in members {
+            if member != "marble" && self.prism.get(&member).is_none() {
+                return Err("unknown_group_member");
+            }
+            if !result.contains(&member) {
+                result.push(member);
+            }
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn start_group_thread(&mut self, title: &str, mut group: GroupThread) -> Thread {
+        let now = crate::worker::now_millis();
+        group.goal = group.goal.trim().chars().take(500).collect();
+        group.done_when = group.done_when.trim().chars().take(500).collect();
+        let thread = Thread {
+            id: format!("group-thread-{}", crate::next_request_id()),
+            conversation_id: GROUP_CONVERSATION.into(),
+            title: title.trim().chars().take(80).collect(),
+            created_at: now,
+            last_activity_at: now,
+            group: Some(group),
+            ..Default::default()
+        };
+        self.threads.push(thread.clone());
+        self.refresh_thread(&thread.id);
+        thread
+    }
+
     pub fn start_everyone_thread(&mut self, title: &str) -> Thread {
         crate::everyone::ensure_conversation(self);
         let now = crate::worker::now_millis();
@@ -159,7 +251,7 @@ impl ProductState {
         let mut entries: Vec<_> = self
             .transcript
             .iter()
-            .filter(|e| e.id == thread.parent_entry_id)
+            .filter(|e| !thread.parent_entry_id.is_empty() && e.id == thread.parent_entry_id)
             .collect();
         entries.extend(self.transcript.iter().filter(|entry| {
             entry.id != thread.parent_entry_id && self.thread_entry_visible(thread, entry)
@@ -173,6 +265,9 @@ impl ProductState {
         }
         if entry.thread_id.as_deref() != Some(&thread.id) {
             return false;
+        }
+        if thread.group.is_some() && entry.kind == "user" {
+            return entry.conversation_id == GROUP_CONVERSATION;
         }
         if thread.conversation_id != crate::everyone::EVERYONE_CONVERSATION
             || entry.conversation_id == thread.conversation_id
@@ -302,7 +397,8 @@ impl ProductState {
     pub(crate) fn prune_threads(&mut self) {
         self.threads.retain(|t| {
             (t.parent_entry_id.is_empty()
-                && t.conversation_id == crate::everyone::EVERYONE_CONVERSATION)
+                && (t.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                    || t.group.is_some()))
                 || self.transcript.iter().any(|e| e.id == t.parent_entry_id)
         });
         let valid: std::collections::HashSet<_> =

@@ -315,6 +315,33 @@ struct MarbleControl: Decodable, Equatable {
 ///
 /// Identity is a shape, a hue, and a name; state lives on the same object so a
 /// roster can be read at a glance instead of by reading every name.
+struct MarbleAgentCard: Codable, Equatable {
+    enum Speaking: String, Codable, CaseIterable {
+        case mentioned, relevant, always
+
+        var label: String {
+            switch self {
+            case .mentioned: "Mentioned only"
+            case .relevant: "Relevant"
+            case .always: "Always"
+            }
+        }
+    }
+
+    struct Tools: Codable, Equatable {
+        var native = false
+        var allowed: [String] = []
+    }
+
+    var voice = ""
+    var model = ""
+    var whenToSpeak = Speaking.relevant
+    var tools = Tools()
+    var inEveryone = false
+    var toolCallLimit: Int?
+    var turnTimeoutSecs: Int?
+}
+
 struct MarblePrismMarble: Codable, Identifiable, Equatable {
     var id: String
     var name: String
@@ -332,12 +359,13 @@ struct MarblePrismMarble: Codable, Identifiable, Equatable {
     var persona: String
     /// The built-in assistant: fixed shape, its chats are the chats list.
     var isDefault: Bool
+    var card: MarbleAgentCard?
     var reportedWorking: Bool? = nil
     var reportedActiveTaskIds: [String]? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, name, role, glyph, hue, workspace, state, conversationId
-        case taskId, lastAt, runs, lastError, persona, isDefault
+        case taskId, lastAt, runs, lastError, persona, isDefault, card
         case reportedWorking = "isWorking"
         case reportedActiveTaskIds = "activeTaskIds"
     }
@@ -358,6 +386,7 @@ struct MarblePrismMarble: Codable, Identifiable, Equatable {
         lastError = try container.decodeIfPresent(String.self, forKey: .lastError) ?? ""
         persona = try container.decodeIfPresent(String.self, forKey: .persona) ?? ""
         isDefault = try container.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
+        card = try container.decodeIfPresent(MarbleAgentCard.self, forKey: .card)
         reportedWorking = try container.decodeIfPresent(Bool.self, forKey: .reportedWorking)
         reportedActiveTaskIds = try container.decodeIfPresent([String].self, forKey: .reportedActiveTaskIds)
     }
@@ -409,6 +438,7 @@ struct MarblePrismMarble: Codable, Identifiable, Equatable {
     /// The one-line personality shown under the name: its persona, else its
     /// original role, else nothing.
     var tagline: String { persona.isEmpty ? role : persona }
+    var isEveryoneMember: Bool { isDefault || (card?.inEveryone ?? true) }
 }
 
 /// The Prism roster as the host serves it.

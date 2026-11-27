@@ -2,7 +2,8 @@
 
 use crate::{
     Approval, MarbleError, TURN_TIMEOUT, control::Verdict, events::EventBus, host::HostPolicy,
-    state::PendingApproval, state::ProductState, tools::ToolRouter, tools::ToolScope,
+    state::PendingApproval, state::ProductState, tools::AgentTools, tools::ToolRouter,
+    tools::ToolScope,
 };
 use glass_runtime_client::{
     Incoming, RuntimeClient, RuntimeEvent, SessionOptions, TurnInput, json, protocol::ToolRequest,
@@ -443,6 +444,7 @@ pub struct Conversation {
     approvals: ApprovalInbox,
     router: ToolRouter,
     suppress_tools: bool,
+    agent_tools: Option<AgentTools>,
     tool_limit: usize,
     events: EventBus,
     model: Option<String>,
@@ -554,6 +556,7 @@ impl Conversation {
             approvals,
             router,
             suppress_tools: false,
+            agent_tools: None,
             tool_limit: crate::turn::DEFAULT_TOOL_LIMIT,
             events,
             model: None,
@@ -693,6 +696,7 @@ impl Conversation {
         scoped.model = self.model.clone();
         scoped.speaker.clone_from(&self.speaker);
         scoped.tool_limit = self.tool_limit;
+        scoped.agent_tools.clone_from(&self.agent_tools);
         scoped.steering = self.steering.take();
         scoped.respawn = self.respawn.clone();
         scoped.device_time_zone = zone.map(str::to_owned);
@@ -713,6 +717,24 @@ impl Conversation {
 
     pub(crate) fn set_tool_limit(&mut self, limit: usize) {
         self.tool_limit = limit;
+    }
+
+    pub(crate) fn set_agent_tools(&mut self, tools: Option<AgentTools>) {
+        self.agent_tools = tools;
+    }
+
+    fn tool_options(&self, suppress: bool) -> SessionOptions {
+        if suppress {
+            return SessionOptions::host(self.cwd.clone(), Vec::new());
+        }
+        let mut catalog = ToolRouter::catalog();
+        if let Some(policy) = &self.agent_tools {
+            catalog.retain(|tool| policy.allows(&tool.name));
+            if !policy.native {
+                return SessionOptions::host(self.cwd.clone(), catalog);
+            }
+        }
+        SessionOptions::mixed(self.cwd.clone(), catalog)
     }
 
     pub(crate) fn tool_limit(&self) -> usize {
@@ -881,7 +903,7 @@ impl Conversation {
 
     /// Create a durable conversation and return its id.
     pub fn create(&mut self) -> Result<String, MarbleError> {
-        let mut options = SessionOptions::mixed(self.cwd.clone(), ToolRouter::catalog());
+        let mut options = self.tool_options(false);
         options.instructions = Some(
             self.instructions_fn
                 .as_ref()
@@ -1017,11 +1039,13 @@ impl Conversation {
             }
         }
         self.suppress_tools = suppress_tools;
-        let agent = if suppress_tools {
-            value!({"toolMode":"host", "tools":[]})
-        } else {
-            value!({"toolMode":"mixed", "tools":ToolRouter::catalog()})
-        };
+        let options = self.tool_options(suppress_tools);
+        let mut agent = value!({"toolMode":options.tool_mode, "tools":options.tools});
+        if self.agent_tools.is_some()
+            && let Some(model) = &self.model
+        {
+            agent["model"] = value!(model);
+        }
         let configure = self.client.request(
             "durable/configure",
             value!({"conversationId":engine_id, "agent":agent}),
@@ -1361,14 +1385,23 @@ impl Conversation {
                 Incoming::Tool { request_id, call } => {
                     if self.suppress_tools
                         || budget.as_ref().is_some_and(|budget| budget.stop.is_some())
+                        || self
+                            .agent_tools
+                            .as_ref()
+                            .is_some_and(|policy| !policy.allows(&call.name))
                     {
                         self.client
                             .tool_result(
                                 request_id,
                                 if self.suppress_tools {
                                     "Continue without tools: this is a conversational turn."
-                                } else {
+                                } else if budget
+                                    .as_ref()
+                                    .is_some_and(|budget| budget.stop.is_some())
+                                {
                                     "This turn reached its limit."
+                                } else {
+                                    "This tool is not on the agent's allowed tools list."
                                 },
                                 true,
                             )

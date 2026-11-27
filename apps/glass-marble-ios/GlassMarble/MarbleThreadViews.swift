@@ -302,6 +302,8 @@ private struct MarbleThreadView: View {
     @State private var loadFailed = false
     @State private var changeFailed = false
     @State private var confirmDelete = false
+    @State private var showingGroupInfo = false
+    @State private var respondingToSuggestion = false
     @State private var loadGeneration = UUID()
 
     var body: some View {
@@ -338,12 +340,19 @@ private struct MarbleThreadView: View {
         .toolbarVisibility(.hidden, for: .tabBar)
         .searchable(text: $query, isPresented: $searching, prompt: "Search this thread")
         .marbleComposerInset {
-            if page != nil && page?.thread.archived == false && !searching {
+            if page != nil && page?.thread.archived == false && page?.thread.group?.closed != true && !searching {
                 ComposerBar(draft: $draft, isWorking: false, placeholder: "Reply in thread",
                             onSend: send, onStop: {})
             }
         }
         .toolbar {
+            if page?.thread.group != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Thread info", systemImage: "info.circle") { showingGroupInfo = true }
+                        .labelStyle(.iconOnly)
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+            }
             if page?.thread.conversationId == everyoneConversationId {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -355,6 +364,9 @@ private struct MarbleThreadView: View {
                     .accessibilityLabel("Thread options")
                 }
             }
+        }
+        .sheet(isPresented: $showingGroupInfo) {
+            if let group = page?.thread.group { groupInfo(group) }
         }
         .confirmationDialog("Delete this thread?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete thread", role: .destructive) { update("delete") }
@@ -412,20 +424,118 @@ private struct MarbleThreadView: View {
         let conversationId = page.thread.conversationId
         let presentation = store.outgoingPresentation(page.entries, to: target, conversationId: conversationId)
         let reserved = Set(presentation.entries.filter { $0.kind == "pending" }.map(\.speaker))
+        let workingGroupNames = page.thread.group == nil ? [] : store.state.tasks
+            .filter { $0.isRunning && $0.conversationId.hasPrefix("everyone-session-\(id)__") }
+            .compactMap { store.agentName(for: $0.id) }
         return MarbleJumpTimeline(
             entries: store.withLiveToolRows(presentation.entries, conversationId: conversationId, threadId: id),
             jump: jump, parentId: page.thread.parentEntryId, outgoing: store.lastOutgoing(to: target),
             workingNames: presentation.responders.filter { !reserved.contains($0) }.map { id in
                 store.prism.marbles.first { $0.id == id }?.name ?? page.thread.participants.first ?? "Marble"
-            },
+            } + workingGroupNames,
             loadOlder: { await store.loadOlderThread(id, beforePrepend: $0) }
         )
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let group = page.thread.group,
+               group.closed || !group.goal.isEmpty || !group.doneWhen.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    if !group.goal.isEmpty { LabeledContent("Goal", value: group.goal) }
+                    if !group.doneWhen.isEmpty { LabeledContent("Done when", value: group.doneWhen) }
+                    if group.closed { Label("Task completed", systemImage: "checkmark.circle") }
+                }
+                .font(.subheadline)
+                .padding(.vertical, 10)
+                .padding(.horizontal, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.background)
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let suggestion = page.thread.group?.suggestions.first { suggestionCard(suggestion) }
+        }
+    }
+
+    private func suggestionCard(_ suggestion: MarbleGroupThread.Suggestion) -> some View {
+        let agent = store.prism.marbles.first { $0.id == suggestion.agentId }?.name ?? suggestion.agentId
+        let author = store.prism.marbles.first { $0.id == suggestion.suggestedBy }?.name ?? suggestion.suggestedBy
+        return VStack(alignment: .leading, spacing: 6) {
+            Label("\(author) suggests adding \(agent)", systemImage: "person.badge.plus")
+                .font(.subheadline)
+            HStack {
+                Button("Add") { respond(to: suggestion, add: true) }
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
+                Button("Not now") { respond(to: suggestion, add: false) }
+                    .buttonStyle(.glass)
+                    .controlSize(.large)
+            }
+            .disabled(respondingToSuggestion)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(.background)
+    }
+
+    private func respond(to suggestion: MarbleGroupThread.Suggestion, add: Bool) {
+        respondingToSuggestion = true
+        Task {
+            defer { respondingToSuggestion = false }
+            do { try await store.respondToGroupSuggestion(id, agentId: suggestion.agentId, add: add) }
+            catch { changeFailed = true }
+        }
+    }
+
+    private func groupInfo(_ group: MarbleGroupThread) -> some View {
+        MarbleGroupInfo(threadId: id, originalMembers: group.members)
     }
 
     private func send(_ text: String) -> Bool {
         guard let page, store.send(text, to: target(for: page), entries: page.entries) else { return false }
         jump = nil
         return true
+    }
+}
+
+private struct MarbleGroupInfo: View {
+    @EnvironmentObject private var store: MarbleStore
+    @Environment(\.dismiss) private var dismiss
+    let threadId: String
+    let originalMembers: [String]
+    @State private var members: Set<String> = []
+    @State private var saving = false
+    @State private var failed = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Members") { MarbleGroupMemberPicker(members: $members) }
+            }
+            .navigationTitle("Thread info")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: save)
+                        .disabled(saving)
+                }
+            }
+            .alert("Couldn’t update members", isPresented: $failed) { Button("OK", role: .cancel) {} }
+            .onAppear { members = Set(originalMembers) }
+        }
+    }
+
+    private func save() {
+        guard members != Set(originalMembers) else { dismiss(); return }
+        saving = true
+        Task {
+            defer { saving = false }
+            do {
+                let retained = originalMembers.filter(members.contains)
+                let added = store.prism.marbles.map(\.id).filter { members.contains($0) && !retained.contains($0) }
+                try await store.updateGroupMembers(threadId, members: retained + added)
+                dismiss()
+            } catch { failed = true }
+        }
     }
 }
 

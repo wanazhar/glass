@@ -1019,11 +1019,15 @@ fn run_command(
     );
     // A model chosen from a surface applies to conversations created from now
     // on; Core keeps an existing session on the model it started with.
-    let model = {
+    let agent = {
         let guard = lock(state);
-        guard.model.trim().to_string()
+        let agent = guard.prism.default_marble();
+        conversation.set_model(agent.model(&guard.model));
+        agent
     };
-    conversation.set_model((!model.is_empty()).then_some(model));
+    conversation.set_agent_tools(agent.card.as_ref().map(|card| card.tools.clone()));
+    let (tool_limit, turn_timeout) = agent.turn_budget();
+    conversation.set_tool_limit(tool_limit);
     let conversation_id = request.conversation_id.clone();
     let mut turn = MarbleTurn {
         conversation_id: conversation_id.clone(),
@@ -1148,8 +1152,13 @@ fn run_command(
         &turn,
         conversation,
         TurnOptions {
+            group: false,
             cancel: Some(request.cancel.as_ref()),
-            timeout: request.timeout_for_turn(timeout),
+            timeout: if request.routine_id.is_none() && agent.card.is_some() {
+                turn_timeout
+            } else {
+                request.timeout_for_turn(timeout)
+            },
             on_accepted: Some(&mut on_accepted),
             live: live_turn.as_mut(),
         },

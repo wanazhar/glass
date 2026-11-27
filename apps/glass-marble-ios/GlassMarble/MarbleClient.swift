@@ -251,11 +251,13 @@ final class MarbleClient: @unchecked Sendable {
         return try await fetch(try makeRequest(route: route))
     }
 
-    func createThread(conversationId: String, parentEntryId: String? = nil, title: String? = nil) async throws -> MarbleThread {
+    func createThread(conversationId: String, parentEntryId: String? = nil, title: String? = nil,
+                      group: MarbleGroupThread? = nil) async throws -> MarbleThread {
         struct Body: Encodable {
             var conversation_id: String
             var parent_entry_id: String?
             var title: String?
+            var group: MarbleGroupThread?
         }
         struct Reply: Decodable {
             let thread: MarbleThread
@@ -266,7 +268,7 @@ final class MarbleClient: @unchecked Sendable {
         }
         let reply: Reply = try await postJSON(
             "/api/threads",
-            body: Body(conversation_id: conversationId, parent_entry_id: parentEntryId, title: title)
+            body: Body(conversation_id: conversationId, parent_entry_id: parentEntryId, title: title, group: group)
         )
         return reply.thread
     }
@@ -274,6 +276,17 @@ final class MarbleClient: @unchecked Sendable {
     func updateEveryoneThread(_ id: String, action: String) async throws {
         struct Reply: Decodable { let ok: Bool }
         let _: Reply = try await postJSON("/api/threads/\(encoded(id))/\(action)", body: nil)
+    }
+
+    func updateGroupMembers(_ id: String, members: [String]) async throws {
+        struct Reply: Decodable { let ok: Bool }
+        let _: Reply = try await postJSON("/api/threads/\(encoded(id))/members", body: members)
+    }
+
+    func respondToGroupSuggestion(_ id: String, agentId: String, add: Bool) async throws {
+        struct Body: Encodable { let agentId: String; let add: Bool }
+        struct Reply: Decodable { let ok: Bool }
+        let _: Reply = try await postJSON("/api/threads/\(encoded(id))/suggestion", body: Body(agentId: agentId, add: add))
     }
 
     /// `GET /api/export` — the whole document, or one conversation's slice.
@@ -453,13 +466,15 @@ final class MarbleClient: @unchecked Sendable {
         try await fetch(try makeRequest(route: .prism))
     }
 
-    struct MarbleDraft: Encodable {
+    struct MarbleDraft: Codable {
         var name: String
         var role: String
         var glyph: String
         var hue: Int
         var workspace: String
         var persona: String
+        var card: MarbleAgentCard? = nil
+        var duplicateId: String? = nil
     }
 
     /// A marble edit; nil fields keep their current value on the host.
@@ -470,6 +485,7 @@ final class MarbleClient: @unchecked Sendable {
         var hue: Int?
         var workspace: String?
         var persona: String?
+        var card: MarbleAgentCard?
     }
 
     private struct PrismReply: Decodable { var prism: MarblePrism }

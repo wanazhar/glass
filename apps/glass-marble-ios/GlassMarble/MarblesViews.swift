@@ -182,10 +182,11 @@ struct EveryoneHistoryView: View {
 
     /// The composer with @Name completion from the roster.
     private var composer: some View {
-        VStack(spacing: 0) {
+        let members = store.prism.marbles.filter(\.isEveryoneMember)
+        return VStack(spacing: 0) {
             if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let ids = MarbleMentions.responders(in: draft, roster: store.prism.marbles)
-                let names = ids.compactMap { id in store.prism.marbles.first { $0.id == id }?.name }
+                let ids = MarbleMentions.responders(in: draft, roster: members)
+                let names = ids.compactMap { id in members.first { $0.id == id }?.name }
                 if !names.isEmpty {
                     Text("To: \(names.formatted(.list(type: .and)))")
                         .font(.caption)
@@ -197,7 +198,7 @@ struct EveryoneHistoryView: View {
             }
             let suggestions = MarbleMentions.completions(
                 in: draft,
-                names: store.prism.marbles.map(\.name)
+                names: members.map(\.name)
             )
             if !suggestions.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -243,6 +244,7 @@ struct MarblesView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showsNew = false
+    @State private var showsImport = false
     var selection: ChatRoute?
     var onSelect: ((ChatRoute) -> Void)?
 
@@ -277,6 +279,11 @@ struct MarblesView: View {
                     }
                 }
                 .listRowBackground(selection == route ? MarbleTheme.wash : MarbleTheme.card)
+                .contextMenu {
+                    NavigationLink(value: ChatRoute.marbleInfo(marble.id)) {
+                        Label("Agent card", systemImage: "person.crop.rectangle")
+                    }
+                }
             }
             if !store.loaded && store.prism.marbles.isEmpty {
                 MarbleListSkeleton()
@@ -288,9 +295,14 @@ struct MarblesView: View {
                         .frame(minHeight: 44, alignment: .leading)
                 }
                 .listRowBackground(MarbleTheme.card)
+                Button { showsImport = true } label: {
+                    Label("Import agent", systemImage: "square.and.arrow.down")
+                        .frame(minHeight: 44, alignment: .leading)
+                }
+                .listRowBackground(MarbleTheme.card)
             }
         }
-        .navigationTitle("Who’s on your mind?")
+        .navigationTitle("Agents")
         .toolbar { ToolbarItem(placement: .topBarTrailing) { MarbleNavConnection() } }
         .animation(reduceMotion ? nil : .default, value: store.prism.marbles)
         .contentMargins(.bottom, sizeClass == .compact ? 32 : 0, for: .scrollContent)
@@ -299,6 +311,9 @@ struct MarblesView: View {
         .sheet(isPresented: $showsNew) {
             NavigationStack { NewMarbleView() }
         }
+        .sheet(isPresented: $showsImport) {
+            NavigationStack { NewMarbleView(importing: true) }
+        }
     }
 
     private func person(_ marble: MarblePrismMarble) -> some View {
@@ -306,8 +321,8 @@ struct MarblesView: View {
             MarbleAvatar(glyph: marble.glyph, hue: marble.hue, size: 50)
             VStack(alignment: .leading, spacing: 4) {
                 Text(marble.name).font(.headline).foregroundStyle(MarbleTheme.ink)
-                if !marble.tagline.isEmpty {
-                    Text(marble.isDefault ? "The default assistant" : marble.tagline)
+                if !marble.role.isEmpty {
+                    Text(marble.role)
                         .font(.subheadline).foregroundStyle(MarbleTheme.muted)
                 }
                 if store.isAgentWorking(marble) {
@@ -352,43 +367,48 @@ struct MarbleListSkeleton: View {
 
 /// The new-marble sheet: name, personality with starters to tap, and a look.
 struct NewMarbleView: View {
+    var importing = false
+    var duplicate: MarblePrismMarble?
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
+    @State private var role = ""
     @State private var persona = ""
+    @State private var card = MarbleAgentCard()
+    @State private var importText = ""
+    @State private var imported = false
     @State private var glyph = MarbleMentions.glyphs[0]
     @State private var hue = 42
     @State private var creating = false
     @State private var creationError: String?
 
-    private let starters = [
-        "Warm and encouraging; celebrates progress and explains things simply.",
-        "Careful and methodical; checks work twice and says what it verified.",
-        "Direct and quick; short answers, gets to the point."
-    ]
-
     var body: some View {
         Form {
-            Section(header: Text("Name")) {
-                TextField("Name your Marble", text: $name)
-                    .textInputAutocapitalization(.words)
-            }
-            Section {
-                TextField("Who is this Marble?", text: $persona, axis: .vertical)
-                    .lineLimit(2...5)
-                ForEach(starters, id: \.self) { starter in
-                    Button(starter) { persona = starter }
-                        .font(.footnote)
-                        .foregroundStyle(MarbleTheme.tint)
+            if importing && !imported {
+                Section("Agent card JSON") {
+                    TextEditor(text: $importText)
+                        .font(.body.monospaced())
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .accessibilityLabel("Agent card JSON")
+                        .frame(minHeight: 160)
+                    Button("Load card") { loadCard() }
+                        .frame(minHeight: 44)
                 }
-            } header: {
-                Text("Personality")
-            } footer: {
-                Text("How it talks and what it's good at. It can be changed later.")
-            }
-            Section("Look") {
-                MarbleLookPicker(glyph: $glyph, hue: $hue)
+            } else {
+                Section("Name") {
+                    TextField("Name your Marble", text: $name)
+                    .textInputAutocapitalization(.words)
+                        .frame(minHeight: 44)
+                    if duplicate == nil {
+                        TextField("Role", text: $role).frame(minHeight: 44)
+                    }
+                }
+                if duplicate == nil {
+                    Section("Avatar") { MarbleLookPicker(glyph: $glyph, hue: $hue) }
+                    MarbleAgentCardFields(card: $card, persona: $persona)
+                }
             }
             if let creationError {
                 Text(creationError).foregroundStyle(MarbleTheme.problem)
@@ -396,21 +416,40 @@ struct NewMarbleView: View {
         }
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
-        .navigationTitle("New Marble")
+        .navigationTitle(duplicate != nil ? "Duplicate agent" : importing ? "Import agent" : "New agent")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button(creating ? "Creating…" : "Create") { create() }
-                    .disabled(creating || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(creating || (importing && !imported) || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .onAppear {
+            if let duplicate, name.isEmpty {
+                name = "\(duplicate.name) copy"
+            }
             let used = Set(store.prism.marbles.map { MarbleTheme.paletteIndex(for: $0.hue) })
             if let index = MarbleTheme.hues.indices.first(where: { !used.contains($0) }) {
                 hue = MarbleTheme.hues[index].degrees
             }
+        }
+    }
+
+    private func loadCard() {
+        do {
+            let draft = try JSONDecoder().decode(MarbleClient.MarbleDraft.self, from: Data(importText.utf8))
+            name = draft.name
+            role = draft.role
+            persona = draft.persona
+            glyph = draft.glyph
+            hue = draft.hue
+            card = draft.card ?? .init()
+            creationError = nil
+            imported = true
+        } catch {
+            creationError = "This isn’t an agent card. Check the JSON and try again."
         }
     }
 
@@ -421,9 +460,12 @@ struct NewMarbleView: View {
         Task {
             let id = await store.addMarble(
                 name: marbleName,
+                role: role,
                 glyph: glyph,
                 hue: hue,
-                persona: persona.trimmingCharacters(in: .whitespacesAndNewlines)
+                persona: persona.trimmingCharacters(in: .whitespacesAndNewlines),
+                card: card,
+                duplicateId: duplicate?.id
             )
             creating = false
             if let id {
@@ -432,6 +474,76 @@ struct NewMarbleView: View {
             } else {
                 creationError = store.errorMessage ?? "Couldn’t create this Marble. Try again."
             }
+        }
+    }
+}
+
+private struct MarbleAgentCardFields: View {
+    @Binding var card: MarbleAgentCard
+    @Binding var persona: String
+
+    private let toolChoices = [
+        ("List workspace", "glass.workspace.list"),
+        ("Read files", "glass.workspace.read"),
+        ("Search files", "glass.workspace.search"),
+        ("Write files", "glass.workspace.write"),
+        ("Ask another agent", "glass.marble.ask"),
+        ("List repository crates", "glass.crates.list"),
+    ]
+
+    var body: some View {
+        Section("System prompt") {
+            TextField("Instructions", text: $persona, axis: .vertical)
+                .lineLimit(3...8)
+                .frame(minHeight: 44)
+        }
+        Section("Turn settings") {
+            TextField("Voice", text: $card.voice).frame(minHeight: 44)
+            TextField("Model (host default if empty)", text: $card.model)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .frame(minHeight: 44)
+            Picker("When to speak", selection: $card.whenToSpeak) {
+                ForEach(MarbleAgentCard.Speaking.allCases, id: \.self) { choice in
+                    Text(choice.label).tag(choice)
+                }
+            }
+            .frame(minHeight: 44)
+            LabeledContent("Tool call limit") {
+                TextField("Default", value: $card.toolCallLimit, format: .number)
+                    .accessibilityLabel("Tool call limit")
+                    .multilineTextAlignment(.trailing)
+                    .keyboardType(.numberPad)
+            }
+            .frame(minHeight: 44)
+            LabeledContent("Time limit (seconds)") {
+                TextField("Default", value: $card.turnTimeoutSecs, format: .number)
+                    .accessibilityLabel("Time limit in seconds")
+                    .multilineTextAlignment(.trailing)
+                    .keyboardType(.numberPad)
+            }
+            .frame(minHeight: 44)
+        }
+        Section {
+            Toggle("Native tools (all as a group)", isOn: $card.tools.native)
+                .frame(minHeight: 44)
+            ForEach(toolChoices, id: \.1) { label, tool in
+                Toggle(label, isOn: Binding(
+                    get: { card.tools.allowed.contains(tool) },
+                    set: { allowed in
+                        if allowed {
+                            card.tools.allowed.append(tool)
+                        } else {
+                            card.tools.allowed.removeAll { $0 == tool }
+                        }
+                    }
+                ))
+                .frame(minHeight: 44)
+            }
+        } header: {
+            Text("Allowed tools")
+        } footer: {
+            Text("Marble tools are enforced individually. Native tools can only be enabled or disabled together.")
         }
     }
 }
@@ -606,9 +718,13 @@ struct MarbleInfoView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var persona = ""
     @State private var personaLoaded = false
+    @State private var name = ""
+    @State private var role = ""
+    @State private var card = MarbleAgentCard()
     @State private var glyph = "circle"
     @State private var hue = 0
     @State private var confirmRemove = false
+    @State private var duplicate: MarblePrismMarble?
 
     private var marble: MarblePrismMarble? {
         store.prism.marbles.first { $0.id == marbleId }
@@ -623,8 +739,8 @@ struct MarbleInfoView: View {
                         VStack(spacing: 6) {
                             MarbleAvatar(glyph: glyph, hue: hue, size: 88)
                             Text(marble.name).font(.largeTitle.weight(.semibold))
-                            if !marble.tagline.isEmpty {
-                                Text(marble.tagline).foregroundStyle(MarbleTheme.muted)
+                            if !marble.role.isEmpty {
+                                Text(marble.role).foregroundStyle(MarbleTheme.muted)
                             }
                         }
                         Spacer()
@@ -641,28 +757,31 @@ struct MarbleInfoView: View {
                 }
                 .listRowBackground(MarbleTheme.card)
 
-                Section {
-                    TextField("Who is this Marble?", text: $persona, axis: .vertical)
-                        .lineLimit(2...6)
-                    Button("Save personality") {
-                        Task { await store.savePersona(marble, persona: persona) }
+                if !marble.isDefault {
+                    Section("Identity") {
+                        TextField("First name", text: $name).frame(minHeight: 44)
+                        TextField("Role", text: $role).frame(minHeight: 44)
                     }
-                    .disabled(persona == marble.persona)
-                } header: {
-                    Text("Personality")
-                } footer: {
-                    Text("A new personality starts a fresh conversation for \(marble.name); the old chat stays readable.")
+                    Section("Avatar") {
+                        MarbleLookPicker(glyph: $glyph, hue: $hue)
+                    }
+                    Section("Everyone") {
+                        Toggle("Member of Everyone", isOn: $card.inEveryone).frame(minHeight: 44)
+                    }
                 }
-
-                Section("Look") {
-                    MarbleLookPicker(glyph: $glyph, hue: $hue)
-                        .onChange(of: glyph) { _, _ in saveLook(marble) }
-                        .onChange(of: hue) { _, _ in saveLook(marble) }
+                MarbleAgentCardFields(card: $card, persona: $persona)
+                Section {
+                    Button("Save card") { saveCard(marble) }.frame(minHeight: 44)
+                    Button("Duplicate agent") { duplicate = marble }.frame(minHeight: 44)
+                    if let error = store.errorMessage {
+                        Text(error).foregroundStyle(MarbleTheme.problem)
+                    }
                 }
                 Section {
                     DisclosureGroup("Workspace and abilities") {
                         LabeledContent("Workspace", value: marble.workspace.isEmpty ? "Host workspace" : marble.workspace)
-                        LabeledContent("Model", value: store.model.isEmpty ? "Host default" : store.model)
+                        let model = marble.card?.model.isEmpty == false ? marble.card?.model : store.model
+                        LabeledContent("Model", value: model.flatMap { $0.isEmpty ? nil : $0 } ?? "Host default")
                         NavigationLink("Tools") { WhatMarbleCanUseView() }
                     }
                 }
@@ -683,8 +802,14 @@ struct MarbleInfoView: View {
             guard !personaLoaded, let marble else { return }
             personaLoaded = true
             persona = marble.persona
+            name = marble.name
+            role = marble.role
+            card = marble.card ?? .init()
             glyph = marble.glyph
             hue = marble.hue
+        }
+        .sheet(item: $duplicate) { agent in
+            NavigationStack { NewMarbleView(duplicate: agent) }
         }
         .confirmationDialog(
             "Remove \(marble?.name ?? "this Marble") and their chat?",
@@ -704,13 +829,16 @@ struct MarbleInfoView: View {
         }
     }
 
-    private func saveLook(_ marble: MarblePrismMarble) {
-        guard personaLoaded else { return }
-        let chosen = glyph
-        let chosenHue = hue
-        guard chosen != marble.glyph || chosenHue != marble.hue else { return }
+    private func saveCard(_ marble: MarblePrismMarble) {
         Task {
-            await store.updateMarble(marble.id, update: .init(glyph: chosen, hue: chosenHue))
+            await store.updateMarble(marble.id, update: .init(
+                name: marble.isDefault ? nil : name,
+                role: marble.isDefault ? nil : role,
+                glyph: marble.isDefault ? nil : glyph,
+                hue: marble.isDefault ? nil : hue,
+                persona: persona,
+                card: card
+            ))
         }
     }
 }

@@ -20,13 +20,13 @@ final class MarbleEvidenceTests: XCTestCase {
 
     private func back() { app.navigationBars.buttons.element(boundBy: 0).tap() }
 
-    private func start(address: String = "http://127.0.0.1:4783") throws {
+    private func start(address: String = "http://127.0.0.1:4783", expectedAgent: String = "Ada") throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["MARBLE_EVIDENCE"] == "1",
                           "Requires a seeded local Marble host")
         continueAfterFailure = false
         app.launch()
         let connect = button("Connect to host")
-        let picker = app.staticTexts["Ada"].firstMatch
+        let picker = app.staticTexts[expectedAgent].firstMatch
         if connect.waitForExistence(timeout: 5) {
             shot("disconnected")
             connect.tap()
@@ -95,6 +95,133 @@ final class MarbleEvidenceTests: XCTestCase {
         search.typeText("plan")
         check(app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "What should we plan first")).firstMatch)
         shot("find")
+    }
+
+    func testHostedAgentCards() throws {
+        try start(address: "http://127.0.0.1:4785", expectedAgent: "Engineer")
+        let engineer = app.staticTexts["Engineer"].firstMatch
+        check(engineer)
+        shot("p2-agent-roster")
+        engineer.tap()
+        button("About this Marble").tap()
+        check(app.textFields["First name"])
+        shot("p2-agent-card")
+        let native = app.switches["Native tools (all as a group)"]
+        for _ in 0..<4 where !native.isHittable { app.swipeUp() }
+        XCTAssertTrue(native.isHittable)
+        shot("p2-agent-allowed-tools")
+        let duplicate = button("Duplicate agent")
+        for _ in 0..<4 where !duplicate.isHittable { app.swipeUp() }
+        duplicate.tap()
+        check(app.textFields["Name your Marble"])
+        XCTAssertEqual(app.textFields["Name your Marble"].value as? String, "Engineer copy")
+        shot("p2-duplicate-agent")
+        button("Cancel").tap()
+        back()
+        back()
+        let create = button("New Marble")
+        for _ in 0..<4 where !create.isHittable { app.swipeUp() }
+        create.tap()
+        check(app.textFields["Name your Marble"])
+        shot("p2-new-agent")
+        button("Cancel").tap()
+    }
+
+    func testHostedAgentImport() throws {
+        try start(address: "http://127.0.0.1:4785", expectedAgent: "Engineer")
+        let action = button("Import agent")
+        for _ in 0..<5 where !action.isHittable { app.swipeUp() }
+        action.tap()
+        let editor = app.textViews.firstMatch
+        check(editor)
+        editor.tap()
+        editor.typeText(#"{"name":"Sage","role":"Release librarian","persona":"Summarize release notes","glyph":"circle","hue":45,"workspace":""}"#)
+        let load = button("Load card")
+        if !load.isHittable { app.swipeUp() }
+        load.tap()
+        let name = app.textFields["Name your Marble"]
+        check(name)
+        XCTAssertEqual(name.value as? String, "Sage")
+        XCTAssertEqual(app.textFields["Role"].value as? String, "Release librarian")
+        shot("p2-import-agent-preview")
+        button("Create").tap()
+        check(button("About this Marble"), timeout: 35)
+        back()
+        let imported = app.staticTexts["Sage"].firstMatch
+        for _ in 0..<5 where !imported.isHittable { app.swipeUp() }
+        check(imported)
+        shot("p2-import-agent-roster")
+    }
+
+    func testHostedGroupRound() throws {
+        try start(address: "http://127.0.0.1:4785", expectedAgent: "Engineer")
+        app.staticTexts["Marble"].firstMatch.tap()
+        button("chat.compose").tap()
+        button("Group chat").tap()
+        check(app.staticTexts["Crew presets"])
+        button("Launch").tap()
+        shot("p2-group-crew-presets")
+        let engineer = app.switches["Engineer"]
+        if !engineer.isHittable { app.swipeUp() }
+        check(engineer)
+        XCTAssertEqual(engineer.value as? String, "1")
+        shot("p2-group-member-picker")
+        app.swipeDown()
+        let title = app.textFields["Title"]
+        title.tap()
+        title.typeText("Launch checklist")
+        let goal = app.descendants(matching: .any)["group.goal"].firstMatch
+        for _ in 0..<5 where !goal.isHittable { app.swipeUp() }
+        goal.tap()
+        goal.typeText("Plan the launch")
+        let doneWhen = app.descendants(matching: .any)["group.doneWhen"].firstMatch
+        doneWhen.tap()
+        doneWhen.typeText("Checklist is ready")
+        button("Create").tap()
+        let field = app.descendants(matching: .any)["composer.field"].firstMatch
+        check(field)
+        button("Thread info").tap()
+        check(app.staticTexts["Lead · Required"])
+        shot("p2-group-thread-info")
+        let designer = app.switches["Designer"]
+        check(designer)
+        designer.coordinate(withNormalizedOffset: CGVector(dx: 0.91, dy: 0.5)).tap()
+        XCTAssertEqual(designer.value as? String, "0")
+        button("Done").tap()
+        button("Thread info").tap()
+        check(designer)
+        XCTAssertEqual(designer.value as? String, "0")
+        button("Cancel").tap()
+        check(app.staticTexts["Done when, Checklist is ready"])
+        shot("p2-group-task-header")
+        field.tap()
+        field.typeText("Plan the launch")
+        button("Send").tap()
+        let tutorial = button("Continue")
+        if tutorial.exists { tutorial.tap() }
+        let handoff = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "checklist from Lead")).firstMatch
+        check(handoff, timeout: 15)
+        check(app.staticTexts["Lead suggests adding Researcher"])
+        app.swipeDown()
+        shot("p2-group-suggestion")
+        button("Add").tap()
+        XCTAssertTrue(app.staticTexts["Lead suggests adding Researcher"].waitForNonExistence(timeout: 12))
+        button("Thread info").tap()
+        let researcher = app.switches["Researcher"]
+        check(researcher)
+        XCTAssertEqual(researcher.value as? String, "1")
+        button("Cancel").tap()
+        XCTAssertFalse(app.staticTexts["[[PASS]]"].exists)
+        shot("p2-group-ordered-round")
+        field.tap()
+        field.typeText("Close the task")
+        button("Send").tap()
+        check(app.staticTexts["Task completed"])
+        check(app.staticTexts["The launch checklist is ready for review."])
+        shot("p2-group-closing-summary")
+        back()
+        check(app.staticTexts["Launch checklist"])
+        shot("p2-group-chats-list")
     }
 
     func testEveryoneThreads() throws {

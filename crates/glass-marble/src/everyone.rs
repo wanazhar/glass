@@ -73,6 +73,11 @@ pub(crate) fn is_session(id: &str) -> bool {
     id.starts_with(SESSION_PREFIX)
 }
 
+pub(crate) fn is_group_session(id: &str) -> bool {
+    id.strip_prefix(SESSION_PREFIX)
+        .is_some_and(|id| id.starts_with("group-thread-"))
+}
+
 pub(crate) fn session_in_thread(id: &str, thread: &str) -> bool {
     id.strip_prefix(SESSION_PREFIX)
         .and_then(|id| id.split_once("__"))
@@ -103,7 +108,13 @@ pub enum EveryoneTarget {
 pub fn plan(state: &ProductState, text: &str) -> EveryoneTarget {
     let lowered = text.to_lowercase();
     let default = state.prism.default_marble();
-    let roster = std::iter::once(&default).chain(state.prism.marbles.iter());
+    let roster = std::iter::once(&default).chain(
+        state
+            .prism
+            .marbles
+            .iter()
+            .filter(|agent| agent.in_everyone()),
+    );
     let mut mentions: Vec<_> = roster
         .filter_map(|marble| {
             let at = mention_position(&lowered, &marble.name.to_lowercase());
@@ -120,9 +131,14 @@ pub fn plan(state: &ProductState, text: &str) -> EveryoneTarget {
     mentions.sort_by_key(|(at, _)| *at);
     let mut named: Vec<String> = mentions.into_iter().map(|(_, id)| id).collect();
     if mentioned(&lowered, "everyone") {
-        for id in std::iter::once(DEFAULT_SPEAKER.to_string())
-            .chain(state.prism.marbles.iter().map(|m| m.id.clone()))
-        {
+        for id in std::iter::once(DEFAULT_SPEAKER.to_string()).chain(
+            state
+                .prism
+                .marbles
+                .iter()
+                .filter(|agent| agent.in_everyone())
+                .map(|m| m.id.clone()),
+        ) {
             if !named.contains(&id) {
                 named.push(id);
             }
@@ -141,7 +157,7 @@ fn mentioned(text: &str, word: &str) -> bool {
     mention_position(text, word).is_some()
 }
 
-fn mention_position(text: &str, word: &str) -> Option<usize> {
+pub(crate) fn mention_position(text: &str, word: &str) -> Option<usize> {
     let needle = format!("@{word}");
     let mut rest = text;
     while let Some(at) = rest.find(&needle) {

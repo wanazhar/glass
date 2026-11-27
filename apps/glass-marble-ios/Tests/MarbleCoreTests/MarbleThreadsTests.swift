@@ -3,6 +3,22 @@ import XCTest
 @testable import MarbleCore
 
 final class MarbleThreadsTests: XCTestCase {
+    func testGroupMetadataAndSuggestionsSurviveThreadRoundTrip() throws {
+        let data = Data("""
+        {"id":"group-thread-1","conversation_id":"group-chats","parent_entry_id":"",
+         "reply_count":3,"last_activity_at":50,"created_at":20,"title":"Launch",
+         "group":{"members":["lead","engineer"],"goal":"Publish","doneWhen":"Build passes",
+                  "closed":true,"suggestions":[{"agentId":"reviewer","suggestedBy":"lead"}]}}
+        """.utf8)
+        let decoder = JSONDecoder()
+        let thread = try decoder.decode(MarbleThread.self, from: data)
+        XCTAssertEqual(thread.group?.members, ["lead", "engineer"])
+        XCTAssertEqual(thread.group?.doneWhen, "Build passes")
+        XCTAssertEqual(thread.group?.closed, true)
+        XCTAssertEqual(thread.group?.suggestions.first?.agentId, "reviewer")
+        XCTAssertEqual(try decoder.decode(MarbleThread.self, from: JSONEncoder().encode(thread)), thread)
+    }
+
     func testStableMessageIDAndParentSummaryRoundTripThroughCache() throws {
         let json = """
         {"id":"entry-1","conversationId":"everyone","kind":"user","text":"hello","at":20,

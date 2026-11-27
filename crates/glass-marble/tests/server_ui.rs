@@ -6393,6 +6393,75 @@ fn everyone_agent_workspaces_are_distinct_and_deleted_with_the_thread() {
 }
 
 #[test]
+fn clearing_everyone_persists_before_attempting_workspace_cleanup() {
+    let fixture = NamedTurnFixture::with_persistence("clear-everyone-disk", vec![], true);
+    let store = fixture.store.as_ref().unwrap();
+    let mut roots = Vec::new();
+    let mut threads = Vec::new();
+    for title in ["Removable", "Blocked"] {
+        let (status, body) = fixture.post(
+            "/api/threads",
+            json!({"conversation_id":"everyone","title":title}),
+        );
+        assert_eq!(status, 201, "{body}");
+        let thread = body["thread"]["id"].as_str().unwrap().to_string();
+        let conversation = format!("everyone-session-{thread}__ada");
+        {
+            let mut state = fixture.state.lock().unwrap();
+            state.conversation_mut(&conversation).private_storage = true;
+            state.push_transcript(TranscriptEntry {
+                conversation_id: "everyone".into(),
+                kind: "assistant".into(),
+                text: title.into(),
+                thread_id: Some(thread.clone()),
+                ..Default::default()
+            });
+        }
+        threads.push(thread);
+        roots.push(
+            fixture
+                .root
+                .join("conversation-sessions")
+                .join(conversation),
+        );
+    }
+    std::fs::create_dir_all(roots[0].join("workspace")).unwrap();
+    std::fs::write(&roots[1], b"not a directory").unwrap();
+    store.save(&fixture.server.state()).unwrap();
+
+    let backup = store.path().with_extension("original");
+    std::fs::rename(store.path(), &backup).unwrap();
+    std::fs::create_dir(store.path()).unwrap();
+    let (status, body) = fixture.post("/api/everyone/clear", json!({}));
+    assert_eq!(status, 503, "{body}");
+    assert!(roots[0].is_dir());
+    assert_eq!(fixture.server.state().threads.len(), 2);
+    std::fs::remove_dir(store.path()).unwrap();
+    std::fs::rename(backup, store.path()).unwrap();
+
+    let (status, body) = fixture.post("/api/everyone/clear", json!({}));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["cleared"], 2);
+    assert!(!roots[0].exists());
+    assert!(roots[1].is_file());
+    let reloaded = store.load().unwrap();
+    assert!(reloaded.threads.is_empty());
+    assert!(reloaded.transcript.is_empty());
+    assert!(
+        reloaded
+            .conversations
+            .iter()
+            .all(|conversation| { !conversation.id.starts_with("everyone-session-") })
+    );
+    for thread in threads {
+        let (status, _) = fixture
+            .server
+            .handle("GET", &format!("/api/threads/{thread}"), "");
+        assert_eq!(status, 404);
+    }
+}
+
+#[test]
 fn private_small_talk_disables_tools_without_changing_the_conversation() {
     if !python3_available() {
         return;

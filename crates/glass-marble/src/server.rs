@@ -1192,19 +1192,41 @@ impl MarbleServer {
                 .iter()
                 .filter(|entry| entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION)
                 .count();
-            for id in records {
-                if self.delete_conversation_record(&mut guard, &id).is_err() {
-                    return Response::error(500, "conversation_delete_failed");
-                }
-                if let Some(store) = &self.store {
-                    crate::live::LiveStore::for_store(store).remove_conversation(&id);
+            let mut cleared = guard.clone();
+            cleared.thread_events = Default::default();
+            for id in &records {
+                if cleared.delete_conversation(id).is_err() {
+                    return Response::error(409, "conversation_busy");
                 }
             }
-            guard.clear_everyone();
-            guard.bump();
+            cleared.clear_everyone();
+            cleared.bump();
+            if let Some(store) = &self.store
+                && let Err(error) = store.save(&cleared)
+            {
+                tracing::warn!(%error, "could not persist Clear Everyone");
+                return Response::error(503, "state_save_failed");
+            }
+            cleared.thread_events = guard.thread_events.clone();
+            if let Some(events) = &cleared.thread_events.0 {
+                for task in guard.task_threads.keys() {
+                    if !cleared.task_threads.contains_key(task) {
+                        events.unbind_thread(task);
+                    }
+                }
+                events.publish_replies(&cleared);
+            }
+            let previous = std::mem::replace(&mut *guard, cleared);
+            for id in &records {
+                if let Err(error) = self.remove_conversation_files(&previous, id) {
+                    tracing::warn!(%error, conversation = %id, "could not clean up a cleared Everyone session");
+                }
+                if let Some(store) = &self.store {
+                    crate::live::LiveStore::for_store(store).remove_conversation(id);
+                }
+            }
             removed
         };
-        self.save_state();
         self.events.publish(
             crate::everyone::EVERYONE_CONVERSATION,
             "",
@@ -2070,6 +2092,11 @@ impl MarbleServer {
 
     fn delete_conversation_record(&self, state: &mut ProductState, id: &str) -> Result<(), String> {
         state.check_conversation_deletion(id)?;
+        self.remove_conversation_files(state, id)?;
+        state.delete_conversation(id)
+    }
+
+    fn remove_conversation_files(&self, state: &ProductState, id: &str) -> Result<(), String> {
         if let Some(root) = self
             .store
             .as_ref()
@@ -2087,7 +2114,7 @@ impl MarbleServer {
                 Err(error) => return Err(format!("could not remove conversation files: {error}")),
             }
         }
-        state.delete_conversation(id)
+        Ok(())
     }
 
     /// `GET /api/transcript?conversationId=…&after=…` — bounded history for one

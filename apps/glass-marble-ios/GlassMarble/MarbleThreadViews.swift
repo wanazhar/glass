@@ -3,17 +3,26 @@ import SwiftUI
 struct EveryoneView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
-    @State private var threads: [MarbleThread] = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var naming = false
     @State private var title = ""
     @State private var deleting: MarbleThread?
     @State private var failed = false
     @State private var archived = false
 
+    private var threads: [MarbleThread] { store.everyoneThreadList ?? [] }
+
+    private struct RefreshKey: Equatable {
+        let updates: [String: MarbleThread]
+        let revision: UInt64
+    }
+
     var body: some View {
         List {
             let active = threads.filter { !$0.archived }
-            if active.isEmpty {
+            if store.everyoneThreadList == nil && !failed {
+                MarbleListSkeleton()
+            } else if active.isEmpty {
                 ContentUnavailableView("No threads yet", systemImage: "bubble.left.and.bubble.right",
                                        description: Text("Start a thread to talk with Everyone."))
             }
@@ -48,6 +57,7 @@ struct EveryoneView: View {
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
         .navigationTitle("Everyone")
+        .animation(reduceMotion ? nil : .default, value: threads)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -59,6 +69,7 @@ struct EveryoneView: View {
                 }
                 .accessibilityLabel("New Everyone thread")
             }
+            ToolbarItem(placement: .topBarLeading) { MarbleNavConnection() }
         }
         .alert("New Everyone thread", isPresented: $naming) {
             TextField("Thread title", text: $title)
@@ -88,7 +99,7 @@ struct EveryoneView: View {
             .background(MarbleTheme.paper)
             .navigationTitle("Archived")
         }
-        .task(id: store.threadUpdates) { await load() }
+        .task(id: RefreshKey(updates: store.threadUpdates, revision: store.threadHostRevision)) { await load() }
         .refreshable { await load() }
     }
 
@@ -104,8 +115,7 @@ struct EveryoneView: View {
 
     private func load() async {
         do {
-            threads = try await store.threads(in: everyoneConversationId)
-                .sorted { $0.summary.lastActivityAt > $1.summary.lastActivityAt }
+            try await store.refreshEveryoneThreads()
         } catch is CancellationError {
         } catch {
             failed = true

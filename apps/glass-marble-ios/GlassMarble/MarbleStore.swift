@@ -83,6 +83,7 @@ final class MarbleStore: ObservableObject {
     @Published private(set) var marbleTranscripts: [String: [MarbleEntry]] = [:]
     @Published private(set) var historyBefore: [String: String] = [:]
     @Published private(set) var threadPages: [String: MarbleThreadPage] = [:]
+    @Published private(set) var everyoneThreadList: [MarbleThread]?
     private var loadingOlder: [String: String] = [:]
     private var loadingOlderThreads: [String: String] = [:]
     private var deletedConversationIDs: Set<String> = []
@@ -483,6 +484,7 @@ final class MarbleStore: ObservableObject {
             (id, cachedEntries(entries, for: id))
         })
         threadPages = cache.threads ?? [:]
+        everyoneThreadList = cache.everyoneThreads
     }
 
     private func saveCache(discardOnFailure: Bool = false) {
@@ -490,6 +492,7 @@ final class MarbleStore: ObservableObject {
         var cache = MarbleChatCache(everyone: [], transcripts: [:], before: [:])
         cache.roster = state.prism
         cache.conversations = state.conversations
+        cache.everyoneThreads = everyoneThreadList
         for (id, entries) in marbleTranscripts {
             let (rows, before) = MarbleHistoryWindow.cached(entries, before: historyBefore[id])
             cache.transcripts[id] = rows
@@ -649,6 +652,7 @@ final class MarbleStore: ObservableObject {
         marbleTranscripts = [:]
         historyBefore = [:]
         threadPages = [:]
+        everyoneThreadList = nil
         loadingOlder = [:]
         loadingOlderThreads = [:]
         deletedConversationIDs = []
@@ -1268,6 +1272,15 @@ final class MarbleStore: ObservableObject {
         return try await withChatClient { try await $0.threads(conversationId: conversationId) }
     }
 
+    func refreshEveryoneThreads() async throws {
+        let revision = threadHostRevision
+        let threads = try await threads(in: everyoneConversationId)
+            .sorted { $0.summary.lastActivityAt > $1.summary.lastActivityAt }
+        guard !Task.isCancelled, revision == threadHostRevision, everyoneThreadList != threads else { return }
+        everyoneThreadList = threads
+        saveCache()
+    }
+
     func threadPage(_ id: String) -> MarbleThreadPage? {
         #if DEBUG
         if let page = fixtureThreads?[id] { return page }
@@ -1452,11 +1465,19 @@ final class MarbleStore: ObservableObject {
         do {
             try await client.clearEveryone()
             setHistory([], for: everyoneConversationId, before: nil)
-            threadPages = threadPages.filter { $0.value.thread.conversationId != everyoneConversationId }
+            clearEveryoneThreads()
             await refresh()
         } catch {
             prismNotice = "Couldn't clear Everyone: \(error.localizedDescription)"
         }
+    }
+
+    private func clearEveryoneThreads() {
+        threadPages = threadPages.filter { $0.value.thread.conversationId != everyoneConversationId }
+        threadUpdates = threadUpdates.filter { $0.value.conversationId != everyoneConversationId }
+        everyoneThreadList = []
+        threadHostRevision &+= 1
+        saveCache()
     }
 
     /// The marble a transcript row is speaking as, for its label and dot.
@@ -2326,8 +2347,7 @@ final class MarbleStore: ObservableObject {
             everyoneTimeline = MarbleEveryoneTimeline.applying(event, to: everyoneTimeline)
             if event.data.cleared != nil {
                 historyBefore[everyoneConversationId] = nil
-                threadPages = threadPages.filter { $0.value.thread.conversationId != everyoneConversationId }
-                saveCache()
+                clearEveryoneThreads()
             }
             chatsRevision = -1
             scheduleEventRefresh()

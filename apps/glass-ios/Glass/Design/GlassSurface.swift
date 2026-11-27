@@ -9,8 +9,8 @@ enum Design {
     static let corner: CGFloat = 14
     static let panel: CGFloat = 22
     static let largePanel: CGFloat = 28
-    /// The floating Threads panel, close to the iPhone display corners.
-    static let drawerCorner: CGFloat = 30
+    /// The floating Threads panel: concentric with the 44pt capsules inset 16pt inside it.
+    static let drawerCorner: CGFloat = control / 2 + padding
     static let transcriptClearance: CGFloat = 18
     static let transcriptEnd: CGFloat = transcriptClearance - padding
     static let readingWidth: CGFloat = 760
@@ -70,13 +70,8 @@ extension View {
 }
 
 private struct LensComposerCard: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
     func body(content: Content) -> some View {
-        content
-            .lensCard(reduceTransparency ? Design.surface : .clear, radius: Design.largePanel)
-            .glassEffect(reduceTransparency ? .identity : .regular.tint(Design.surface.opacity(0.72)),
-                         in: .rect(cornerRadius: Design.largePanel))
+        content.lensGlass(RoundedRectangle(cornerRadius: Design.largePanel), tint: Design.surface.opacity(0.72))
     }
 }
 

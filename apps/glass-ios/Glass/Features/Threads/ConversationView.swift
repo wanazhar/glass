@@ -314,7 +314,7 @@ struct ConversationView: View {
                         .frame(width: Design.control, height: Design.control)
                         .contentShape(.circle)
                         // Tinted with the page colour so the arrow reads over text and code in both modes.
-                        .glassEffect(.regular.tint(Design.background.opacity(0.6)).interactive(), in: .circle)
+                        .lensGlass(Circle(), tint: Design.background.opacity(0.6), interactive: true)
                         .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
                 }
                 .buttonStyle(.plain)

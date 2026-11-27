@@ -22,6 +22,7 @@ private struct ConversationShell: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var scheme
     @Bindable var threads: ThreadsModel
     @State private var sidebar = NavigationSplitViewVisibility.all
     @State private var drawer = false
@@ -89,7 +90,7 @@ private struct ConversationShell: View {
                     .blur(radius: drawer && !reduceTransparency ? 12 : 0)
                     .accessibilityHidden(drawer)
                 if drawer {
-                    Color.primary.opacity(0.18)
+                    Color.black.opacity(scheme == .dark ? 0.32 : 0.06)
                         .ignoresSafeArea()
                         .onTapGesture { setDrawer(false) }
                         .accessibilityHidden(true)
@@ -99,7 +100,8 @@ private struct ConversationShell: View {
                     .clipShape(.rect(cornerRadius: Design.drawerCorner, style: .continuous))
                     .background(reduceTransparency ? Design.surface : .clear,
                                 in: .rect(cornerRadius: Design.drawerCorner, style: .continuous))
-                    .glassEffect(reduceTransparency ? .identity : .regular,
+                    // A white tint keeps light mode bright and clean rather than grey.
+                    .glassEffect(reduceTransparency ? .identity : .regular.tint(.white.opacity(scheme == .dark ? 0 : 0.4)),
                                  in: .rect(cornerRadius: Design.drawerCorner, style: .continuous))
                     .padding(.leading, Design.gap)
                     .padding(.vertical, Design.gap)
@@ -185,6 +187,7 @@ struct ThreadListView: View {
                 accountBar
                     .padding(.top, Design.gap)
             }
+            .environment(\.onGlassPanel, true)
         }
         .scrollDismissesKeyboard(.interactively)
         .task(id: Filter(query: threads.query, project: threads.project, archived: threads.archived)) {
@@ -282,6 +285,7 @@ struct ThreadListView: View {
             LensSearch(prompt: "Find a thread", query: $threads.query)
                 .accessibilityIdentifier("threads.search")
                 .frame(height: Design.control)
+                .lensGlass(Capsule())
                 .padding(.horizontal, Design.padding)
           }
     }

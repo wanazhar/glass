@@ -12,7 +12,7 @@ struct LensSearch: UIViewRepresentable {
         field.attributedPlaceholder = NSAttributedString(string: prompt, attributes: [.foregroundColor: UIColor(Design.muted)])
         field.font = .preferredFont(forTextStyle: .subheadline)
         field.adjustsFontForContentSizeCategory = true
-        field.backgroundColor = UIColor(Design.inset)
+        field.backgroundColor = context.environment.onGlassPanel ? .clear : UIColor(Design.inset)
         field.borderStyle = .none
         field.layer.cornerCurve = .continuous
         field.layer.cornerRadius = Design.control / 2
@@ -39,8 +39,49 @@ struct LensSearch: UIViewRepresentable {
     }
 }
 
-struct LensBarGroup<Content: View>: View {
+extension EnvironmentValues {
+    /// The view sits on the Threads panel's own glass.
+    @Entry var onGlassPanel = false
+}
+
+extension View {
+    func lensGlass<S: InsettableShape>(_ shape: S, tint: Color? = nil, interactive: Bool = false) -> some View {
+        modifier(LensGlass(shape: shape, tint: tint, interactive: interactive))
+    }
+}
+
+/// Glass for Lens controls. On the Threads panel it is brighter, with a hairline specular edge, so it reads as
+/// glass on glass. Under the open panel it is switched off: glass keeps drawing through a parent's opacity.
+private struct LensGlass<S: InsettableShape>: ViewModifier {
+    var shape: S
+    var tint: Color?
+    var interactive: Bool
+    @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.sidebarOpen) private var sidebarOpen
+    @Environment(\.onGlassPanel) private var onPanel
+
+    func body(content: Content) -> some View {
+        let dark = scheme == .dark
+        var glass = Glass.regular
+        if let tint { glass = glass.tint(tint) } else if onPanel, dark { glass = glass.tint(.white.opacity(0.06)) }
+        if interactive { glass = glass.interactive() }
+        return content
+            .background(reduceTransparency ? Design.surface : .clear, in: shape)
+            .glassEffect(reduceTransparency || sidebarOpen ? .identity : glass, in: shape)
+            .overlay {
+                if onPanel, !reduceTransparency {
+                    // Light catches the top edge and the bottom edge sits in shade, as on a raised pane of glass.
+                    shape.strokeBorder(LinearGradient(colors: dark ? [.white.opacity(0.24), .white.opacity(0.04)]
+                                                                   : [.white, .black.opacity(0.1)],
+                                                      startPoint: .top, endPoint: .bottom), lineWidth: 0.5)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
+struct LensBarGroup<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -49,8 +90,7 @@ struct LensBarGroup<Content: View>: View {
                 .padding(.horizontal, Design.small)
                 .frame(height: Design.control)
                 .foregroundStyle(Design.ink)
-                .background(reduceTransparency ? Design.surface : .clear, in: .capsule)
-                .glassEffect(reduceTransparency ? .identity : .regular, in: .capsule)
+                .lensGlass(Capsule())
         }
     }
 }

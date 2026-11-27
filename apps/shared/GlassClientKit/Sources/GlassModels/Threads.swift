@@ -29,7 +29,7 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
         return trimmed.isEmpty ? "Untitled conversation" : trimmed
     }
     public var modifiedDate: Date? {
-        guard let modified else { return nil }
+        guard let modified, modified.isFinite else { return nil }
         // The gateway reports seconds; tolerate milliseconds.
         return Date(timeIntervalSince1970: modified > 10_000_000_000 ? modified / 1000 : modified)
     }
@@ -62,6 +62,12 @@ public struct ThreadSummary: Sendable, Hashable, Codable, Identifiable {
         writerActive = try? c.decodeIfPresent(Bool.self, forKey: .writerActive)
         modified = (try? c.decodeIfPresent(Double.self, forKey: .modifiedEpoch))
             ?? (try? c.decodeIfPresent(Double.self, forKey: .modified))
+        if modified == nil, let stamp = try? c.decode(String.self, forKey: .modified) {
+            let format = Date.VerbatimFormatStyle(
+                format: "\(year: .padded(4))-\(month: .twoDigits)-\(day: .twoDigits) \(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)",
+                locale: Locale(identifier: "en_US_POSIX"), timeZone: .gmt, calendar: Calendar(identifier: .gregorian))
+            modified = (try? format.parseStrategy.parse(stamp))?.timeIntervalSince1970
+        }
         model = try? c.decodeIfPresent(String.self, forKey: .model)
         branch = try? c.decodeIfPresent(String.self, forKey: .branch)
         lastStatus = (try? c.decodeIfPresent(String.self, forKey: .lastStatus)) ?? nil

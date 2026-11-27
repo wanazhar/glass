@@ -1063,6 +1063,44 @@
       ]
     },
     {
+      "path": "apps/glass-ios/PR-round6.md",
+      "class": "record",
+      "topic": "history",
+      "audience": "historical-or-release-evidence",
+      "status": "dated-or-release-record",
+      "recommendation": "KEEP_PUBLIC",
+      "recommendationReason": "Preserve dated release, changelog, and evidence records as an auditable source history.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "apps/glass-ios/PR-round6.md#glass-ios-round-6-lens-consistency",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Glass iOS round 6: Lens consistency",
+          "anchor": "glass-ios-round-6-lens-consistency"
+        },
+        {
+          "level": "2",
+          "title": "Summary",
+          "anchor": "summary"
+        },
+        {
+          "level": "2",
+          "title": "Simulator evidence",
+          "anchor": "simulator-evidence"
+        },
+        {
+          "level": "2",
+          "title": "Local verification",
+          "anchor": "local-verification"
+        }
+      ]
+    },
+    {
       "path": "benchmarks/README.md",
       "class": "current",
       "topic": "reference",
@@ -2405,6 +2443,7 @@
         "CONTRIBUTING.md",
         "README.md",
         "SECURITY.md",
+        "apps/glass-ios/PR-round6.md",
         "benchmarks/README.md",
         "crates/glass-browser-core/README.md",
         "crates/glass-browser/README.md",

@@ -8,6 +8,9 @@ enum Design {
     static let control: CGFloat = 44
     static let corner: CGFloat = 14
     static let panel: CGFloat = 22
+    static let largePanel: CGFloat = 28
+    static let transcriptClearance: CGFloat = 18
+    static let transcriptEnd: CGFloat = transcriptClearance - padding
     static let readingWidth: CGFloat = 760
     static let background = adaptive(0xF5F7FA, 0x0B1013)
     static let surface = adaptive(0xFFFFFF, 0x161E23)
@@ -15,7 +18,7 @@ enum Design {
     static let line = adaptive(0xD9E0E6, 0x34434B)
     static let ink = adaptive(0x131C22, 0xF1F6F8)
     static let muted = adaptive(0x4D5E69, 0xA9BAC4)
-    static let accent = adaptive(0x08737D, 0x60E4E8)
+    static let accent = adaptive(LensPalette.lightTeal, LensPalette.darkTeal)
     static let onAccent = adaptive(0xFFFFFF, 0x092A30)
     static let success = adaptive(0x28613D, 0x9CDEA9)
     static let warning = adaptive(0x785011, 0xF7CB84)
@@ -39,6 +42,14 @@ enum Design {
 }
 
 extension View {
+    func lensCard(_ fill: Color = Design.surface, radius: CGFloat = Design.panel) -> some View {
+        background(fill, in: .rect(cornerRadius: radius, style: .continuous))
+    }
+
+    func lensComposerCard() -> some View {
+        modifier(LensComposerCard())
+    }
+
     func floatingGlass() -> some View {
         glassEffect(.regular.interactive(), in: Capsule())
     }
@@ -53,6 +64,17 @@ extension View {
 
     func softTopScrollEdge() -> some View {
         scrollEdgeEffectStyle(.soft, for: .top)
+    }
+}
+
+private struct LensComposerCard: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
+        content
+            .lensCard(reduceTransparency ? Design.surface : .clear, radius: Design.largePanel)
+            .glassEffect(reduceTransparency ? .identity : .regular.tint(Design.surface.opacity(0.72)),
+                         in: .rect(cornerRadius: Design.largePanel))
     }
 }
 

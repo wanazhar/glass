@@ -6,7 +6,6 @@ struct ConversationView: View {
     var threads: ThreadsModel
     var goBack: () -> Void
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var following = true
     @State private var atBottom = true
@@ -51,11 +50,11 @@ struct ConversationView: View {
                             })
                         }
                     }
-                    Color.clear.frame(height: 1)
+                    Color.clear.frame(height: Design.transcriptEnd)
                         .id(Self.bottom)
                 }
                 .padding(.horizontal, Design.padding)
-                .padding(.vertical, Design.gap)
+                .padding(.top, Design.gap)
                 .frame(maxWidth: Design.readingWidth)
                 .frame(maxWidth: .infinity)
             }
@@ -80,19 +79,16 @@ struct ConversationView: View {
                 if phase == .interacting { following = false }
                 if phase == .idle, old != .animating { following = atBottom }
             }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
-                if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
-            }
             .onChange(of: conversation.timeline.interaction?.id) { _, id in
                 if id != nil { resume(proxy) }
             }
             .onChange(of: rows.last?.id) { _, _ in
                 if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
             }
-            .safeAreaBar(edge: .top, spacing: 6) {
-                if sizeClass == .compact { header }
+            .safeAreaBar(edge: .top, spacing: Design.gap) {
+                header
             }
-            .safeAreaBar(edge: .bottom, spacing: 8) {
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: Design.gap) {
                     floatingControls(proxy)
                     bottomBar(onFieldFocus: { resume(proxy) })
@@ -105,13 +101,7 @@ struct ConversationView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation")
         .accessibilityValue("\(conversation.timeline.entries.count) entries\(conversation.hasEarlier ? ", earlier available" : "")")
-        .toolbarVisibility(sizeClass == .compact ? .hidden : .automatic, for: .navigationBar)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if sizeClass != .compact {
-                ToolbarItem(placement: .principal) { titleButton }
-            }
-        }
+        .toolbarVisibility(.hidden, for: .navigationBar)
         .sheet(item: $picker) { ChoicePicker(picker: $0, composer: conversation.composer) }
         .sheet(isPresented: $showingInfo) { threadInfo }
         .sheet(item: $activityDetail) { detail in
@@ -331,11 +321,11 @@ struct ConversationView: View {
 
     private var titleButton: some View {
         Button { showingInfo = true } label: {
-            Text(threads.thread(conversation.thread.id)?.displayTitle ?? conversation.title)
+            Text(threads.thread(conversation.thread.id)?.lensTitle ?? conversation.title)
                 .font(Design.headline)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, minHeight: Design.control)
-                .contentShape(.rect)
+                .contentShape(.capsule)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("conversation.connection")
@@ -344,7 +334,7 @@ struct ConversationView: View {
     }
 
     private var threadInfo: some View {
-        ThreadInfoView(conversation: conversation, title: threads.thread(conversation.thread.id)?.displayTitle ?? conversation.title) { action in
+        ThreadInfoView(conversation: conversation, title: threads.thread(conversation.thread.id)?.lensTitle ?? conversation.title) { action in
             showingInfo = false
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(350))

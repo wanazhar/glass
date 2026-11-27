@@ -32,9 +32,13 @@ actor DemoTransport: GlassHTTPTransport {
             }
             let day: Double = index < 5 ? 0 : index < 9 ? 1 : index < 38 ? 4 : index < 103 ? 18 : Double(index) / 2
             let age = preview == nil ? (index < 16 ? Double(index * 420) : Double(index * 24_600)) : day * 86_400
+            let showcaseDay = [0, 0, 1, 4, 18, 30][min(index, 5)] + max(0, index - 5) / 2
+            let date = preview == .drawer
+                ? (Calendar.current.date(byAdding: .day, value: -showcaseDay, to: now) ?? now)
+                : now.addingTimeInterval(-age)
             var row = ThreadSummary(session: "harbor-\(index)", title: title, workspace: "/Users/robin/Projects/Harbor",
-                                    modified: now.addingTimeInterval(-age).timeIntervalSince1970)
-            row.pinned = preview == nil ? index < 3 : index == 2 || index == 3
+                                    modified: date.timeIntervalSince1970 - (preview == .drawer ? Double(index) : 0))
+            row.pinned = preview == .drawer ? index == 0 : (preview == nil ? index < 3 : index == 2 || index == 3)
             row.model = preview == nil ? "Claude Sonnet 4.6" : "Opus 4.7"
             if preview != nil { row.running = index == 4 }
             return row

@@ -59,8 +59,8 @@ struct SettingsView: View {
                     HStack(spacing: 12) {
                         Image(systemName: SettingsRoute.host.systemImage)
                             .font(.title2)
-                            .frame(width: 47, height: 47)
-                            .background(Design.inset, in: .rect(cornerRadius: 11))
+                            .frame(width: Design.control, height: Design.control)
+                            .background(Design.inset, in: .capsule)
                             .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: Design.small) {
                             Text(machine).font(.headline)
@@ -70,10 +70,9 @@ struct SettingsView: View {
                         Spacer(minLength: Design.small)
                         chevron
                     }
-                    .padding(15)
-                    .background(Design.surface, in: .rect(cornerRadius: 16))
-                    .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Design.line))
-                    .contentShape(.rect(cornerRadius: 16))
+                    .padding(Design.padding)
+                    .lensCard()
+                    .contentShape(.rect(cornerRadius: Design.panel))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("settings.host")
@@ -81,8 +80,7 @@ struct SettingsView: View {
                 group("Workspace", routes: [.defaults, .diagnostics, .about])
             }
             .frame(maxWidth: 520)
-            .padding(.horizontal, 22)
-            .padding(.vertical, 15)
+            .padding(Design.padding)
             .frame(maxWidth: .infinity)
         }
         .foregroundStyle(Design.ink)
@@ -115,7 +113,6 @@ struct SettingsView: View {
                 .foregroundStyle(Design.muted).accessibilityAddTraits(.isHeader)
             VStack(spacing: 0) {
                 ForEach(routes, id: \.self) { route in
-                    if route != routes.first { Divider().padding(.leading, 44) }
                     NavigationLink(value: route) {
                         HStack(spacing: 11) {
                             Image(systemName: route.systemImage).frame(width: 22)
@@ -128,16 +125,16 @@ struct SettingsView: View {
                             }
                             chevron
                         }
-                        .padding(.horizontal, 13)
-                        .frame(minHeight: 45)
-                        .contentShape(.rect)
+                        .padding(.horizontal, Design.padding)
+                        .frame(minHeight: Design.control)
+                        .contentShape(.capsule)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("settings.\(route.rawValue)")
                 }
             }
-            .background(Design.surface, in: .rect(cornerRadius: 13))
-            .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(Design.line))
+            .padding(.vertical, Design.small)
+            .lensCard()
         }
     }
 }

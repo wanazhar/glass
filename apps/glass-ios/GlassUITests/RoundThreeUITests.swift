@@ -146,6 +146,38 @@ final class RoundThreeUITests: XCTestCase {
     }
 
     @MainActor
+    func testJustSentMessageClearsDockedComposerAndKeyboardDismisses() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "Run on an iPhone simulator")
+        continueAfterFailure = false
+        let prompt = "Review the sync retry behavior."
+        for appearance in ["light", "dark"] {
+            let app = launch(appearance)
+            app.buttons["conversation.new"].tap()
+            let field = app.textViews["composer.field"]
+            XCTAssertTrue(field.waitForExistence(timeout: 8))
+            field.tap()
+            let keyboard = app.keyboards.firstMatch
+            XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+            field.typeText(prompt)
+            app.buttons["composer.send"].tap()
+            let sent = app.descendants(matching: .any).matching(identifier: "timeline.user")
+                .matching(NSPredicate(format: "label CONTAINS %@", prompt)).firstMatch
+            let model = app.buttons["composer.model"]
+            XCTAssertTrue(sent.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["composer.stop"].exists)
+            XCTAssertTrue(keyboard.exists)
+            XCTAssertTrue(sent.isHittable)
+            XCTAssertGreaterThanOrEqual(model.frame.minY - sent.frame.maxY, 16)
+            capture(appearance, "chat-keyboard")
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.23))
+            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.96))
+            start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0)
+            XCTAssertTrue(keyboard.waitForNonExistence(timeout: 5))
+            app.terminate()
+        }
+    }
+
+    @MainActor
     func testNativeMathAndPieScrubbing() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "Run on an iPhone simulator")
         continueAfterFailure = false

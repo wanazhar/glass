@@ -42,7 +42,7 @@ def classify(path: str) -> str:
     parts = pathlib.PurePosixPath(lower).parts
     if any(part in parts for part in ("fixtures", "generated", "assets")):
         return "generated"
-    if path in {"CHANGELOG.md", "docs/release-evidence.md"} or "releases" in parts or "release-checklist" in lower:
+    if path in {"CHANGELOG.md", "docs/release-evidence.md", "apps/glass-ios/PR-round6.md"} or "releases" in parts or "release-checklist" in lower:
         return "record"
     if any(part in parts for part in ("plan", "migration", "design", "research", "archive", "reviews")):
         return "historical"

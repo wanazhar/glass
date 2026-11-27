@@ -436,6 +436,8 @@ current user instructions.
 
 ## Historical, generated, and evidence records
 
+- [Glass iOS round 6 review](../apps/glass-ios/PR-round6.md) — Lens consistency pass, simulator evidence, and unsigned build.
+
 - [Glass iOS round 4 design proposal](../design/round4/README.md) — Lens identity, SF Pro typography,
   component prototypes, and visual acceptance criteria; not shipped behavior.
 - [Marble iOS round 1 design proposal](../design/marble-round1/README.md) —

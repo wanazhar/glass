@@ -73,10 +73,9 @@ struct DiffView: View {
     var body: some View {
         let patches = hunks.map { LensPatch($0.lines.joined(separator: "\n")) }
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: Design.padding) {
                 PatchCounts(added: patches.reduce(0) { $0 + $1.added },
                             removed: patches.reduce(0) { $0 + $1.removed })
-                    .padding(Design.padding)
                 if let error {
                     Text(error).font(.footnote).foregroundStyle(.red).padding(12)
                         .accessibilityIdentifier("changes.error")
@@ -90,8 +89,9 @@ struct DiffView: View {
                         .foregroundStyle(.secondary)
                         .padding()
                 }
-                LazyVStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: Design.padding) {
                     ForEach(Array(hunks.enumerated()), id: \.element.id) { index, hunk in
+                      VStack(alignment: .leading, spacing: Design.gap) {
                         PatchRows(patch: patches[index])
                         if hunk.changesMode {
                             Text("This file’s permissions changed too. Stage or discard the whole file.")
@@ -107,15 +107,20 @@ struct DiffView: View {
                                     .accessibilityIdentifier("changes.discardHunk")
                             }
                             .font(.footnote)
+                            .buttonStyle(.glass)
+                            .buttonBorderShape(.capsule)
                             .disabled(!canAct)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                         }
-                        Divider().padding(.bottom, 4)
+                      }
+                      .padding(Design.gap)
+                      .lensCard()
                     }
                 }
                 .textSelection(.enabled)
             }
+            .padding(Design.padding)
         }
         .background(Design.background)
         .navigationTitle((file.path as NSString).lastPathComponent)

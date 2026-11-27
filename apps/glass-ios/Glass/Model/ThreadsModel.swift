@@ -4,6 +4,28 @@ import GlassModels
 import GlassTransport
 import Observation
 
+extension ThreadSummary {
+    var lensTitle: String {
+        let original = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !Self.needsLensTitle(original) { return original }
+        let meaningful = snippet?.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !Self.needsLensTitle($0) }
+        if let meaningful { return meaningful.split(whereSeparator: \.isWhitespace).prefix(8).joined(separator: " ") }
+        if original.hasPrefix("/"), let command = original.split(whereSeparator: \.isWhitespace).first {
+            return "Conversation about \(command.dropFirst())"
+        }
+        if !original.isEmpty, original.lowercased() != "untitled conversation" { return "Opening greeting" }
+        return "New conversation"
+    }
+
+    private static func needsLensTitle(_ text: String) -> Bool {
+        let greeting = text.trimmingCharacters(in: .punctuationCharacters).lowercased()
+        return text.isEmpty || text.hasPrefix("/") || text.lowercased() == "untitled conversation"
+            || ["hi", "hey", "hello", "hiya", "yo", "howdy", "greetings"].contains(greeting)
+    }
+}
+
 /// Sidebar state: paged thread list, search, project scope, and open conversations.
 @MainActor @Observable
 final class ThreadsModel {

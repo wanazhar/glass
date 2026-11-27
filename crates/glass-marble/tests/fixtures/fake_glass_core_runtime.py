@@ -140,6 +140,30 @@ def run_turn(identifier, task, text, conversation, request):
     text = str(text).split("[/Marble host context]\n\n[User message]\n", 1)[-1]
     turn = "turn-1"
     event(turn, "turn_start", {})
+    if "--report-shell-time-zone" in sys.argv:
+        offset = subprocess.check_output(["/bin/sh", "-c", "date +%z"], text=True).strip()
+        event(turn, "text", {"text": offset})
+        event(turn, "settled", {"reason": "completed"})
+        reply(identifier, {"settled": True})
+        return
+    if os.environ.get("MARBLE_FIXTURE_TURN_EVIDENCE") == "1":
+        event(turn, "reasoning", {"text": "Check the files before replying."})
+        event(turn, "text", {"text": "<working>Checking the report…</working>"})
+        for index, command, output, failed in [
+            (0, "ls -l report.pdf", "-rw-r--r-- report.pdf", False),
+            (1, "ls -l appendix.pdf", "No such file: appendix.pdf", True),
+        ]:
+            call = "evidence-" + str(index)
+            event(turn, "tool_start", {"callId": call, "name": "bash", "title": command})
+            time.sleep(3)
+            event(turn, "tool_end", {"callId": call, "text": output, "isError": failed})
+        if "failure" in text:
+            event(turn, "text", {"text": "[Generation failed] Reason: fixture provider unavailable"})
+        else:
+            event(turn, "text", {"text": "The report is ready to review."})
+        event(turn, "settled", {"reason": "completed"})
+        reply(identifier, {"settled": True})
+        return
     if os.environ.get("MARBLE_FIXTURE_EVERYONE_THREADS") == "1":
         with open(os.path.join(STORAGE_DIR, "fixture-session-options.json"), "r", encoding="utf-8") as handle:
             name = json.load(handle)["instructions"].split("You are ", 1)[1].split(",", 1)[0].split(".", 1)[0]

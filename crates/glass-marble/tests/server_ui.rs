@@ -3206,6 +3206,36 @@ impl NamedTurnFixture {
 }
 
 #[test]
+fn device_time_zone_reaches_the_agent_shell_and_rejects_paths() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_persistence(
+        "device-time-zone",
+        vec!["--report-shell-time-zone".into()],
+        true,
+    );
+    for (zone, expected) in [
+        ("Asia/Kuala_Lumpur", "+0800"),
+        ("../../etc/passwd", "+0800"),
+        ("Etc/UTC", "+0000"),
+    ] {
+        let prompt = format!("Report shell time for {zone}");
+        let head = glass_marble::server::RequestHead::new("POST", "/api/turns")
+            .with_header("x-marble-time-zone", zone);
+        let response = fixture.server.handle_request(
+            &head,
+            &json!({"marbleId": fixture.marble_id, "text": prompt}).to_string(),
+        );
+        assert_eq!(response.status, 202, "{}", response.body);
+        let task = fixture.completed(&prompt);
+        assert!(fixture.server.state().transcript.iter().any(|row| {
+            row.task_id == task.id && row.kind == "assistant" && row.text == expected
+        }));
+    }
+}
+
+#[test]
 fn steering_targets_the_named_engine_mid_reply_without_touching_other_marbles() {
     if !python3_available() {
         return;

@@ -182,6 +182,7 @@ pub fn run_turn(
 ) -> Result<MarbleReply, MarbleError> {
     let result = (|| {
         if !conversation.can_scope_runtime() {
+            conversation.sync_time_zone()?;
             return run_with_retry(turn, conversation, &mut options);
         }
         let mut turn = turn.clone();
@@ -197,6 +198,7 @@ pub fn run_turn(
             conversation.close_scoped_runtime(scoped);
             result
         } else {
+            conversation.sync_time_zone()?;
             run_with_retry(&turn, conversation, &mut options)
         }
     })();

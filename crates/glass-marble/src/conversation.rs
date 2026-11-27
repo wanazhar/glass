@@ -459,6 +459,7 @@ pub struct Conversation {
     respawn: Option<Arc<dyn Fn() -> Command + Send + Sync>>,
     /// Where the engine keeps its durable session journal.
     storage_dir: PathBuf,
+    device_time_zone: Option<String>,
     /// Set when the engine stopped answering; the next turn restarts it first.
     transport_failed: bool,
     stopped: bool,
@@ -564,6 +565,7 @@ impl Conversation {
             steering: None,
             respawn: None,
             storage_dir: storage_dir.to_path_buf(),
+            device_time_zone: None,
             transport_failed: false,
             stopped: false,
             restarts: 0,
@@ -669,8 +671,13 @@ impl Conversation {
         std::fs::create_dir_all(&cwd).map_err(MarbleError::Io)?;
         let cwd = cwd.canonicalize().map_err(MarbleError::Io)?;
         let storage = cwd.parent().expect("workspace has a parent");
+        let zone = self.configured_time_zone();
+        let mut command = factory();
+        if let Some(zone) = &zone {
+            command.env("TZ", zone);
+        }
         let mut scoped = Self::spawn_with_router(
-            factory(),
+            command,
             &cwd,
             storage,
             self.host,
@@ -685,6 +692,7 @@ impl Conversation {
         scoped.tool_limit = self.tool_limit;
         scoped.steering = self.steering.take();
         scoped.respawn = self.respawn.clone();
+        scoped.device_time_zone = zone;
         scoped.approval_timeout = self.approval_timeout;
         scoped.instructions = self.instructions.clone();
         scoped.instructions_fn = self.instructions_fn.clone();
@@ -735,6 +743,28 @@ impl Conversation {
         self.text_block_boundaries
     }
 
+    fn configured_time_zone(&self) -> Option<String> {
+        self.product.as_ref().and_then(|state| {
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .device_time_zone
+                .clone()
+        })
+    }
+
+    pub(crate) fn sync_time_zone(&mut self) -> Result<(), MarbleError> {
+        let zone = self.configured_time_zone();
+        if self.respawn.is_some() && zone != self.device_time_zone {
+            let previous = std::mem::replace(&mut self.device_time_zone, zone);
+            if let Err(error) = self.restart() {
+                self.device_time_zone = previous;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     /// Spawn a fresh engine, negotiate capabilities, and adopt it.
     pub fn restart(&mut self) -> Result<(), MarbleError> {
         let Some(factory) = self.respawn.as_ref() else {
@@ -744,6 +774,9 @@ impl Conversation {
         };
         let mut command = factory();
         command.current_dir(&self.cwd);
+        if let Some(zone) = &self.device_time_zone {
+            command.env("TZ", zone);
+        }
         let mut client = RuntimeClient::spawn_command(command).map_err(MarbleError::Io)?;
         let init_id = client
             .request("initialize", value!({"protocolVersion":2,"requiredCapabilities":["mixedTools"],"optionalCapabilities":["textBlockBoundaries"],"storageDir":self.storage_dir}))

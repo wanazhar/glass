@@ -69,7 +69,7 @@ extension View {
     }
 
     func marbleChatScrollEdges() -> some View {
-        scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+        scrollEdgeEffectStyle(.soft, for: .top)
     }
 
     func marbleToolbarTitle() -> some View {
@@ -232,5 +232,6 @@ struct MarbleThinkingBubble: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
+        .accessibilityIdentifier("\(name) is working")
     }
 }

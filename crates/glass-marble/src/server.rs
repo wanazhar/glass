@@ -473,6 +473,22 @@ pub struct MarbleServer {
     tls: Option<Arc<crate::tls::TlsIdentity>>,
 }
 
+fn valid_device_time_zone(zone: &str) -> bool {
+    zone.len() <= 64
+        && zone.split('/').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'+'))
+        })
+        && std::fs::File::open(std::path::Path::new("/usr/share/zoneinfo").join(zone)).is_ok_and(
+            |mut file| {
+                let mut signature = [0; 4];
+                file.read_exact(&mut signature).is_ok() && &signature == b"TZif"
+            },
+        )
+}
+
 impl MarbleServer {
     pub fn new(parts: MarbleServerParts) -> Self {
         {
@@ -654,6 +670,21 @@ impl MarbleServer {
         }
         if head.method == "POST" && !head.same_origin() {
             return Response::error(403, "cross_origin_request");
+        }
+        if head.method == "POST"
+            && matches!(
+                path,
+                "/api/turns" | "/api/turns/retry" | "/api/everyone" | "/api/prism/dispatch"
+            )
+            && let Some(zone) = head
+                .header("x-marble-time-zone")
+                .filter(|zone| valid_device_time_zone(zone))
+        {
+            let mut state = self.lock_state();
+            if state.device_time_zone.as_deref() != Some(zone) {
+                state.device_time_zone = Some(zone.to_string());
+                crate::store::persist_optional(self.store.as_deref(), &state);
+            }
         }
         if head.method == "GET" && path == "/api/state" {
             let lean = head.query_param("lean").as_deref() == Some("1")

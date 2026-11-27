@@ -401,10 +401,11 @@ private struct MarbleThreadView: View {
         let target = target(for: page)
         let conversationId = page.thread.conversationId
         let presentation = store.outgoingPresentation(page.entries, to: target, conversationId: conversationId)
+        let reserved = Set(presentation.entries.filter { $0.kind == "pending" }.map(\.speaker))
         return MarbleJumpTimeline(
             entries: store.withLiveToolRows(presentation.entries, conversationId: conversationId, threadId: id),
             jump: jump, parentId: page.thread.parentEntryId, outgoing: store.lastOutgoing(to: target),
-            workingNames: presentation.responders.map { id in
+            workingNames: presentation.responders.filter { !reserved.contains($0) }.map { id in
                 store.prism.marbles.first { $0.id == id }?.name ?? page.thread.participants.first ?? "Marble"
             },
             loadOlder: { await store.loadOlderThread(id, beforePrepend: $0) }

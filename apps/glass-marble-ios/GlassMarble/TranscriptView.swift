@@ -55,7 +55,7 @@ struct TranscriptView: View {
                     let hasReservedReply = entries.contains { $0.kind == "pending" }
                     if !hasReservedReply && store.liveText.isEmpty && (!presentation.responders.isEmpty || working
                         || store.isAwaitingReply(in: conversationId, entries: entries)) {
-                        MarbleThinkingBubble()
+                        MarbleThinkingBubble(status: store.activeTaskId.flatMap { store.workingLines[$0] })
                     }
                     if !store.liveText.isEmpty && store.activeTaskId == nil {
                         MarbleEntryView(entry: .preview(kind: "assistant", text: store.liveText))
@@ -471,12 +471,13 @@ struct MarbleTurnTail: View {
             let rows = entries.filter { $0.taskId == task.id }
             let hasFailure = rows.contains { MarbleTurnFailure.representsFailure($0, status: task.status) }
             let hasAnswer = rows.contains { $0.kind == "assistant" }
+            let hasPending = rows.contains { $0.kind == "pending" }
             if !hasFailure && !hasAnswer && !rows.contains(where: { $0.kind == "tool" })
-                && (showsLiveTools || !task.isRunning) {
+                && !hasPending && (showsLiveTools || !task.isRunning) {
                 let tools = store.tools(for: task.id)
                 if !tools.isEmpty { MarbleToolTimeline(tools: tools) }
             }
-            if !hasFailure && !hasAnswer && !rows.contains(where: { $0.kind == "pending" })
+            if !hasFailure && !hasAnswer && !hasPending
                 && MarbleTurnFailure.message(for: task.status) != nil {
                 MarbleFailedTurnRow(task: task)
             }
@@ -523,8 +524,7 @@ private struct MarbleFailedTurnRow: View {
 }
 
 /// The message box: grows with the text up to six lines, then scrolls
-/// inside. Return adds a line; the arrow sends. While the keyboard is up a
-/// button beside the box hides it.
+/// inside. Return adds a line; the arrow sends.
 struct ComposerBar: View {
     @EnvironmentObject private var store: MarbleStore
     @State private var submitting = false

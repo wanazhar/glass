@@ -5,17 +5,11 @@ struct MarbleAvatar: View {
     var glyph: String
     var hue: Int
     var size: CGFloat = 22
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let shape = MarbleSilhouette(glyph: glyph)
         shape
             .fill(MarbleTheme.hues[MarbleTheme.paletteIndex(for: hue)].fill)
-            .overlay {
-                if colorScheme == .light {
-                    shape.stroke(MarbleTheme.adaptive(0x8F736F, 0x8F736F), lineWidth: 1)
-                }
-            }
             .frame(width: size, height: size)
             .accessibilityHidden(true)
     }
@@ -110,9 +104,9 @@ struct EveryoneHistoryView: View {
         let entries = store.withLiveToolRows(presentation.entries, conversationId: everyoneConversationId)
         let serverWorking = Set(store.everyoneThinking.map(\.id))
         let reservedAgents = Set(entries.lazy.filter { $0.kind == "pending" }.map(\.speaker))
-        let responders = presentation.responders + store.prism.marbles.map(\.id).filter {
-            serverWorking.contains($0) && !reservedAgents.contains($0) && !presentation.responders.contains($0)
-        }
+        let responders = (presentation.responders + store.prism.marbles.map(\.id).filter {
+            serverWorking.contains($0) && !presentation.responders.contains($0)
+        }).filter { !reservedAgents.contains($0) }
         let turns = store.everyoneTurns
         ScrollView {
             // Lay out the loaded page together so the newest edge has
@@ -245,6 +239,7 @@ struct EveryoneHistoryView: View {
 /// it's doing — plus the built-in Marble whose chat is the chats list.
 struct MarblesView: View {
     @EnvironmentObject private var store: MarbleStore
+    @EnvironmentObject private var navigation: MarbleNavigationModel
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showsNew = false
@@ -254,7 +249,18 @@ struct MarblesView: View {
     var body: some View {
         List {
             Section {
-                Text("Pick a Marble to talk one to one, or meet in Everyone.")
+                Button {
+                    navigation.setEveryonePath([])
+                    navigation.selectTab(.everyone)
+                } label: {
+                    HStack {
+                        Text("Pick a Marble to talk one to one, or meet in Everyone.")
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                    }
+                    .frame(minHeight: 44)
+                }
+                    .buttonStyle(.plain)
                     .font(.subheadline)
                     .foregroundStyle(MarbleTheme.muted)
                     .listRowBackground(Color.clear)
@@ -301,7 +307,8 @@ struct MarblesView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(marble.name).font(.headline).foregroundStyle(MarbleTheme.ink)
                 if !marble.tagline.isEmpty {
-                    Text(marble.tagline).font(.subheadline).foregroundStyle(MarbleTheme.muted)
+                    Text(marble.isDefault ? "The default assistant" : marble.tagline)
+                        .font(.subheadline).foregroundStyle(MarbleTheme.muted)
                 }
                 if store.isAgentWorking(marble) {
                     Label("Working", systemImage: "circle.fill")
@@ -548,7 +555,7 @@ struct MarbleChatScreen: View {
                     if thinking && !entries.contains(where: {
                         ["pending", "assistant"].contains($0.kind) && $0.taskId == active?.id
                     }) {
-                        MarbleThinkingBubble(name: marble.name)
+                        MarbleThinkingBubble(name: marble.name, status: active.flatMap { store.workingLines[$0.id] })
                     }
                     MarbleTranscriptEnd(bottomPadding: 12)
                 }

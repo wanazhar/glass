@@ -1170,6 +1170,11 @@
           "anchor": "simulator-evidence"
         },
         {
+          "level": "3",
+          "title": "Agent navigation",
+          "anchor": "agent-navigation"
+        },
+        {
           "level": "2",
           "title": "Unsigned build",
           "anchor": "unsigned-build"

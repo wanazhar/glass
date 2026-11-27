@@ -5,6 +5,12 @@ extension Teammate {
     var isWorking: Bool { status == "working" }
     var isDone: Bool { status == "idle" && (terminalEvents ?? 0) > 0 || status == "completed" }
     var isFailed: Bool { status == "blocked" || status == "failed" }
+    var agentStatusTitle: String {
+        if isWorking { return "Working" }
+        if isDone { return "Done" }
+        if isFailed { return "Failed" }
+        return statusTitle
+    }
     var friendlyModel: String? { model.map { ModelName.friendly($0) ?? $0 } }
     var startDate: Date? {
         guard let start = startedAt ?? (isWorking ? updated : nil), start > 0 else { return nil }
@@ -46,14 +52,21 @@ struct AgentGroupView: View {
                             if agents.isEmpty {
                                 Text(failed == true ? "Delegation failed" : "Agent delegation")
                             } else {
-                                summary
+                                ViewThatFits(in: .horizontal) {
+                                    HStack(spacing: Design.gap) {
+                                        summary.fixedSize()
+                                        if let elapsed = longest(at: time.date) {
+                                            Text(workElapsed(elapsed))
+                                                .font(.caption).monospacedDigit().foregroundStyle(Design.muted)
+                                                .accessibilityLabel("Longest: \(workElapsed(elapsed))")
+                                                .fixedSize()
+                                        }
+                                    }
+                                    summary.fixedSize()
+                                    summary.fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             Spacer(minLength: 0)
-                            if let elapsed = longest(at: time.date) {
-                                Text(workElapsed(elapsed))
-                                    .font(.caption).monospacedDigit().foregroundStyle(Design.muted)
-                                    .accessibilityLabel("Longest: \(workElapsed(elapsed))")
-                            }
                             Image(systemName: expanded ? "chevron.up" : "chevron.down")
                                 .font(.caption.weight(.semibold)).accessibilityHidden(true)
                         }
@@ -103,7 +116,6 @@ struct AgentGroupView: View {
         let tail = [(done, "done"), (failed, "failed"), (waiting, "idle")]
             .filter { $0.0 > 0 }.map { " · \($0.0) \($0.1)" }.joined()
         return Text("\(agents.count) \(agents.count == 1 ? "agent" : "agents")\(workingText)\(tail)")
-            .lineLimit(1).minimumScaleFactor(0.8)
     }
 
     private func longest(at date: Date) -> Duration? {
@@ -121,10 +133,10 @@ struct AgentGroupView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: Design.small) {
                             Text(agent.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                            Text(agent.statusTitle).font(.caption.weight(.semibold))
+                            Text(agent.agentStatusTitle).font(.caption.weight(.semibold))
                                 .foregroundStyle(agent.isWorking ? Design.accent : agent.isFailed ? Design.failure : Design.muted)
                         }
-                        Text(agentHeadline(agent.isWorking ? agent.activity ?? "Working" : nonempty(agent.result) ?? agent.statusTitle))
+                        Text(agentHeadline(agent.isWorking ? agent.activity ?? "Working" : nonempty(agent.result) ?? agent.agentStatusTitle))
                             .font(.footnote).foregroundStyle(Design.muted).lineLimit(1)
                     }
                     Spacer(minLength: 0)

@@ -9,21 +9,26 @@ final class ScreenshotTourUITests: XCTestCase {
         try XCTSkipUnless(environment["GLASS_CHAT_FIXTURE"] == "1", "Start scripts/e2e/chat-fixture.py")
         continueAfterFailure = false
         let tablet = UIDevice.current.userInterfaceIdiom == .pad
-        for appearance in ["light", "dark"] {
+        let appearances = environment["GLASS_ROUND8_APPEARANCE"].map { [$0] } ?? ["light", "dark"]
+        for appearance in appearances {
             let app = pairFixture(appearance)
 
             app.buttons["thread.delegation"].tap()
             let group = app.buttons["agents.group"].firstMatch
             XCTAssertTrue(group.waitForExistence(timeout: 10))
-            XCTAssertTrue(group.label.contains("3 agents"))
+            for count in ["3 agents", "1 working", "1 done", "1 failed"] {
+                XCTAssertTrue(group.label.contains(count), group.label)
+            }
             try captureRound8(appearance, "agents-collapsed")
             group.tap()
             let delivery = app.buttons["agents.child.delivery"]
             XCTAssertTrue(delivery.waitForExistence(timeout: 5))
             XCTAssertTrue(delivery.label.contains("Editing alert_router.py"))
             XCTAssertFalse(delivery.label.contains("**"))
-            XCTAssertTrue(app.buttons["agents.child.tests"].label.contains("All 18 delivery tests pass"))
-            XCTAssertTrue(app.buttons["agents.child.replay"].label.contains("The replay fixture is missing"))
+            let done = app.buttons["agents.child.tests"].label
+            let failed = app.buttons["agents.child.replay"].label
+            XCTAssertTrue(done.contains("Done") && done.contains("All 18 delivery tests pass"))
+            XCTAssertTrue(failed.contains("Failed") && failed.contains("The replay fixture is missing"))
             try captureRound8(appearance, "agents-expanded")
             delivery.tap()
             let seededReply = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "The retry timer can enqueue")).firstMatch
@@ -35,12 +40,19 @@ final class ScreenshotTourUITests: XCTestCase {
             XCTAssertTrue(back.exists && stop.isEnabled)
             if tablet {
                 XCTAssertTrue(group.exists, "The parent timeline stays visible next to the child")
+                XCTAssertFalse(app.staticTexts["Date Unknown"].exists)
+                XCTAssertFalse(app.buttons["threads.agent.delivery"].exists)
                 app.buttons["threads.agents.delegation"].tap()
                 XCTAssertTrue(app.buttons["threads.agent.delivery"].waitForExistence(timeout: 5))
             } else {
-                XCTAssertFalse(app.textViews["composer.field"].exists)
+                XCTAssertTrue(app.textViews["composer.field"].waitForNonExistence(timeout: 5))
             }
             try captureRound8(appearance, tablet ? "agent-inspector" : "agent-thread")
+            if environment["GLASS_ROUND8_WALKTHROUGH"] == "1" {
+                stop.tap()
+                expectation(for: NSPredicate(format: "enabled == false"), evaluatedWith: stop)
+                waitForExpectations(timeout: 5)
+            }
             back.tap()
             XCTAssertTrue(group.waitForExistence(timeout: 5))
             XCTAssertFalse(app.buttons["agent.parent"].exists)
@@ -123,6 +135,8 @@ final class ScreenshotTourUITests: XCTestCase {
         let homeIndicator = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.992))
         let center = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
         homeIndicator.press(forDuration: 0.05, thenDragTo: center)
+        app.activate()
+        XCTAssertTrue(group.waitForExistence(timeout: 10))
         app.terminate()
     }
 

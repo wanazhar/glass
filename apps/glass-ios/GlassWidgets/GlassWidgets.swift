@@ -71,10 +71,12 @@ struct ConnectionLiveActivity: Widget {
             Spacer(minLength: 4)
             if !context.isStale {
                 Button(intent: DisconnectIntent()) {
-                    Label("Disconnect", systemImage: "xmark")
-                        .font(.footnote.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                    HStack(spacing: 5) {
+                        Image(systemName: "xmark").accessibilityHidden(true)
+                        Text("Disconnect")
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .fixedSize(horizontal: true, vertical: false)
                 }
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)

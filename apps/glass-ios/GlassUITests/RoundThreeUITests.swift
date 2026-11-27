@@ -5,13 +5,13 @@ final class RoundThreeUITests: XCTestCase {
     @MainActor
     func testDemoCanOpenAndRecoverConversationStates() {
         let app = launch("light")
-        app.buttons["conversation.back"].tap()
+        if UIDevice.current.userInterfaceIdiom == .phone { app.buttons["conversation.back"].tap() }
         let settings = app.buttons["tab.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 8))
         app.descendants(matching: .any)["thread.harbor-1"].firstMatch.tap()
         XCTAssertTrue(app.buttons["Reconnect"].waitForExistence(timeout: 8))
         XCTAssertFalse(app.textViews["composer.field"].exists)
-        app.buttons["conversation.back"].tap()
+        if UIDevice.current.userInterfaceIdiom == .phone { app.buttons["conversation.back"].tap() }
         app.descendants(matching: .any)["thread.harbor-0"].firstMatch.tap()
         XCTAssertTrue(app.textViews["composer.field"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.buttons["composer.model"].exists)

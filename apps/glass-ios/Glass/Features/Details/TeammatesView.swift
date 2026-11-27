@@ -17,7 +17,7 @@ struct TeammatesView: View {
                         HStack {
                             Text(agent.title).font(.body.weight(.medium))
                             Spacer()
-                            Text(agent.statusTitle).font(.caption)
+                            Text(agent.agentStatusTitle).font(.caption)
                                 .foregroundStyle(agent.isWorking ? Design.accent : Design.muted)
                         }
                         if let result = agent.isWorking ? agent.activity : agent.result ?? agent.task, !result.isEmpty {

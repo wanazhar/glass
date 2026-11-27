@@ -70,14 +70,17 @@ private struct HeaderFade: View {
             Design.background
             ZStack {
                 Rectangle().fill(.regularMaterial)
+                    .mask(LinearGradient(stops: [.init(color: .clear, location: 0),
+                                                 .init(color: .black.opacity(0.55), location: 0.30),
+                                                 .init(color: .black.opacity(0.20), location: 0.65),
+                                                 .init(color: .clear, location: 1)],
+                                         startPoint: .top, endPoint: .bottom))
                 LinearGradient(stops: [.init(color: Design.background, location: 0),
-                                       .init(color: Design.background.opacity(0.38), location: 0.42)],
+                                       .init(color: Design.background.opacity(0.63), location: 0.28),
+                                       .init(color: Design.background.opacity(0.13), location: 0.67),
+                                       .init(color: Design.background.opacity(0), location: 1)],
                                startPoint: .top, endPoint: .bottom)
             }
-            .mask(LinearGradient(stops: [.init(color: .black, location: 0),
-                                         .init(color: .black.opacity(0.72), location: 0.32),
-                                         .init(color: .black.opacity(0.20), location: 0.72),
-                                         .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
             .frame(height: Self.fade)
         }
             .padding(.bottom, -Self.fade)

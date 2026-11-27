@@ -40,6 +40,8 @@ THREADS = [
     {"session": "paged-reasoning", "title": "Paged reasoning", "model": "Swift workspace"},
     {"session": "delegation", "title": "Review alert delivery", "model": "gpt-5.4", "running_process_verified": True},
 ]
+for offset, thread in enumerate(THREADS):
+    thread["modified"] = time.time() - 60 * offset
 
 AGENTS = [
     {"id": "delivery", "name": "Delivery", "status": "working", "activity": "**Editing alert_router.py**",

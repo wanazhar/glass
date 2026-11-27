@@ -133,6 +133,10 @@ actor DemoTransport: GlassHTTPTransport {
 
     func stream(_ request: URLRequest) async throws -> (AsyncThrowingStream<Data, any Error>, HTTPURLResponse) {
         guard let url = request.url else { throw URLError(.badURL) }
+        guard url.path == "/api/events" else {
+            let (_, response) = try response(url, ["error": "Not available in the demo."], status: 404)
+            return (AsyncThrowingStream { $0.finish() }, response)
+        }
         let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "id" }?.value ?? ""
         let (stream, continuation) = AsyncThrowingStream<Data, any Error>.makeStream()
         let generation = UUID()

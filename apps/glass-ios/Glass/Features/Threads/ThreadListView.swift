@@ -228,6 +228,7 @@ struct ThreadListView: View {
     @State private var delete: ThreadSummary?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         let groups = sections
@@ -450,9 +451,10 @@ struct ThreadListView: View {
     private func row(_ thread: ThreadSummary, title: String, section: String) -> some View {
         let conversation = openAgent == nil ? nil : threads.conversation(for: thread)
         let working = conversation?.agents.count(where: \.isWorking) ?? 0
+        let selected = threads.selection == thread.id
         return HStack(spacing: 0) {
             Button { choose(thread.id) } label: {
-                ThreadRow(thread: thread, title: title, section: section, selected: threads.selection == thread.id)
+                ThreadRow(thread: thread, title: title, section: section, selected: selected)
                     .contentShape(.capsule)
                     .contentShape(.contextMenuPreview, .capsule)
             }
@@ -465,11 +467,19 @@ struct ThreadListView: View {
                     Label("\(working) working", systemImage: expandedParents.contains(thread.id) ? "chevron.up" : "chevron.down")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Design.accent)
-                        .padding(.horizontal, Design.gap)
+                        .padding(.trailing, Design.padding)
                         .frame(minHeight: Design.control)
                         .contentShape(.capsule)
                 }
                 .accessibilityIdentifier("threads.agents.\(thread.id)")
+            }
+        }
+        .background {
+            if selected {
+                Capsule()
+                    .fill(scheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06))
+                    .glassEffect(reduceTransparency ? .identity : .regular, in: .capsule)
+                    .shadow(color: .black.opacity(scheme == .dark ? 0.24 : 0.1), radius: 6, y: 2)
             }
         }
         .buttonStyle(.plain)
@@ -555,8 +565,6 @@ struct ThreadListView: View {
 }
 
 private struct ThreadRow: View {
-    @Environment(\.colorScheme) private var scheme
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var thread: ThreadSummary
     var title: String
     var section: String
@@ -576,15 +584,6 @@ private struct ThreadRow: View {
         .padding(.horizontal, Design.padding)
         .padding(.vertical, Design.gap)
         .frame(maxWidth: .infinity, minHeight: Design.control, alignment: .leading)
-        .background {
-            if selected {
-                // A brighter pane of the same glass, raised slightly off the panel.
-                Capsule()
-                    .fill(scheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06))
-                    .glassEffect(reduceTransparency ? .identity : .regular, in: .capsule)
-                    .shadow(color: .black.opacity(scheme == .dark ? 0.24 : 0.1), radius: 6, y: 2)
-            }
-        }
     }
 }
 

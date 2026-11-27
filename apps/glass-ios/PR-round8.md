@@ -2,7 +2,7 @@
 
 ## Summary
 
-- Group each agent launch in a Liquid Glass capsule. Expand it to see working, finished, and blocked agents, with live actions or results on the row. Long-press a working agent to stop it, or retry a failed assignment from its row.
+- Group each agent launch in a Liquid Glass capsule. Expand it to see working, done, and failed agents, with live actions or results on the row. Long-press a working agent to stop it, or retry a failed assignment from its row.
 - Prefetch each child's recent records and open them in the regular conversation timeline. The child has Stop and Back to parent controls, not a composer. On iPad the parent stays visible beside the child, and working children can expand under the parent in the sidebar.
 - Show the working agent count and longest elapsed time in the existing Live Activity. No counter floats over the chat.
 - Keep iPad sidebar controls 16 pt from the panel edges with 38 pt continuous corners. Hide the empty composer model rail while keeping model selection available. Transition from the chat header to the scrolling text with a gradual material fade.
@@ -36,6 +36,11 @@ The iPhone 17 Pro Max captures are at native 3×. The iPad Pro 13-inch simulator
 | iPad, lock-screen Live Activity | [Light](https://github.com/wanazhar/glass/blob/ios-round8/pr-assets/glass-ios-round8/ipad-light-lock-screen.png?raw=true) | [Dark](https://github.com/wanazhar/glass/blob/ios-round8/pr-assets/glass-ios-round8/ipad-dark-lock-screen.png?raw=true) |
 | iPhone, streaming reply | [Light](https://github.com/wanazhar/glass/blob/ios-round8/pr-assets/glass-ios-round8/iphone-light-streaming.mp4?raw=true) | [Dark](https://github.com/wanazhar/glass/blob/ios-round8/pr-assets/glass-ios-round8/iphone-dark-streaming.mp4?raw=true) |
 | iPad, streaming reply | [Light](https://github.com/wanazhar/glass/blob/ios-round8/pr-assets/glass-ios-round8/ipad-light-streaming.mp4?raw=true) | [Dark](https://github.com/wanazhar/glass/blob/ios-round8/pr-assets/glass-ios-round8/ipad-dark-streaming.mp4?raw=true) |
+
+### Agent navigation
+
+- [iPhone walkthrough](https://github.com/wanazhar/glass/blob/ios-round8/pr-assets/glass-ios-round8/iphone-agent-navigation.mp4?raw=true): expand the group, open a child with its timeline already populated, stop it, and return to the parent.
+- [iPad walkthrough](https://github.com/wanazhar/glass/blob/ios-round8/pr-assets/glass-ios-round8/ipad-agent-navigation.mp4?raw=true): keep the parent visible, open the inspector, expand the nested sidebar, stop the child, and return to the parent.
 
 ## Unsigned build
 

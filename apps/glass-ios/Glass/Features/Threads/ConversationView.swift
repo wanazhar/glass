@@ -384,18 +384,24 @@ struct ConversationView: View {
 
     private var agentFooter: some View {
         HStack(spacing: Design.padding) {
-            Button("Back to parent", systemImage: "chevron.left", action: goBack)
-                .frame(minHeight: Design.control)
-                .accessibilityIdentifier("agent.parent")
+            Button(action: goBack) {
+                Label("Back to parent", systemImage: "chevron.left")
+                    .frame(minHeight: Design.control)
+                    .contentShape(.capsule)
+            }
+            .accessibilityIdentifier("agent.parent")
             Spacer(minLength: 0)
-            Button("Stop", systemImage: "stop.fill") {
+            Button {
                 guard let parent = conversation.parent, let agent = conversation.agent else { return }
                 Task {
                     do { try await parent.controlAgent(agent) }
                     catch { actionError = error.localizedDescription }
                 }
+            } label: {
+                Label("Stop", systemImage: "stop.fill")
+                    .frame(minWidth: Design.control, minHeight: Design.control)
+                    .contentShape(.capsule)
             }
-            .frame(minWidth: Design.control, minHeight: Design.control)
             .foregroundStyle(Design.failure)
             .disabled(conversation.agent?.isWorking != true)
             .accessibilityIdentifier("agent.stop")

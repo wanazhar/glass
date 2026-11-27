@@ -552,6 +552,8 @@ impl ProductState {
         self.everyone_pending.clear();
         self.everyone_orders.clear();
         self.everyone_ready.clear();
+        self.threads
+            .retain(|thread| thread.conversation_id != crate::everyone::EVERYONE_CONVERSATION);
         self.prune_threads();
         before - self.transcript.len()
     }

@@ -1171,10 +1171,37 @@ impl MarbleServer {
     fn clear_everyone(&self) -> Response {
         let removed = {
             let mut guard = self.lock_state();
-            let removed = guard.clear_everyone();
-            if removed > 0 {
-                guard.bump();
+            let records: Vec<_> = guard
+                .conversations
+                .iter()
+                .filter(|record| crate::everyone::is_session(&record.id))
+                .map(|record| record.id.clone())
+                .collect();
+            if records
+                .iter()
+                .any(|id| guard.check_conversation_deletion(id).is_err())
+                || guard.transcript.iter().any(|entry| {
+                    entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                        && entry.kind == "pending"
+                })
+            {
+                return Response::error(409, "conversation_busy");
             }
+            let removed = guard
+                .transcript
+                .iter()
+                .filter(|entry| entry.conversation_id == crate::everyone::EVERYONE_CONVERSATION)
+                .count();
+            for id in records {
+                if self.delete_conversation_record(&mut guard, &id).is_err() {
+                    return Response::error(500, "conversation_delete_failed");
+                }
+                if let Some(store) = &self.store {
+                    crate::live::LiveStore::for_store(store).remove_conversation(&id);
+                }
+            }
+            guard.clear_everyone();
+            guard.bump();
             removed
         };
         self.save_state();

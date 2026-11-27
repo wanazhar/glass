@@ -6353,7 +6353,7 @@ fn everyone_agent_workspaces_are_distinct_and_deleted_with_the_thread() {
         (thread, root)
     };
     let (first, first_root) = start("First");
-    let (_, second_root) = start("Second");
+    let (second, second_root) = start("Second");
     assert_ne!(first_root, second_root);
     std::fs::write(first_root.join("workspace").join("private.txt"), "first").unwrap();
     assert!(!second_root.join("workspace").join("private.txt").exists());
@@ -6370,6 +6370,16 @@ fn everyone_agent_workspaces_are_distinct_and_deleted_with_the_thread() {
     );
     assert!(!first_root.exists());
     assert!(second_root.exists());
+    let (status, _) = fixture.post("/api/everyone/clear", json!({}));
+    assert_eq!(status, 200);
+    assert!(!second_root.exists());
+    assert_eq!(
+        fixture
+            .server
+            .handle("GET", &format!("/api/threads/{second}"), "")
+            .0,
+        404
+    );
 }
 
 #[test]

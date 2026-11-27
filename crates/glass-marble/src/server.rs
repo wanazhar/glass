@@ -2422,6 +2422,9 @@ impl MarbleServer {
                 {
                     return Response::error(409, "conversation_busy");
                 }
+                if state.threads[index].group.is_some() {
+                    return self.delete_group_thread(&mut state, id, &records);
+                }
                 for record in records {
                     if self
                         .delete_conversation_record(&mut state, &record)
@@ -2432,15 +2435,6 @@ impl MarbleServer {
                     if let Some(store) = &self.store {
                         crate::live::LiveStore::for_store(store).remove_conversation(&record);
                     }
-                }
-                if state.threads[index].group.is_some()
-                    && let Some(root) = self
-                        .store
-                        .as_ref()
-                        .and_then(|store| store.conversation_root(id))
-                    && crate::store::remove_conversation_root(&root).is_err()
-                {
-                    return Response::error(500, "conversation_delete_failed");
                 }
                 state.threads.retain(|thread| thread.id != id);
                 state
@@ -2458,6 +2452,59 @@ impl MarbleServer {
             "",
             "conversation",
             json!({"thread_id":id, "action":action}),
+        );
+        Response::json(200, json!({"ok":true}))
+    }
+
+    fn delete_group_thread(
+        &self,
+        state: &mut ProductState,
+        id: &str,
+        records: &[String],
+    ) -> Response {
+        let mut deleted = state.clone();
+        deleted.thread_events = Default::default();
+        for record in records {
+            if deleted.delete_conversation(record).is_err() {
+                return Response::error(409, "conversation_busy");
+            }
+        }
+        deleted.threads.retain(|thread| thread.id != id);
+        deleted
+            .transcript
+            .retain(|entry| entry.thread_id.as_deref() != Some(id));
+        deleted.prune_threads();
+        if let Some(store) = &self.store {
+            deleted.pending_everyone_cleanup.insert(id.to_owned());
+            deleted
+                .pending_everyone_cleanup
+                .extend(records.iter().cloned());
+            deleted.bump();
+            if let Err(error) = store.save(&deleted) {
+                tracing::warn!(%error, thread = %id, "could not persist group deletion");
+                return Response::error(503, "state_save_failed");
+            }
+        } else {
+            deleted.bump();
+        }
+        deleted.thread_events = state.thread_events.clone();
+        if let Some(events) = &deleted.thread_events.0 {
+            for task in state.task_threads.keys() {
+                if !deleted.task_threads.contains_key(task) {
+                    events.unbind_thread(task);
+                }
+            }
+            events.publish_replies(&deleted);
+        }
+        *state = deleted;
+        if let Some(store) = &self.store {
+            store.retry_everyone_cleanup(state);
+        }
+        self.events.publish(
+            crate::threads::GROUP_CONVERSATION,
+            "",
+            "conversation",
+            json!({"thread_id":id, "action":"delete"}),
         );
         Response::json(200, json!({"ok":true}))
     }

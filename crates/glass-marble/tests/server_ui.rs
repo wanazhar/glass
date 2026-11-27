@@ -2979,6 +2979,72 @@ fn group_workspaces_are_shared_inside_one_thread_only() {
 }
 
 #[test]
+fn blocked_group_workspace_cleanup_is_retried_after_deletion() {
+    let fixture = NamedTurnFixture::with_persistence("blocked-group-cleanup", vec![], true);
+    fixture.state.lock().unwrap().prism.install_template();
+    let (status, body) = fixture.post(
+        "/api/threads",
+        json!({
+            "conversation_id":"group-chats","title":"Cleanup group","group":{"members":[]}
+        }),
+    );
+    assert_eq!(status, 201, "{body}");
+    let thread = body["thread"]["id"].as_str().unwrap();
+    let session = format!("everyone-session-{thread}__lead");
+    let base = fixture.root.join("conversation-sessions");
+    let group_root = base.join(thread);
+    let session_root = base.join(&session);
+    let store = fixture.store.as_ref().unwrap();
+    std::fs::create_dir_all(&session_root).unwrap();
+    std::fs::write(&group_root, b"blocks cleanup").unwrap();
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.conversation_mut(&session).private_storage = true;
+        for (kind, chat) in [("user", "group-chats"), ("assistant", &session)] {
+            state.push_transcript(TranscriptEntry {
+                conversation_id: chat.into(),
+                thread_id: Some(thread.into()),
+                kind: kind.into(),
+                text: format!("saved {kind}"),
+                ..Default::default()
+            });
+        }
+        store.save(&state).unwrap();
+    }
+    let backup = store.path().with_extension("original");
+    std::fs::rename(store.path(), &backup).unwrap();
+    std::fs::create_dir(store.path()).unwrap();
+    let path = format!("/api/threads/{thread}/delete");
+    let failed = fixture.post(&path, json!({}));
+    let intact = fixture.server.state();
+    let session_intact = session_root.is_dir();
+    std::fs::remove_dir(store.path()).unwrap();
+    std::fs::rename(backup, store.path()).unwrap();
+    assert_eq!(failed.0, 503, "{}", failed.1);
+    assert!(session_intact);
+    assert_eq!(intact.transcript.len(), 2);
+    assert!(intact.threads.iter().any(|entry| entry.id == thread));
+    let (status, body) = fixture.post(&path, json!({}));
+    assert_eq!(status, 200, "{body}");
+    assert!(!session_root.exists());
+    let mut reloaded = store.load().unwrap();
+    assert!(reloaded.transcript.is_empty());
+    assert!(reloaded.threads.is_empty());
+    assert_eq!(
+        serde_json::to_value(&reloaded).unwrap()["pendingEveryoneCleanup"],
+        json!([thread])
+    );
+    assert!(group_root.is_file());
+    std::fs::remove_file(&group_root).unwrap();
+    std::fs::create_dir_all(&group_root).unwrap();
+    store.retry_everyone_cleanup(&mut reloaded);
+    assert!(!group_root.exists());
+    assert!(
+        serde_json::to_value(store.load().unwrap()).unwrap()["pendingEveryoneCleanup"].is_null()
+    );
+}
+
+#[test]
 fn group_admission_refreshes_card_while_engine_is_busy() {
     blocked_group_admission(false);
 }

@@ -2871,6 +2871,47 @@ fn group_prompts_survive_startup_orphan_pruning() {
 }
 
 #[test]
+fn group_prompts_survive_conversation_retention() {
+    let mut state = ProductState::default();
+    state.prism.install_template();
+    let server = server_with(
+        state,
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle(
+        "POST",
+        "/api/threads",
+        r#"{"conversation_id":"group-chats","title":"Keep the group","group":{"members":[]}}"#,
+    );
+    assert_eq!(status, 201, "{body}");
+    let created: Value = serde_json::from_str(&body).unwrap();
+    let thread = created["thread"]["id"].as_str().unwrap().to_owned();
+    let mut state = server.state();
+    state.push_transcript(TranscriptEntry {
+        conversation_id: "group-chats".into(),
+        thread_id: Some(thread.clone()),
+        kind: "user".into(),
+        text: "Keep this group prompt".into(),
+        ..Default::default()
+    });
+    for n in 1..=120 {
+        state.conversation_mut(&format!("private-{n}")).updated_at = n;
+    }
+    assert!(state.prune(121).conversations > 0);
+    assert!(
+        state
+            .conversations
+            .iter()
+            .any(|chat| chat.id == "group-chats")
+    );
+    assert!(state.transcript.iter().any(
+        |row| row.thread_id.as_deref() == Some(&thread) && row.text == "Keep this group prompt"
+    ));
+}
+
+#[test]
 fn group_workspaces_are_shared_inside_one_thread_only() {
     if !python3_available() {
         return;

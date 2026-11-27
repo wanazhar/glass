@@ -834,11 +834,12 @@ impl ProductState {
                 .take(CONVERSATION_LIMIT)
                 .chain(empty.into_iter().take(UNSENT_CONVERSATION_LIMIT))
                 .collect();
+            let has_group_threads = self.threads.iter().any(|thread| thread.group.is_some());
             for (index, conversation) in self.conversations.iter().enumerate() {
-                if self
-                    .tasks
-                    .iter()
-                    .any(|task| task.conversation_id == conversation.id && !settled(&task.status))
+                if (has_group_threads && conversation.id == crate::threads::GROUP_CONVERSATION)
+                    || self.tasks.iter().any(|task| {
+                        task.conversation_id == conversation.id && !settled(&task.status)
+                    })
                     || self.control.queue.iter().any(|entry| {
                         entry.conversation_id.as_deref() == Some(conversation.id.as_str())
                     })

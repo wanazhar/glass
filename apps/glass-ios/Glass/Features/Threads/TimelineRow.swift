@@ -14,6 +14,8 @@ extension EnvironmentValues {
 
 struct TimelineRow: View {
     var entry: TimelineEntry
+    /// The reply ends its turn, so it carries the copy and share row once it finishes.
+    var endsTurn = false
     @Environment(\.messageAction) private var messageAction
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingFullAnswer = false
@@ -63,7 +65,11 @@ struct TimelineRow: View {
                     Button("Show more", systemImage: "arrow.up.right.square") { showingFullAnswer = true }
                         .glassButtonStyle()
                 }
+                if endsTurn, !streaming {
+                    ReplyActions(text: text).transition(.opacity)
+                }
             }
+                .animation(reduceMotion ? .linear(duration: 0.08) : .easeOut(duration: 0.3), value: streaming)
                 .accessibilityIdentifier("timeline.streaming", isEnabled: streaming)
                 .sheet(isPresented: $showingFullAnswer) {
                     NavigationStack {
@@ -105,6 +111,30 @@ struct TimelineRow: View {
         let preview = String(text.prefix(2_400))
         guard let boundary = preview.range(of: "\n\n", options: .backwards) else { return preview + "…" }
         return String(preview[..<boundary.lowerBound])
+    }
+}
+
+private struct ReplyActions: View {
+    var text: String
+    @State private var copied = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button {
+                UIPasteboard.general.string = text
+                copied = true
+                Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
+            } label: { LensBarIcon(symbol: copied ? "checkmark" : "doc.on.doc") }
+                .accessibilityLabel(copied ? "Copied" : "Copy reply")
+                .accessibilityIdentifier("reply.copy")
+            ShareLink(item: text) { LensBarIcon(symbol: "square.and.arrow.up") }
+                .accessibilityLabel("Share reply")
+                .accessibilityIdentifier("reply.share")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Design.muted)
+        // The first glyph lines up with the reply's text edge.
+        .padding(.leading, -(Design.control - 18) / 2)
     }
 }
 

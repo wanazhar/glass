@@ -76,10 +76,10 @@ struct MarkdownView: View, Equatable {
         let blocks = parsedBlocks
         VStack(alignment: .leading, spacing: Design.gap) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-                if streaming, !reduceMotion, index == blocks.count - 1 {
+                // The newest two blocks fade their new text in; the one before keeps its fade if a block starts.
+                if streaming, index >= blocks.count - 2 {
                     BlockView(block: block)
-                        .contentTransition(.opacity)
-                        .animation(.easeOut(duration: 0.16), value: block)
+                        .modifier(StreamFade(count: Self.fadeCount(block)))
                 } else {
                     BlockView(block: block)
                 }
@@ -116,6 +116,19 @@ struct MarkdownView: View, Equatable {
             return Text("\(text)\(next)")
         }
         return hasMath ? typeset.accessibilityLabel(accessibleText) : typeset
+    }
+
+    /// Characters a block draws, so a stream knows which glyphs just arrived. Zero means it is not faded.
+    static func fadeCount(_ block: Block) -> Int {
+        switch block {
+        case .prose(let value), .heading(let value, _), .item(let value, _, _):
+            InlineMath.split(stripImages(value)).reduce(0) { count, segment in
+                if case .text(let prose) = segment { return count + markdown(prose).characters.count }
+                return count + 1
+            }
+        case .code(let code, _): code.count
+        default: 0
+        }
     }
 
     private static func markdown(_ value: String) -> AttributedString {
@@ -398,7 +411,7 @@ private struct BlockView: View {
     var body: some View {
         switch block {
         case .prose(let value):
-            MarkdownView.inline(value, mathSize: mathSize, colorScheme: colorScheme).font(Design.body).textSelection(.enabled)
+            MarkdownView.inline(value, mathSize: mathSize, colorScheme: colorScheme).font(Design.body).selectableUnlessStreaming()
         case .heading(let value, let level):
             MarkdownView.inline(value, mathSize: mathSize, colorScheme: colorScheme)
                 .font(level == 1 ? Design.title : level == 2 ? .title3.weight(.semibold) : Design.headline)
@@ -480,7 +493,7 @@ private struct ListItemView: View {
             }
             MarkdownView.inline(text, mathSize: mathSize, colorScheme: colorScheme)
                 .foregroundStyle(marker == .task(done: true) ? .secondary : .primary)
-                .textSelection(.enabled)
+                .selectableUnlessStreaming()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.leading, CGFloat(depth) * indent)
@@ -577,7 +590,7 @@ struct DataTable: View, Equatable {
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .frame(width: columnWidth)
-            .textSelection(.enabled)
+            .selectableUnlessStreaming()
             .accessibilityAddTraits(isHeader ? .isHeader : [])
     }
 
@@ -848,7 +861,7 @@ struct CodeBlock: View {
             Text(highlighted)
                 .font(.system(.footnote, design: .monospaced))
                 .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+                .selectableUnlessStreaming()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(Design.padding)
         }
@@ -876,5 +889,105 @@ struct CodeBlock: View {
         }
         output += AttributedString(code[start...])
         return output
+    }
+}
+
+/// Newly streamed text eases in from low opacity, its tail a little behind its head, so the newest words
+/// read as a soft gradient. Settled glyphs draw untouched; one renderer per block, no per-glyph views.
+extension EnvironmentValues {
+    @Entry var fadingStream = false
+}
+
+extension View {
+    /// Selectable text draws through a path that skips custom text renderers, so it waits for the reply to settle.
+    func selectableUnlessStreaming() -> some View { modifier(SelectableUnlessStreaming()) }
+}
+
+private struct SelectableUnlessStreaming: ViewModifier {
+    @Environment(\.fadingStream) private var fadingStream
+
+    func body(content: Content) -> some View {
+        if fadingStream { content } else { content.textSelection(.enabled) }
+    }
+}
+
+struct StreamFade: ViewModifier {
+    struct Chunk { var start: Int; var date: Date }
+
+    var count: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var chunks: [Chunk] = []
+    @State private var known: Int?
+    @State private var idle = false
+
+    private var duration: Double { reduceMotion ? 0.08 : 0.3 }
+    private var lag: Double { reduceMotion ? 0 : 0.08 }
+
+    func body(content: Content) -> some View {
+        TimelineView(.animation(paused: idle)) { timeline in
+            content.textRenderer(StreamFadeRenderer(chunks: chunks, known: known ?? 0, count: count,
+                                                    now: timeline.date, duration: duration, lag: lag))
+                .environment(\.fadingStream, true)
+        }
+        .onAppear { arrive(count) }
+        .onChange(of: count) { _, value in arrive(value) }
+        .task(id: count) {
+            idle = false
+            try? await Task.sleep(for: .seconds(duration + lag + 0.05))
+            if !Task.isCancelled { idle = true }
+        }
+    }
+
+    private func arrive(_ value: Int) {
+        let now = Date.now
+        chunks.removeAll { now.timeIntervalSince($0.date) > duration + lag || $0.start >= value }
+        if value > (known ?? 0) { chunks.append(Chunk(start: known ?? 0, date: now)) }
+        known = value
+    }
+}
+
+private struct StreamFadeRenderer: TextRenderer {
+    var chunks: [StreamFade.Chunk]
+    var known: Int
+    var count: Int
+    var now: Date
+    var duration: Double
+    var lag: Double
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        let settled = count == 0 ? Int.max : chunks.first?.start ?? known
+        var index = 0
+        for line in layout {
+            for run in line {
+                let end = index + run.count
+                if end <= settled {
+                    context.draw(run)
+                    index = end
+                    continue
+                }
+                for slice in run {
+                    let opacity = index < settled ? 1 : self.opacity(at: index)
+                    if opacity >= 0.999 {
+                        context.draw(slice)
+                    } else {
+                        var faded = context
+                        faded.opacity = opacity
+                        faded.draw(slice)
+                    }
+                    index += 1
+                }
+            }
+        }
+    }
+
+    private func opacity(at index: Int) -> Double {
+        let floor = 0.15
+        // Glyphs drawn before their arrival is recorded start at the floor instead of flashing in at full.
+        guard index < known, let at = chunks.lastIndex(where: { $0.start <= index }) else { return floor }
+        let chunk = chunks[at]
+        let length = (at + 1 < chunks.count ? chunks[at + 1].start : known) - chunk.start
+        let position = Double(index - chunk.start) / Double(max(length, 1))
+        let progress = min(max((now.timeIntervalSince(chunk.date) - lag * position) / duration, 0), 1)
+        return floor + (1 - floor) * (1 - pow(1 - progress, 3))
     }
 }

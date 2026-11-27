@@ -16,7 +16,6 @@ struct ComposerView: View {
     @State private var showsControlPrompt = false
     @State private var fieldHeight: CGFloat = 0
     @State private var writingSince = Date.now
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private var composer: ComposerModel { conversation.composer }
     private var canWrite: Bool { conversation.canWrite }
@@ -43,9 +42,7 @@ struct ComposerView: View {
                         }
                     }
                     .padding(Design.gap)
-                    .background(reduceTransparency ? Design.surface : .clear, in: .rect(cornerRadius: 28))
-                    .glassEffect(reduceTransparency ? .identity : .regular.tint(Design.surface.opacity(0.72)),
-                                 in: .rect(cornerRadius: 28))
+                    .lensComposerCard()
                 }
             } else if conversation.connectionMessage != nil {
                 ComposerBanner(title: "Disconnected", icon: "wifi.slash",
@@ -140,7 +137,7 @@ struct ComposerView: View {
                     Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
                 }
                 .frame(minHeight: Design.control)
-                .contentShape(.rect)
+                .contentShape(.capsule)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("composer.model")
@@ -170,7 +167,7 @@ struct ComposerView: View {
             Image(systemName: "arrow.left.arrow.right")
                 .font(.footnote.weight(.medium))
                 .frame(width: Design.control, height: Design.control)
-                .contentShape(.rect)
+                .contentShape(.capsule)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Send during this reply")
@@ -350,12 +347,9 @@ struct ComposerCircle: View {
     var primary = false
 
     var body: some View {
-        Image(systemName: icon)
-            .font(.system(size: 17, weight: .semibold))
+        LensBarIcon(symbol: icon)
             .foregroundStyle(primary ? Design.onAccent : Design.ink)
-            .frame(width: Design.control, height: Design.control)
-            .background(primary ? Design.accent : Design.inset, in: .circle)
-            .contentShape(.circle)
+            .background(primary ? Design.accent : Design.inset, in: .capsule)
     }
 }
 
@@ -378,9 +372,8 @@ struct ComposerBanner: View {
                 .accessibilityIdentifier(actionID)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(Design.surface, in: .rect(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Design.line))
+        .padding(Design.padding)
+        .lensCard()
         .accessibilityElement(children: .contain)
     }
 }
@@ -489,13 +482,19 @@ struct ChoicePicker: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .listSectionSpacing(Design.padding)
+            .environment(\.defaultMinListRowHeight, Design.control)
             .scrollContentBackground(.hidden)
             .background(Design.background)
-            .searchable(text: $filter, placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: picker == .model ? "Find a model" : "Find a profile")
-            .navigationTitle(picker == .model ? "Choose model" : picker.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .safeAreaBar(edge: .top, spacing: Design.gap) {
+                VStack(spacing: Design.gap) {
+                    LensSheetBar(title: picker == .model ? "Choose model" : picker.title, closeLabel: "Cancel") { dismiss() }
+                    LensSearch(prompt: picker == .model ? "Find a model" : "Find a profile", query: $filter)
+                        .frame(height: Design.control)
+                        .padding(.horizontal, Design.padding)
+                }
+            }
+            .toolbarVisibility(.hidden, for: .navigationBar)
             .task {
                 do { choices = try await composer.choices(for: picker) } catch { self.error = error.localizedDescription }
             }
@@ -512,11 +511,15 @@ struct ChoicePicker: View {
                 if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(Design.accent) }
             }
             .foregroundStyle(Design.ink)
+            .padding(.horizontal, Design.gap)
             .frame(minHeight: Design.control)
-            .contentShape(.rect)
+            .lensCard(selected ? Design.accent.opacity(0.13) : .clear, radius: Design.panel - Design.small)
+            .contentShape(.capsule)
         }
         .buttonStyle(.plain)
-        .listRowBackground(selected ? Design.inset : Design.surface)
+        .listRowInsets(EdgeInsets(top: Design.small, leading: Design.small, bottom: Design.small, trailing: Design.small))
+        .listRowBackground(Design.surface)
+        .listRowSeparator(.hidden)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 

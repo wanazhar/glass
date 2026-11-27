@@ -4,8 +4,6 @@ struct StartConversationView: View {
     let threads: ThreadsModel
     let menu: () -> Void
     let newChat: () -> Void
-    @Environment(\.horizontalSizeClass) private var sizeClass
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var draft = ""
     @State private var height: CGFloat = 0
     @State private var starting = false
@@ -19,24 +17,20 @@ struct StartConversationView: View {
         .defaultScrollAnchor(.center, for: .alignment)
         .scrollDismissesKeyboard(.interactively)
         .softTopScrollEdge()
-        .safeAreaBar(edge: .top, spacing: 6) {
-            if sizeClass == .compact {
-                ChatToolbar(menu: menu, newChat: newChat) {
-                    Text("Glass").font(Design.headline)
-                        .frame(maxWidth: .infinity, minHeight: Design.control)
-                        .accessibilityAddTraits(.isHeader)
-                }
+        .safeAreaBar(edge: .top, spacing: Design.gap) {
+            ChatToolbar(menu: menu, newChat: newChat) {
+                Text("Glass").font(Design.headline)
+                    .accessibilityAddTraits(.isHeader)
             }
         }
-        .safeAreaBar(edge: .bottom, spacing: 8) {
+        .safeAreaInset(edge: .bottom, spacing: Design.gap) {
             composer
                 .padding(.horizontal, Design.padding)
                 .padding(.bottom, 6)
                 .frame(maxWidth: Design.readingWidth)
                 .frame(maxWidth: .infinity)
         }
-        .navigationTitle(sizeClass == .regular ? "New chat" : "")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbarVisibility(.hidden, for: .navigationBar)
         .background(Design.background.ignoresSafeArea())
     }
 
@@ -54,7 +48,7 @@ struct StartConversationView: View {
                     }
                     .foregroundStyle(Design.muted)
                     .frame(minHeight: Design.control)
-                    .contentShape(.rect)
+                    .contentShape(.capsule)
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 12)
@@ -98,9 +92,7 @@ struct StartConversationView: View {
             }
             .disabled(starting)
             .padding(Design.gap)
-            .background(reduceTransparency ? Design.surface : .clear, in: .rect(cornerRadius: 28))
-            .glassEffect(reduceTransparency ? .identity : .regular.tint(Design.surface.opacity(0.72)),
-                         in: .rect(cornerRadius: 28))
+            .lensComposerCard()
         }
     }
 

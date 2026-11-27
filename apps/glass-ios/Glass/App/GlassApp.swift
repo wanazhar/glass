@@ -30,6 +30,9 @@ struct GlassApp: App {
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #if DEBUG
+    @Environment(\.scenePhase) private var scenePhase
+    #endif
     @AppStorage(ThemePreference.key) private var theme: ThemePreference = .system
     @State private var showsSplash = !ProcessInfo.processInfo.arguments.contains("-GlassResetState")
         && !ProcessInfo.processInfo.arguments.contains("-GlassSkipSplash")
@@ -63,6 +66,13 @@ struct RootView: View {
         .task(id: model.endpoint) {
             if model.phase == .connecting { await model.refresh() }
         }
+        #if DEBUG
+        .task(id: scenePhase) {
+            if scenePhase == .active, ProcessInfo.processInfo.arguments.contains("-GlassLiveActivityPreview") {
+                KeepAlive.shared.previewActivity()
+            }
+        }
+        #endif
         .task(id: reduceMotion) {
             if reduceMotion {
                 showsSplash = false

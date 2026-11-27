@@ -5,6 +5,44 @@ import GlassTransport
 import Testing
 @testable import Glass
 
+@Test func liveActivityStateAcceptsThePreviousTimerPayload() throws {
+    let payload = Data(#"{"status":"Connected","connectedSince":800000000}"#.utf8)
+    let state = try JSONDecoder().decode(ConnectionActivityAttributes.ContentState.self, from: payload)
+    #expect(state.status == "Connected")
+    #expect(state.pulse == nil)
+
+    let updated = ConnectionActivityAttributes.ContentState(status: state.status, pulse: true)
+    let encoded = try JSONEncoder().encode(updated)
+    let fields = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    #expect(fields["pulse"] as? Bool == true)
+    #expect(fields["connectedSince"] == nil)
+}
+
+@Test @MainActor func sidebarGroupsThreadsByCalendarDayAndMonth() throws {
+    let calendar = Calendar(identifier: .gregorian)
+    let now = Date(timeIntervalSince1970: 1_700_000_000)
+    func row(_ days: Int) throws -> ThreadSummary {
+        let date = try #require(calendar.date(byAdding: .day, value: -days, to: now))
+        return ThreadSummary(session: "\(days)", modified: date.timeIntervalSince1970)
+    }
+    var pinned = try row(180)
+    pinned.pinned = true
+    let groups = try ThreadListView.sections(for: [row(8), row(1), row(0), pinned, row(7), row(12), row(100)],
+                                             now: now, calendar: calendar)
+    #expect(groups.map(\.label).prefix(4) == ["Pinned", "Today", "Yesterday", "Previous 7 Days"])
+    #expect(groups.map { $0.threads.map(\.id) } == [["180"], ["0"], ["1"], ["7"], ["8", "12"], ["100"]])
+}
+
+@Test func sidebarUsesMeaningfulSnippetForCommandAndGreetingTitles() {
+    var thread = ThreadSummary(session: "a", title: "/model")
+    #expect(thread.lensTitle == "Conversation about model")
+    thread.title = "hello!"
+    thread.snippet = "hello!\nReview the new design and sync the release notes"
+    #expect(thread.lensTitle == "Review the new design and sync the release")
+    thread.title = "Manually named"
+    #expect(thread.lensTitle == "Manually named")
+}
+
 private final class ScriptedTransport: GlassHTTPTransport, @unchecked Sendable {
     let lock = NSLock()
     var handler: @Sendable (URLRequest) -> (Int, String)

@@ -68,13 +68,14 @@ struct ThreadInfoView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .listSectionSpacing(Design.padding)
+            .environment(\.defaultMinListRowHeight, Design.control)
             .scrollContentBackground(.hidden)
             .background(Design.background)
-            .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            .safeAreaBar(edge: .top, spacing: Design.gap) {
+                LensSheetBar(title: title, closeLabel: "Done") { dismiss() }
             }
+            .toolbarVisibility(.hidden, for: .navigationBar)
             .task {
                 if let result = try? await conversation.composer.command("usage", timeout: .seconds(5)) { usage = CommandOutput(result) }
             }

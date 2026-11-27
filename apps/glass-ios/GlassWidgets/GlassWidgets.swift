@@ -11,75 +11,77 @@ struct GlassWidgets: WidgetBundle {
 }
 
 struct ConnectionLiveActivity: Widget {
-    /// Shown once Glass stopped renewing the activity, for example after it was closed without notice.
-    static let closed = "Glass closed"
-
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: ConnectionActivityAttributes.self) { context in
-            HStack(spacing: 12) {
-                Image(systemName: "dot.radiowaves.left.and.right")
-                    .font(.title3)
-                    .foregroundStyle(.green)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(context.isStale ? Self.closed : context.state.status).font(.headline)
-                    HStack(spacing: 4) {
-                        Text(context.attributes.host)
-                        if !context.isStale {
-                            Text("·")
-                            Text(context.state.connectedSince, style: .timer).monospacedDigit()
-                        }
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if !context.isStale {
-                    Button(intent: DisconnectIntent()) {
-                        Label("Disconnect", systemImage: "xmark")
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                }
+            HStack(spacing: 8) {
+                mark(context, size: 36)
+                connection(context)
             }
-            .padding()
+            .padding(16)
             .activityBackgroundTint(nil)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label(context.isStale ? Self.closed : context.state.status, systemImage: "dot.radiowaves.left.and.right")
-                        .font(.subheadline)
-                        .foregroundStyle(context.isStale ? AnyShapeStyle(.secondary) : AnyShapeStyle(.green))
-                }
-                DynamicIslandExpandedRegion(.trailing) {
-                    if !context.isStale {
-                        Text(context.state.connectedSince, style: .timer)
-                            .monospacedDigit()
-                            .frame(maxWidth: 64, alignment: .trailing)
-                    }
+                    mark(context, size: 28, onIsland: true)
+                        .padding(.leading, 6)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    HStack {
-                        Text(context.attributes.host).font(.footnote).foregroundStyle(.secondary)
-                        Spacer()
-                        if !context.isStale {
-                            Button(intent: DisconnectIntent()) {
-                                Label("Disconnect", systemImage: "xmark")
-                            }
-                            .tint(.red)
-                        }
-                    }
+                    connection(context)
+                        .padding(.horizontal, 6)
                 }
             } compactLeading: {
-                Image(systemName: "dot.radiowaves.left.and.right").foregroundStyle(.green)
+                mark(context, size: 22, onIsland: true)
             } compactTrailing: {
-                if !context.isStale {
-                    Text(context.state.connectedSince, style: .timer)
-                        .monospacedDigit()
-                        .frame(maxWidth: 44)
-                }
+                Text(context.isStale ? "Closed" : "Live")
+                    .font(.caption.weight(.semibold))
             } minimal: {
-                Image(systemName: "dot.radiowaves.left.and.right").foregroundStyle(.green)
+                mark(context, size: 22, onIsland: true)
             }
         }
+    }
+
+    private func mark(_ context: ActivityViewContext<ConnectionActivityAttributes>, size: CGFloat,
+                      onIsland: Bool = false) -> some View {
+        ActivityLensMark(stale: context.isStale, pulse: context.state.pulse ?? false, onIsland: onIsland)
+            .frame(width: size, height: size)
+    }
+
+    private func connection(_ context: ActivityViewContext<ConnectionActivityAttributes>) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(context.isStale ? "Closed" : "Connected").font(.headline)
+                Text(context.attributes.host).font(.subheadline).foregroundStyle(.secondary)
+            }
+            .lineLimit(1)
+            Spacer(minLength: 4)
+            if !context.isStale {
+                Button(intent: DisconnectIntent()) {
+                    Label("Disconnect", systemImage: "xmark")
+                        .font(.footnote.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .tint(.red)
+            }
+        }
+    }
+}
+
+private struct ActivityLensMark: View {
+    var stale: Bool
+    var pulse: Bool
+    var onIsland: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let teal = Color(lensHex: onIsland || scheme == .dark ? LensPalette.darkTeal : LensPalette.lightTeal)
+        Image("ConnectionLens")
+            .resizable()
+            .scaledToFit()
+            .foregroundStyle(stale ? Color.secondary : teal)
+            .opacity(!stale && !reduceMotion && pulse ? 0.72 : 1)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.6), value: pulse)
+            .accessibilityHidden(true)
     }
 }

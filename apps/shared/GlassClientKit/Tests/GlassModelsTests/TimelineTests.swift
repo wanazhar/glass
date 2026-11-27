@@ -62,6 +62,13 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         #expect(page.projects?.first?.name == "glass")
         #expect(page.threads.first?.modifiedDate == Date(timeIntervalSince1970: 1_700_000_000))
     }
+
+    @Test func threadDateAcceptsLegacyUTCStringAndPrefersEpoch() throws {
+        let legacy = try decode(ThreadSummary.self, #"{"session":"a","modified":"2023-11-14 22:13"}"#)
+        let current = try decode(ThreadSummary.self, #"{"session":"b","modified":"2023-11-14 22:13","modified_epoch":1700000000}"#)
+        #expect(legacy.modifiedDate == Date(timeIntervalSince1970: 1_699_999_980))
+        #expect(current.modifiedDate == Date(timeIntervalSince1970: 1_700_000_000))
+    }
 }
 
 @Suite struct TimelineTests {

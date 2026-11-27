@@ -15,7 +15,6 @@ final class KeepAlive: NSObject {
     private let manager = CLLocationManager()
     private var session: CLBackgroundActivitySession?
     private var holds: [String: @MainActor () -> Void] = [:]
-    private var connectedSince: Date?
     private var activity: Activity<ConnectionActivityAttributes>?
     private var authorizing: [CheckedContinuation<Void, Never>] = []
     var hostName = "Glass host"
@@ -88,7 +87,6 @@ final class KeepAlive: NSObject {
     /// A live connection opened. `stop` closes it when the Live Activity's Disconnect is tapped.
     func hold(_ key: String, stop: @escaping @MainActor () -> Void) {
         holds[key] = stop
-        if connectedSince == nil { connectedSince = .now }
         update()
     }
 
@@ -105,7 +103,6 @@ final class KeepAlive: NSObject {
     }
 
     private func update() {
-        if holds.isEmpty { connectedSince = nil }
         let wanted = isOn && !holds.isEmpty && authorized
         if wanted, !running {
             manager.allowsBackgroundLocationUpdates = true
@@ -135,9 +132,9 @@ final class KeepAlive: NSObject {
     }
 
     private func startActivity() {
-        guard running, activity == nil, let connectedSince,
+        guard running, activity == nil,
               ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        let state = ConnectionActivityAttributes.ContentState(status: status, connectedSince: connectedSince)
+        let state = ConnectionActivityAttributes.ContentState(status: status)
         do {
             activity = try Activity.request(attributes: ConnectionActivityAttributes(host: hostName),
                                             content: Self.content(state), pushType: nil)
@@ -160,9 +157,10 @@ final class KeepAlive: NSObject {
     }
 
     private func refreshActivity(renew: Bool = false) {
-        guard let activity, let connectedSince else { return }
-        let state = ConnectionActivityAttributes.ContentState(status: status, connectedSince: connectedSince)
-        guard renew || activity.content.state != state else { return }
+        guard let activity else { return }
+        let previous = activity.content.state
+        guard renew || previous.status != status else { return }
+        let state = ConnectionActivityAttributes.ContentState(status: status, pulse: !(previous.pulse ?? false))
         let id = activity.id
         let content = Self.content(state)
         Task.detached {
@@ -171,6 +169,19 @@ final class KeepAlive: NSObject {
             }
         }
     }
+
+    #if DEBUG
+    func previewActivity() {
+        guard activity == nil, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        do {
+            activity = try Activity.request(attributes: ConnectionActivityAttributes(host: "Studio Mac"),
+                                            content: ActivityContent(state: .init(status: "Connected"), staleDate: nil),
+                                            pushType: nil)
+        } catch {
+            Self.log.error("Live Activity preview not started: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+    #endif
 
     /// iOS is closing Glass: end every Live Activity now, waiting briefly so it happens before the process stops.
     private func endActivitiesBeforeExit() {

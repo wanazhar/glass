@@ -7,7 +7,7 @@ import Foundation
 struct ConnectionActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         var status: String
-        var connectedSince: Date
+        var pulse: Bool? = nil
     }
 
     var host: String

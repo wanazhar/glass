@@ -419,9 +419,8 @@ struct ActivityDetailView: View {
                             PatchCounts(added: patch.added, removed: patch.removed)
                             PatchRows(patch: patch)
                         }
-                        .padding(14)
-                        .background(Design.surface, in: .rect(cornerRadius: 16))
-                        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Design.line))
+                        .padding(Design.padding)
+                        .lensCard()
                     } else {
                         Text(detail.text).font(detail.monospaced ? .footnote.monospaced() : .body)
                     }
@@ -463,8 +462,11 @@ struct ActivityDetailView: View {
                             Text(title)
                         }
                     }
+                    .frame(minHeight: Design.control)
                 }
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }.frame(minHeight: Design.control)
+                }
             }
         }
         .presentationDetents(detail.isDiff ? [.height(280), .large] : detail.command?.failed == true ? [.medium, .large] : [.large])

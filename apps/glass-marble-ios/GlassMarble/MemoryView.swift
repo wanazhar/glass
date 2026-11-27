@@ -185,6 +185,7 @@ struct SavedKnowledgeView: View {
                 case let .memory(fact):
                     Section("Memory") {
                         TextField("Memory", text: $text, axis: .vertical)
+                            .accessibilityIdentifier("knowledge.memory.text")
                         Text(store.knowledgeSource(conversationId: fact.conversationId, threadId: fact.threadId, date: fact.createdAt))
                             .font(.caption).foregroundStyle(MarbleTheme.muted)
                     }
@@ -245,6 +246,7 @@ struct SavedKnowledgeView: View {
                                 if store.errorMessage == nil { dismiss() }
                             }
                         }
+                        .disabled(!canSave)
                     }
                 }
             }
@@ -265,6 +267,11 @@ struct SavedKnowledgeView: View {
 
     private var title: String {
         switch item { case .memory: "Remembered"; case .skill: "Skill saved" }
+    }
+
+    private var canSave: Bool {
+        if case .memory = item { return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return true
     }
 
     private func save() async {

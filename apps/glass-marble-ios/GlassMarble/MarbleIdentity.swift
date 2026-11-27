@@ -32,7 +32,25 @@ struct MarbleSilhouette: Shape {
             return path
         case "square":
             return RoundedRectangle(cornerRadius: rect.width * 0.29).path(in: rect)
+        case "diamond":
+            vertices = [point(0.5, 0), point(1, 0.5), point(0.5, 1), point(0, 0.5)]
+        case "triangle":
+            vertices = [point(0.5, 0), point(1, 0.92), point(0, 0.92)]
+        case "capsule":
+            return Capsule().path(in: rect.insetBy(dx: rect.width * 0.24, dy: 0))
+        case "petal":
+            vertices = [point(0.04, 0.2), point(0.61, 0), point(0.98, 0.4),
+                        point(0.8, 0.96), point(0.28, 0.89)]
         default:
+            if let index = Int(glyph.dropFirst("roster-".count)), glyph.hasPrefix("roster-"), index > 0 {
+                let count = 6 + index % 5
+                vertices = (0..<count * 2).map { vertex in
+                    let angle = Double(vertex) * .pi / Double(count) - .pi / 2
+                    let radius = vertex.isMultiple(of: 2) ? 0.49 : 0.37 - 0.03 * Double(index / 5)
+                    return point(0.5 + cos(angle) * radius, 0.5 + sin(angle) * radius)
+                }
+                break
+            }
             return Path(ellipseIn: rect)
         }
         func inset(_ corner: CGPoint, toward adjacent: CGPoint) -> CGPoint {
@@ -48,6 +66,25 @@ struct MarbleSilhouette: Shape {
         }
         path.closeSubpath()
         return path
+    }
+}
+
+extension MarbleStore {
+    func rosterStyle(for agent: MarblePrismMarble) -> MarbleSpeakerStyle {
+        var hues: [Int] = []
+        var glyphs: Set<String> = []
+        let shapes = MarbleMentions.glyphs + ["diamond", "triangle", "capsule", "petal"]
+        for member in prism.marbles {
+            let preferredHue = MarbleTheme.hues[MarbleTheme.paletteIndex(for: member.hue)].degrees
+            let hue = !hues.contains(preferredHue) ? preferredHue
+                : MarbleTheme.hues.first { !hues.contains($0.degrees) }?.degrees ?? MarbleMentions.nextHue(used: hues)
+            let glyph = !glyphs.contains(member.glyph) ? member.glyph
+                : shapes.first { !glyphs.contains($0) } ?? "roster-\(glyphs.count - shapes.count + 1)"
+            if member.id == agent.id { return .init(name: agent.name, hue: hue, glyph: glyph) }
+            hues.append(hue)
+            glyphs.insert(glyph)
+        }
+        return .init(name: agent.name, hue: agent.hue, glyph: agent.glyph)
     }
 }
 

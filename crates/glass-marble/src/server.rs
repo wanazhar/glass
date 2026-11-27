@@ -739,7 +739,7 @@ impl MarbleServer {
             return self.transcript_response(head);
         }
         if head.method == "POST" && path == "/api/conversations" {
-            return self.create_conversation();
+            return self.create_conversation(body);
         }
         if head.method == "POST"
             && let Some(rest) = path.strip_prefix("/api/conversations/")
@@ -749,6 +749,12 @@ impl MarbleServer {
             }
             if let Some(id) = rest.strip_suffix("/delete") {
                 return self.delete_conversation(&decode_path_segment(id));
+            }
+            if let Some((id, action @ ("archive" | "unarchive"))) = rest.split_once('/') {
+                return self.archive_conversation(&decode_path_segment(id), action == "archive");
+            }
+            if let Some(id) = rest.strip_suffix("/restore") {
+                return self.restore_deleted_chat(&decode_path_segment(id));
             }
         }
         if head.method == "GET" && path == "/api/events" {
@@ -1577,8 +1583,7 @@ impl MarbleServer {
         response
     }
 
-    /// `POST /api/everyone` — one line to the shared plane; the marbles it
-    /// names answer, or every member when it names nobody.
+    /// `POST /api/everyone` — one line to the shared plane, starting a round.
     fn post_everyone(
         &self,
         body: &str,
@@ -1606,6 +1611,50 @@ impl MarbleServer {
                 Ok(id) => id,
                 Err(response) => return response,
             };
+        if let Some((pool, round_thread)) = self.prism.as_ref().zip(thread.as_ref()) {
+            let answering = {
+                let state = self.lock_state();
+                match crate::everyone::plan(&state, &text) {
+                    crate::everyone::EveryoneTarget::Named(ids) => ids
+                        .into_iter()
+                        .map(|id| {
+                            if id == "marble" {
+                                state.prism.default_marble().name
+                            } else {
+                                state
+                                    .prism
+                                    .get(&id)
+                                    .map_or(id.clone(), |agent| agent.name.clone())
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                    crate::everyone::EveryoneTarget::All => Vec::new(),
+                }
+            };
+            return match pool.start_everyone_round(
+                round_thread.clone(),
+                text,
+                client,
+                device_time_zone.map(str::to_owned),
+            ) {
+                Ok(()) => {
+                    self.events.publish(
+                        crate::everyone::EVERYONE_CONVERSATION,
+                        "",
+                        "everyone",
+                        json!({"kind":"user","thread_id":thread}),
+                    );
+                    Response::json(
+                        202,
+                        json!({
+                            "ok":true,"accepted":true,"answering":answering,"busy":[],
+                            "conversationId":crate::everyone::EVERYONE_CONVERSATION,
+                        }),
+                    )
+                }
+                Err((status, error)) => Response::error(status, error),
+            };
+        }
         let entry_id = {
             let mut guard = self.lock_state();
             if thread
@@ -2008,6 +2057,18 @@ impl MarbleServer {
         drop(guard);
         let mut value = snapshot.encode();
         if let Value::Object(ref mut map) = value {
+            map.insert(
+                "deletedChats".into(),
+                json!(
+                    snapshot
+                        .deleted_chats
+                        .iter()
+                        .map(|item| json!({
+                            "id": item.id, "title": item.title, "deletedAt": item.deleted_at,
+                        }))
+                        .collect::<Vec<_>>()
+                ),
+            );
             if let Some(Value::Array(conversations)) = map.get_mut("conversations") {
                 conversations.retain(|chat| chat["id"] != crate::threads::GROUP_CONVERSATION);
             }
@@ -2139,11 +2200,24 @@ impl MarbleServer {
         Response::json(200, json!({"query": query, "hits": hits}))
     }
 
-    fn create_conversation(&self) -> Response {
+    fn create_conversation(&self, body: &str) -> Response {
+        let parsed: Value = if body.trim().is_empty() {
+            Value::Null
+        } else {
+            match serde_json::from_str(body) {
+                Ok(value) => value,
+                Err(_) => return Response::error(400, "invalid_json"),
+            }
+        };
+        let agent = parsed["marbleId"].as_str().filter(|id| *id != "marble");
         let id = format!("chat-{}", crate::next_request_id());
         let conversation = {
             let mut state = self.lock_state();
+            if agent.is_some_and(|id| state.prism.get(id).is_none()) {
+                return Response::error(404, "unknown_marble");
+            }
             let record = state.conversation_mut(&id);
+            record.marble_id = agent.map(str::to_owned);
             record.updated_at = now_millis();
             record.lane = crate::state::ConversationRecord::UNASSIGNED_LANE;
             record.needs_engine_session = true;
@@ -2188,21 +2262,50 @@ impl MarbleServer {
         )
     }
 
+    fn archive_conversation(&self, id: &str, archived: bool) -> Response {
+        if crate::everyone::is_session(id)
+            || id == crate::threads::GROUP_CONVERSATION
+            || id == crate::everyone::EVERYONE_CONVERSATION
+        {
+            return Response::error(409, "thread_owned_conversation");
+        }
+        {
+            let mut state = self.lock_state();
+            let Some(record) = state.conversations.iter_mut().find(|chat| chat.id == id) else {
+                return Response::error(404, "unknown_conversation");
+            };
+            record.archived = archived;
+            state.bump();
+        }
+        self.save_state();
+        self.events
+            .publish(id, "", "conversation", json!({"archived": archived}));
+        Response::json(200, json!({"ok":true,"archived":archived}))
+    }
+
     fn delete_conversation(&self, id: &str) -> Response {
         if crate::everyone::is_session(id) || id == crate::threads::GROUP_CONVERSATION {
             return Response::error(409, "thread_owned_conversation");
         }
         let outcome = {
             let mut guard = self.lock_state();
-            let outcome = self.delete_conversation_record(&mut guard, id);
-            if outcome.is_ok() {
-                guard.bump();
-            }
-            outcome
+            guard.check_conversation_deletion(id).and_then(|()| {
+                let mut updated = guard.clone();
+                updated.thread_events = Default::default();
+                updated.retain_deleted_chat(id, &[id.into()], None);
+                updated.delete_conversation(id)?;
+                updated.bump();
+                if let Some(store) = &self.store {
+                    store
+                        .save(&updated)
+                        .map_err(|error| format!("could not save removed conversation: {error}"))?;
+                }
+                self.commit_removed_chat(&mut guard, updated);
+                Ok(())
+            })
         };
         match outcome {
             Ok(()) => {
-                self.save_state();
                 // Its live journal goes too — a deleted chat must not replay
                 // a recovered turn into the transcript on the next boot.
                 if let Some(store) = &self.store {
@@ -2221,9 +2324,9 @@ impl MarbleServer {
             Err(reason) if reason == "unknown conversation" => {
                 Response::json(404, json!({"error": "unknown_conversation", "id": id}))
             }
-            Err(reason) if reason.starts_with("could not remove conversation files") => {
+            Err(reason) if reason.starts_with("could not save removed conversation") => {
                 Response::json(
-                    500,
+                    503,
                     json!({"error":"conversation_delete_failed", "message":reason}),
                 )
             }
@@ -2232,6 +2335,26 @@ impl MarbleServer {
                 json!({"error": "conversation_busy", "message": reason}),
             ),
         }
+    }
+
+    fn restore_deleted_chat(&self, id: &str) -> Response {
+        let mut state = self.lock_state();
+        let mut restored = state.clone();
+        restored.thread_events = Default::default();
+        if !restored.restore_deleted_chat(id, now_millis()) {
+            return Response::error(404, "unknown_deleted_chat");
+        }
+        restored.bump();
+        if let Some(store) = &self.store
+            && store.save(&restored).is_err()
+        {
+            return Response::error(503, "state_save_failed");
+        }
+        self.commit_removed_chat(&mut state, restored);
+        drop(state);
+        self.events
+            .publish(id, "", "conversation", json!({"restored": id}));
+        Response::json(200, json!({"ok": true}))
     }
 
     fn delete_conversation_record(&self, state: &mut ProductState, id: &str) -> Result<(), String> {
@@ -2429,25 +2552,7 @@ impl MarbleServer {
                 {
                     return Response::error(409, "conversation_busy");
                 }
-                if state.threads[index].group.is_some() {
-                    return self.delete_group_thread(&mut state, id, &records);
-                }
-                for record in records {
-                    if self
-                        .delete_conversation_record(&mut state, &record)
-                        .is_err()
-                    {
-                        return Response::error(500, "conversation_delete_failed");
-                    }
-                    if let Some(store) = &self.store {
-                        crate::live::LiveStore::for_store(store).remove_conversation(&record);
-                    }
-                }
-                state.threads.retain(|thread| thread.id != id);
-                state
-                    .transcript
-                    .retain(|entry| entry.thread_id.as_deref() != Some(id));
-                state.prune_threads();
+                return self.delete_thread(&mut state, id, &records, &conversation);
             }
             _ => return Response::error(404, "unknown_thread_action"),
         }
@@ -2463,14 +2568,16 @@ impl MarbleServer {
         Response::json(200, json!({"ok":true}))
     }
 
-    fn delete_group_thread(
+    fn delete_thread(
         &self,
         state: &mut ProductState,
         id: &str,
         records: &[String],
+        conversation: &str,
     ) -> Response {
         let mut deleted = state.clone();
         deleted.thread_events = Default::default();
+        deleted.retain_deleted_chat(id, records, Some(id));
         for record in records {
             if deleted.delete_conversation(record).is_err() {
                 return Response::error(409, "conversation_busy");
@@ -2481,19 +2588,24 @@ impl MarbleServer {
             .transcript
             .retain(|entry| entry.thread_id.as_deref() != Some(id));
         deleted.prune_threads();
-        if let Some(store) = &self.store {
-            deleted.pending_everyone_cleanup.insert(id.to_owned());
-            deleted
-                .pending_everyone_cleanup
-                .extend(records.iter().cloned());
-            deleted.bump();
-            if let Err(error) = store.save(&deleted) {
-                tracing::warn!(%error, thread = %id, "could not persist group deletion");
-                return Response::error(503, "state_save_failed");
-            }
-        } else {
-            deleted.bump();
+        deleted.bump();
+        if let Some(store) = &self.store
+            && let Err(error) = store.save(&deleted)
+        {
+            tracing::warn!(%error, thread = %id, "could not persist thread deletion");
+            return Response::error(503, "state_save_failed");
         }
+        self.commit_removed_chat(state, deleted);
+        self.events.publish(
+            conversation,
+            "",
+            "conversation",
+            json!({"thread_id":id, "action":"delete"}),
+        );
+        Response::json(200, json!({"ok":true}))
+    }
+
+    fn commit_removed_chat(&self, state: &mut ProductState, mut deleted: ProductState) {
         deleted.thread_events = state.thread_events.clone();
         if let Some(events) = &deleted.thread_events.0 {
             for task in state.task_threads.keys() {
@@ -2501,19 +2613,14 @@ impl MarbleServer {
                     events.unbind_thread(task);
                 }
             }
+            for (task, thread) in &deleted.task_threads {
+                if !state.task_threads.contains_key(task) {
+                    events.bind_thread(task, thread);
+                }
+            }
             events.publish_replies(&deleted);
         }
         *state = deleted;
-        if let Some(store) = &self.store {
-            store.retry_everyone_cleanup(state);
-        }
-        self.events.publish(
-            crate::threads::GROUP_CONVERSATION,
-            "",
-            "conversation",
-            json!({"thread_id":id, "action":"delete"}),
-        );
-        Response::json(200, json!({"ok":true}))
     }
 
     fn requested_thread(
@@ -2744,8 +2851,7 @@ impl MarbleServer {
             return owner.to_string();
         }
         self.lock_state()
-            .prism
-            .owner_of(conversation_id)
+            .conversation_agent(conversation_id)
             .map(|marble| marble.id.clone())
             .unwrap_or_else(|| "marble".to_string())
     }
@@ -3834,6 +3940,12 @@ impl MarbleServer {
             Some(Value::String(id)) if valid_conversation_id(id) => Some(id.clone()),
             Some(_) => return Response::error(400, "invalid_conversation_id"),
         };
+        if conversation_id
+            .as_deref()
+            .is_some_and(|id| self.lock_state().chat_in_trash(id))
+        {
+            return Response::error(404, "unknown_conversation");
+        }
         let group_thread = parsed
             .get("thread_id")
             .or_else(|| parsed.get("threadId"))
@@ -3879,7 +3991,11 @@ impl MarbleServer {
             Some(_) => return Response::error(400, "invalid_marble_id"),
         };
         if let (Some(marble), Some(conversation)) = (&marble, &conversation_id)
-            && &marble.conversation_id != conversation
+            && self
+                .lock_state()
+                .conversation_agent(conversation)
+                .map(|owner| &owner.id)
+                != Some(&marble.id)
         {
             return Response::error(400, "conversation_owner_mismatch");
         }
@@ -3946,7 +4062,7 @@ impl MarbleServer {
             let state = self.lock_state();
             conversation_id
                 .as_deref()
-                .and_then(|id| state.prism.owner_of(id))
+                .and_then(|id| state.conversation_agent(id))
                 .map(|marble| marble.id.clone())
         });
         if self.lock_state().control.paused {
@@ -4003,18 +4119,45 @@ impl MarbleServer {
             let Some(marble) = self.lock_state().prism.get(&id).cloned() else {
                 return Response::error(404, "unknown_marble");
             };
-            let mut response = self.dispatch_swarm(
-                &json!({"text": text, "marbles": [id], "thread_id":thread}).to_string(),
-                client,
-                device_time_zone,
-            );
+            let mut response = if let Some((pool, conversation)) =
+                self.prism.as_ref().zip(conversation_id.as_deref())
+            {
+                match pool.dispatch_private_chat(
+                    &text,
+                    &id,
+                    conversation,
+                    thread.as_deref(),
+                    client,
+                    device_time_zone,
+                ) {
+                    Ok(dispatch) => {
+                        let mut document = dispatch.document();
+                        document["ok"] = json!(true);
+                        document["prism"] = self.lock_state().prism_document();
+                        Response::json(202, document)
+                    }
+                    Err(error) => Response::json(
+                        error.status,
+                        json!({"error":error.code,"message":error.message}),
+                    ),
+                }
+            } else {
+                self.dispatch_swarm(
+                    &json!({"text": text, "marbles": [id], "thread_id":thread}).to_string(),
+                    client,
+                    device_time_zone,
+                )
+            };
             if response.status == 202
                 && let Ok(Value::Object(mut document)) =
                     serde_json::from_str::<Value>(&response.body)
             {
                 document.insert("accepted".into(), json!(true));
                 document.insert("queued".into(), json!(false));
-                document.insert("conversationId".into(), json!(marble.conversation_id));
+                document.insert(
+                    "conversationId".into(),
+                    json!(conversation_id.unwrap_or(marble.conversation_id)),
+                );
                 document.insert("requestId".into(), json!(""));
                 document.insert("taskId".into(), json!(""));
                 document.insert("marbleId".into(), json!(marble.id));
@@ -4260,6 +4403,24 @@ impl MarbleServer {
                 ),
                 Err((status, error)) => Response::error(status, error),
             };
+        }
+        if crate::everyone::is_session(&retry_conversation) && task.owner == "prism" {
+            let thread = self.lock_state().task_threads.get(&retrying).cloned();
+            if let Some((pool, thread)) = self.prism.as_ref().zip(thread) {
+                return match pool.retry_everyone_round(
+                    thread,
+                    task,
+                    device_time_zone.map(str::to_owned),
+                ) {
+                    Ok(()) => Response::json(
+                        202,
+                        json!({
+                            "accepted":true,"retrying":retrying,"conversationId":crate::everyone::EVERYONE_CONVERSATION,
+                        }),
+                    ),
+                    Err((status, error)) => Response::error(status, error),
+                };
+            }
         }
         let thread = {
             let mut state = self.lock_state();
@@ -4594,15 +4755,22 @@ impl MarbleServer {
                     let mut state = server.lock_state();
                     let count = state.memory.recently_deleted.len();
                     state.memory.expire_deleted(now_millis());
-                    if state.memory.recently_deleted.len() != count {
+                    let expired_chats = state.expire_deleted_chats(now_millis());
+                    if expired_chats || state.memory.recently_deleted.len() != count {
                         state.bump();
                         true
                     } else {
                         false
                     }
                 };
-                if changed {
-                    server.save_state();
+                if let Some(store) = &server.store {
+                    let mut state = server.lock_state();
+                    if (!changed && state.pending_everyone_cleanup.is_empty())
+                        || store.save(&state).is_err()
+                    {
+                        continue;
+                    }
+                    store.retry_everyone_cleanup(&mut state);
                 }
             }
         });

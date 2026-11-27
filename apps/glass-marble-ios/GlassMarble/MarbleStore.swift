@@ -955,11 +955,12 @@ final class MarbleStore: ObservableObject {
               canSend(to: target) else { return false }
         let responders: [String]
         switch target {
-        case .everyone: responders = MarbleMentions.responders(in: trimmed, roster: prism.marbles)
+        case .everyone(let thread):
+            responders = thread == nil ? MarbleMentions.responders(in: trimmed, roster: prism.marbles) : []
         case .marble(let id): responders = [id]
         case .conversation(let id, _):
             responders = id == marbleGroupConversationId ? []
-                : [prism.marbles.first(where: { $0.conversationId == id })?.id ?? "marble"]
+                : [state.conversation(id)?.marbleId ?? prism.marbles.first(where: { $0.conversationId == id })?.id ?? "marble"]
         }
         let previous = target.isEveryone
             ? outgoingPresentation(entries, to: target, conversationId: everyoneConversationId).entries
@@ -1469,7 +1470,13 @@ final class MarbleStore: ObservableObject {
 
     /// The marble a transcript row is speaking as, for its label and dot.
     func speakerStyle(for entry: MarbleEntry) -> MarbleSpeakerStyle? {
-        MarbleSpeakerStyle.for(entry: entry, marbles: prism.marbles)
+        guard var style = MarbleSpeakerStyle.for(entry: entry, marbles: prism.marbles) else { return nil }
+        if let agent = prism.marbles.first(where: { $0.id == entry.speaker || $0.name == entry.speakerName }) {
+            let identity = rosterStyle(for: agent)
+            style.hue = identity.hue
+            style.glyph = identity.glyph
+        }
+        return style
     }
 
     /// A marble's own chat transcript once it has a durable conversation.
@@ -1680,19 +1687,19 @@ final class MarbleStore: ObservableObject {
         await perform { state.memory = try await client.updateKnowledge(id: id, action, input) }
     }
 
-    func createConversation() async throws -> MarbleConversation {
+    func createConversation(marbleId: String? = nil) async throws -> MarbleConversation {
         let conversation: MarbleConversation
         #if DEBUG
         if fixtureThreads != nil {
             conversation = MarbleConversation(
                 id: UUID().uuidString, title: "", taskIds: [],
-                updatedAt: UInt64(Date().timeIntervalSince1970 * 1000)
+                updatedAt: UInt64(Date().timeIntervalSince1970 * 1000), marbleId: marbleId
             )
             state.conversations.append(conversation)
             return conversation
         }
         #endif
-        conversation = try await withChatClient { try await $0.createConversation() }
+        conversation = try await withChatClient { try await $0.createConversation(marbleId: marbleId) }
         if state.conversation(conversation.id) == nil {
             state.conversations.append(conversation)
         }
@@ -1708,6 +1715,32 @@ final class MarbleStore: ObservableObject {
 
     func isDeletedConversation(_ id: String) -> Bool {
         deletedConversationIDs.contains(id)
+    }
+
+    func archiveConversation(_ id: String, archived: Bool) async {
+        do {
+            try await withChatClient { try await $0.archiveConversation(id: id, archived: archived) }
+            if let index = state.conversations.firstIndex(where: { $0.id == id }) {
+                state.conversations[index].archived = archived
+            }
+            errorMessage = nil
+            scheduleEventRefresh()
+        } catch is CancellationError {
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func restoreDeletedChat(_ id: String) async {
+        do {
+            try await withChatClient { try await $0.restoreDeletedChat(id: id) }
+            deletedConversationIDs.remove(id)
+            errorMessage = nil
+            await refresh()
+        } catch is CancellationError {
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func delete(conversationId id: String) async -> Bool {

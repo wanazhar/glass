@@ -102,7 +102,18 @@ struct MarbleToolActivity: Identifiable, Equatable {
 
     var title: String {
         if isWebSearch { return "Searched the web" }
-        if ["bash", "shell", "exec"].contains(name) { return "Ran a command" }
+        if ["bash", "shell", "exec"].contains(name) {
+            let command = details?.command.isEmpty == false ? details?.command : query
+            let words = command?.split(whereSeparator: \.isWhitespace) ?? []
+            guard let executable = words.first else { return "Ran a shell command" }
+            let verb = (String(executable) as NSString).lastPathComponent
+            if verb == "ls",
+               let path = words.dropFirst().first(where: { !$0.hasPrefix("-") }) {
+                return "Listed \((String(path).trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) as NSString).lastPathComponent)"
+            }
+            if verb == "ls" { return "Listed files" }
+            return "Ran \(verb)"
+        }
         if ["read", "glass.workspace.read"].contains(name), let query {
             return "Read \((query as NSString).lastPathComponent)"
         }
@@ -293,10 +304,13 @@ struct MarbleReasoningAssociation {
         }, uniquingKeysWith: { first, _ in first })
         var attached: [String: String] = [:]
         var tools: [String: [MarbleEntry]] = [:]
+        var toolAnchors: [String: String] = [:]
         standalone = entries.filter { entry in
-            if entry.kind == "tool", entry.id != entryId, let outcome = outcomes[entry.taskId] {
-                tools[outcome, default: []].append(entry)
-                return false
+            if entry.kind == "tool", entry.id != entryId, !entry.taskId.isEmpty {
+                let anchor = toolAnchors[entry.taskId, default: entry.id]
+                toolAnchors[entry.taskId] = anchor
+                tools[anchor, default: []].append(entry)
+                return entry.id == anchor
             }
             guard entry.kind == "reasoning", entry.id != entryId,
                   let outcome = outcomes[entry.taskId] else { return true }

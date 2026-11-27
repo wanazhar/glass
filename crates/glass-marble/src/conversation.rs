@@ -493,6 +493,46 @@ impl Drop for Conversation {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn sandbox_conversation_runtime(command: Command, session: &Path, workspace: &Path) -> Command {
+    let store = session.parent().expect("session storage has a parent");
+    let mut sandbox = Command::new("/usr/bin/sandbox-exec");
+    for (key, path) in [
+        ("STORE", store),
+        ("SESSION", session),
+        ("WORKSPACE", workspace),
+    ] {
+        let mut parameter = std::ffi::OsString::from(format!("{key}="));
+        parameter.push(path);
+        sandbox.arg("-D").arg(parameter);
+    }
+    sandbox
+        .args([
+            "-p",
+            r#"(version 1)
+(allow default)
+(deny file-read* file-write*
+    (require-all
+        (subpath (param "STORE"))
+        (require-not (subpath (param "SESSION")))
+        (require-not (subpath (param "WORKSPACE")))))
+(allow file-read-metadata (literal (param "STORE")))"#,
+        ])
+        .arg(command.get_program())
+        .args(command.get_args());
+    for (key, value) in command.get_envs() {
+        match value {
+            Some(value) => {
+                sandbox.env(key, value);
+            }
+            None => {
+                sandbox.env_remove(key);
+            }
+        }
+    }
+    sandbox
+}
+
 impl Conversation {
     pub fn spawn(
         command: Command,
@@ -689,6 +729,14 @@ impl Conversation {
         std::fs::create_dir_all(&cwd).map_err(MarbleError::Io)?;
         let cwd = cwd.canonicalize().map_err(MarbleError::Io)?;
         std::fs::create_dir_all(&root).map_err(MarbleError::Io)?;
+        let root = root.canonicalize().map_err(MarbleError::Io)?;
+        #[cfg(target_os = "macos")]
+        let factory: Arc<dyn Fn() -> Command + Send + Sync> = {
+            let factory = factory.clone();
+            let root = root.clone();
+            let cwd = cwd.clone();
+            std::sync::Arc::new(move || sandbox_conversation_runtime(factory(), &root, &cwd))
+        };
         let mut command = factory();
         if let Some(zone) = zone {
             command.env("TZ", zone);
@@ -711,7 +759,14 @@ impl Conversation {
         scoped.tool_limit = self.tool_limit;
         scoped.agent_tools.clone_from(&self.agent_tools);
         scoped.steering = self.steering.take();
-        scoped.respawn = self.respawn.clone();
+        #[cfg(target_os = "macos")]
+        {
+            scoped.respawn = Some(factory);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            scoped.respawn = self.respawn.clone();
+        }
         scoped.device_time_zone = zone.map(str::to_owned);
         scoped.approval_timeout = self.approval_timeout;
         scoped.instructions = self.instructions.clone();
@@ -2014,6 +2069,53 @@ impl Conversation {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scoped_runtime_can_read_its_group_workspace_but_not_another_chat() {
+        let dir = std::env::temp_dir().join(format!("marble-sandbox-{}", crate::next_request_id()));
+        let session = dir.join("session");
+        let workspace = dir.join("group");
+        let sibling = dir.join("other");
+        for root in [&session, &workspace, &sibling] {
+            std::fs::create_dir_all(root).unwrap();
+            std::fs::write(root.join("file"), b"test").unwrap();
+        }
+        let session = session.canonicalize().unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+        let sibling = sibling.canonicalize().unwrap();
+        let read = |root: &std::path::Path| {
+            let mut command = std::process::Command::new("/bin/cat");
+            command.arg(root.join("file"));
+            super::sandbox_conversation_runtime(command, &session, &workspace)
+                .output()
+                .unwrap()
+        };
+        assert_eq!(read(&session).stdout, b"test");
+        assert_eq!(read(&workspace).stdout, b"test");
+        let denied = read(&sibling);
+        assert!(!denied.status.success());
+        assert!(denied.stdout.is_empty());
+        let store = session.parent().unwrap();
+        let mut metadata = std::process::Command::new("/usr/bin/stat");
+        metadata.arg(store);
+        assert!(
+            super::sandbox_conversation_runtime(metadata, &session, &workspace)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let mut list = std::process::Command::new("/bin/ls");
+        list.arg(store);
+        assert!(
+            !super::sandbox_conversation_runtime(list, &session, &workspace)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     use super::*;
 
     #[test]

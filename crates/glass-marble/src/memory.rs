@@ -43,6 +43,67 @@ fn skill_words(text: &str) -> impl Iterator<Item = &str> {
         .filter(|word| !word.is_empty())
 }
 
+fn privacy_fold(text: &str) -> String {
+    let mut folded = String::with_capacity(text.len());
+    let mut previous_i = false;
+    for ch in text.chars() {
+        if ch == '\u{0307}' && previous_i {
+            continue;
+        }
+        previous_i = matches!(ch, 'i' | 'I' | 'İ');
+        if ch == 'İ' {
+            folded.push('i');
+        } else {
+            folded.extend(ch.to_lowercase());
+        }
+    }
+    folded
+}
+
+fn salient_words(text: &str) -> HashSet<&str> {
+    skill_words(text)
+        .filter(|word| {
+            let long = word.chars().take(4).count() >= 4;
+            (long || word.chars().any(|ch| ch.is_ascii_digit()))
+                && !matches!(
+                    *word,
+                    "about"
+                        | "after"
+                        | "also"
+                        | "always"
+                        | "before"
+                        | "could"
+                        | "does"
+                        | "every"
+                        | "from"
+                        | "have"
+                        | "into"
+                        | "like"
+                        | "must"
+                        | "only"
+                        | "please"
+                        | "should"
+                        | "than"
+                        | "that"
+                        | "their"
+                        | "them"
+                        | "then"
+                        | "there"
+                        | "these"
+                        | "they"
+                        | "this"
+                        | "when"
+                        | "where"
+                        | "which"
+                        | "will"
+                        | "with"
+                        | "would"
+                        | "your"
+                )
+        })
+        .collect()
+}
+
 fn is_space_delimited_letter(ch: char) -> bool {
     static SCRIPTS: LazyLock<ClassUnicode> = LazyLock::new(|| {
         let class = regex_syntax::parse(concat!(
@@ -61,23 +122,30 @@ fn is_space_delimited_letter(ch: char) -> bool {
     ch.is_alphabetic() && ranges.get(index).is_some_and(|range| range.start() <= ch)
 }
 
-fn private_fact_matches(lesson: &str, fact: &str) -> bool {
-    let fact = normalize(fact);
+fn private_fact_matches(lesson: &str, lesson_words: &HashSet<&str>, fact: &str) -> bool {
+    let fact = privacy_fold(&normalize(fact));
     let require_boundaries =
         fact.starts_with(is_space_delimited_letter) && fact.ends_with(is_space_delimited_letter);
-    let fact = fact.to_lowercase();
     let Some(first) = fact.chars().next() else {
         return false;
     };
-    if !require_boundaries {
-        return lesson.contains(&fact);
+    let exact = if !require_boundaries {
+        lesson.contains(&fact)
+    } else {
+        lesson.match_indices(first).any(|(start, _)| {
+            !lesson[..start].ends_with(char::is_alphanumeric)
+                && lesson[start..]
+                    .strip_prefix(&fact)
+                    .is_some_and(|rest| !rest.starts_with(char::is_alphanumeric))
+        })
+    };
+    if exact {
+        return true;
     }
-    lesson.match_indices(first).any(|(start, _)| {
-        !lesson[..start].ends_with(char::is_alphanumeric)
-            && lesson[start..]
-                .strip_prefix(&fact)
-                .is_some_and(|rest| !rest.starts_with(char::is_alphanumeric))
-    })
+    let fact_words = salient_words(&fact);
+    let overlap = fact_words.intersection(lesson_words).count();
+    overlap >= 2
+        && (overlap == fact_words.len() || (overlap >= 3 && overlap * 3 >= fact_words.len() * 2))
 }
 
 fn bounded(text: &str, limit: usize) -> String {
@@ -639,15 +707,17 @@ impl MemoryState {
     }
 
     pub(crate) fn skill_contains_private_fact(&self, skill: &Skill) -> bool {
-        let lesson = normalize(&format!(
+        let lesson = privacy_fold(&normalize(&format!(
             "{} {} {}",
             skill.name,
             skill.when_to_use,
             skill.steps.join(" ")
-        ))
-        .to_lowercase();
+        )));
+        let lesson_words = salient_words(&lesson);
         self.facts.iter().any(|fact| {
-            fact.owner == skill.owner && !fact.shared && private_fact_matches(&lesson, &fact.text)
+            fact.owner == skill.owner
+                && !fact.shared
+                && private_fact_matches(&lesson, &lesson_words, &fact.text)
         })
     }
 
@@ -1446,6 +1516,31 @@ mod tests {
                 "skill still visible after making {fact:?} private"
             );
         }
+    }
+
+    #[test]
+    fn shared_skill_privacy_matches_turkish_i_and_reordered_fact_details() {
+        for (fact, lesson) in [
+            ("İstanbul", "Look for ISTANBUL on the map"),
+            ("I\u{0307}stanbul", "Look for Istanbul on the map"),
+            (
+                "I keep my Cobalt maps inside locker 42",
+                "Open locker 42 to retrieve the maps from Cobalt",
+            ),
+        ] {
+            let lesson = privacy_fold(lesson);
+            assert!(
+                private_fact_matches(&lesson, &salient_words(&lesson), fact),
+                "{fact}"
+            );
+        }
+        let lesson = "trip planning with cobalt maps";
+        assert!(!private_fact_matches(lesson, &salient_words(lesson), "Ann"));
+        assert!(!private_fact_matches(
+            lesson,
+            &salient_words(lesson),
+            "Locker 42 uses cobalt paint"
+        ));
     }
 
     #[test]

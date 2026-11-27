@@ -29,6 +29,7 @@ public enum ChatRoute: Hashable, Sendable {
     case marbleChat(String)
     /// The default assistant's chats list — its "chat" is every conversation.
     case marbleChats
+    case archivedChats
     /// A marble's info screen: personality, look, memory, what it can do.
     case marbleInfo(String)
 }

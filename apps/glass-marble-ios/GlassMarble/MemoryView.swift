@@ -57,7 +57,7 @@ struct MemoryView: View {
             }
             .listRowBackground(MarbleTheme.card)
             Section(marbleId.map { store.memoryScope($0) } ?? "Add a shared memory") {
-                TextField("What should Marble remember?", text: $draft, axis: .vertical)
+                TextField("What should \(marbleId.map(store.knowledgeAgentName) ?? "Marble") remember?", text: $draft, axis: .vertical)
                 Button("Save memory") {
                     let text = draft
                     draft = ""
@@ -120,7 +120,7 @@ func knowledgeDate(_ milliseconds: UInt64) -> String {
         .formatted(.dateTime.day().month(.abbreviated).year())
 }
 
-private struct RecentlyDeletedView: View {
+struct RecentlyDeletedView: View {
     @EnvironmentObject private var store: MarbleStore
     var owner: String?
 
@@ -128,13 +128,21 @@ private struct RecentlyDeletedView: View {
         List {
             Section {
                 let deleted = (store.memory.recentlyDeleted ?? []).filter { owner == nil || $0.saved.owner == owner }
-                if deleted.isEmpty { Text("Nothing recently deleted.").foregroundStyle(MarbleTheme.muted) }
+                let chats = owner == nil ? store.state.deletedChats ?? [] : []
+                if deleted.isEmpty && chats.isEmpty { Text("Nothing recently deleted.").foregroundStyle(MarbleTheme.muted) }
+                ForEach(chats) { chat in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(chat.title)
+                        Text("Deleted \(knowledgeDate(chat.deletedAt))").font(.caption).foregroundStyle(MarbleTheme.muted)
+                        MarbleInlineButton(title: "Restore") { Task { await store.restoreDeletedChat(chat.id) } }
+                            .accessibilityLabel("Restore \(chat.title)")
+                    }
+                }
                 ForEach(deleted) { entry in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(entry.saved.title)
                         Text("Deleted \(knowledgeDate(entry.deletedAt))").font(.caption).foregroundStyle(MarbleTheme.muted)
-                        Button("Restore") { Task { await store.updateKnowledge(id: entry.id, .restore) } }
-                            .frame(minHeight: 44)
+                        MarbleInlineButton(title: "Restore") { Task { await store.updateKnowledge(id: entry.id, .restore) } }
                     }
                 }
             } footer: {
@@ -211,7 +219,7 @@ struct SavedKnowledgeView: View {
                     }
                     if !readOnly {
                         Section("Sharing") {
-                            Button(recipients.isEmpty ? "Share with agents" : "Share with \(recipients.count) agents") {
+                            Button(recipients.isEmpty ? "Share with agents" : "Share with \(recipients.count) \(recipients.count == 1 ? "agent" : "agents")") {
                                 showsSharing = true
                             }
                             .frame(minHeight: 44)
@@ -259,7 +267,10 @@ struct SavedKnowledgeView: View {
                         }
                     ))
                     .frame(minHeight: 44)
+                    .listRowBackground(MarbleTheme.card)
                 }
+                .scrollContentBackground(.hidden)
+                .background(MarbleTheme.paper)
                 .navigationTitle("Share skill")
             }
         }
@@ -330,21 +341,19 @@ struct MarbleKnowledgeCards: View {
 
     private func consentCards(chooseMemory: @escaping (MarbleMemoryConsent) -> Void) -> some View {
         ForEach((store.memory.consentRequests ?? []).filter { $0.taskId == entry.taskId && $0.threadId == entry.threadId }) { request in
-            VStack(alignment: .leading, spacing: 4) {
+            let hasMemory = store.memory.facts.contains { $0.owner == request.owner }
+            VStack(alignment: .leading, spacing: 8) {
                 Text("Use a private memory here?").font(.subheadline.weight(.semibold))
-                Text("Only the memory you choose can be used in this chat.")
+                Text(hasMemory ? "Only the memory you choose can be used in this chat." : "There are no saved memories to choose from.")
                     .font(.footnote).foregroundStyle(MarbleTheme.muted)
-                VStack(alignment: .leading, spacing: 0) {
-                    Button("Choose memory") { chooseMemory(request) }
-                        .disabled(!store.memory.facts.contains { $0.owner == request.owner })
-                        .frame(minHeight: 44)
-                    Button("Not now") { Task { await store.updateKnowledge(id: request.id, .resolveConsent) } }
-                        .frame(minHeight: 44)
+                if hasMemory {
+                    MarbleInlineButton(title: "Choose memory", prominent: true) { chooseMemory(request) }
                 }
+                MarbleInlineButton(title: "Not now") { Task { await store.updateKnowledge(id: request.id, .resolveConsent) } }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(MarbleTheme.wash, in: RoundedRectangle(cornerRadius: 14))
+            .background(MarbleTheme.wash, in: MarbleTheme.panel)
         }
     }
 
@@ -372,7 +381,10 @@ struct MarbleMemoryConsentPicker: View {
                     }
                     .frame(minHeight: 44)
                 }
+                .listRowBackground(MarbleTheme.card)
             }
+            .scrollContentBackground(.hidden)
+            .background(MarbleTheme.paper)
             .navigationTitle("Allow in this chat")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
@@ -396,7 +408,15 @@ private struct MarblePruningCard: View {
                 Button {
                     if selected { unchecked.insert(item.id) } else { unchecked.remove(item.id) }
                 } label: {
-                    Label(item.summary, systemImage: selected ? "checkmark.square.fill" : "square")
+                    HStack {
+                        Text(item.summary)
+                        Spacer()
+                        if selected {
+                            Image(systemName: "checkmark").font(.body.weight(.semibold))
+                                .foregroundStyle(MarbleTheme.tint)
+                                .accessibilityHidden(true)
+                        }
+                    }
                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         .contentShape(Rectangle())
                 }
@@ -410,15 +430,15 @@ private struct MarblePruningCard: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(MarbleTheme.wash, in: RoundedRectangle(cornerRadius: 14))
+        .background(MarbleTheme.wash, in: MarbleTheme.panel)
     }
 
     @ViewBuilder private var actions: some View {
         let selected = items.map(\.id).filter { !unchecked.contains($0) }
-        Button("Delete selected", role: .destructive) { resolve(selected) }
+        MarbleInlineButton(title: "Delete selected", role: .destructive, prominent: true) { resolve(selected) }
+            .tint(MarbleTheme.problem)
             .disabled(selected.isEmpty)
-            .frame(minHeight: 44)
-        Button("Keep all") { resolve([]) }.frame(minHeight: 44)
+        MarbleInlineButton(title: "Keep all") { resolve([]) }
     }
 
     private func resolve(_ selected: [String]) {
@@ -494,7 +514,7 @@ struct SuggestionCard: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(MarbleTheme.card, in: RoundedRectangle(cornerRadius: 14))
+        .background(MarbleTheme.card, in: MarbleTheme.panel)
         .sheet(isPresented: $review) {
             MemoryDecisionView(title: "Review suggestion", scope: store.memoryScope(store.owner(of: suggestion)),
                                text: suggestion.text) { _ in await store.accept(suggestion) }
@@ -502,8 +522,7 @@ struct SuggestionCard: View {
     }
 
     @ViewBuilder private var actions: some View {
-        Button("Not now") { Task { await store.dismiss(suggestion) } }
-            .buttonStyle(.glass)
+        MarbleInlineButton(title: "Not now") { Task { await store.dismiss(suggestion) } }
         Button("Review") { review = true }
             .buttonStyle(.glassProminent)
     }

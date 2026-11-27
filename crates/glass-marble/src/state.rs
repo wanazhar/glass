@@ -86,6 +86,10 @@ pub struct ConversationRecord {
     pub id: String,
     #[serde(default)]
     pub title: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marble_id: Option<String>,
     #[serde(default)]
     pub task_ids: Vec<String>,
     /// Unix milliseconds of the last update; zero for records without one.
@@ -114,6 +118,21 @@ pub struct ConversationRecord {
 impl ConversationRecord {
     pub(crate) const UNASSIGNED_LANE: u8 = u8::MAX;
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeletedChat {
+    pub id: String,
+    pub title: String,
+    pub deleted_at: u64,
+    conversations: Vec<ConversationRecord>,
+    threads: Vec<crate::threads::Thread>,
+    tasks: Vec<TaskRecord>,
+    transcript: Vec<TranscriptEntry>,
+    task_threads: std::collections::HashMap<String, String>,
+}
+
+const CHAT_TRASH_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 /// One durable generation task admitted for a conversation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,6 +296,8 @@ pub struct ProductState {
     #[serde(default)]
     pub revision: u64,
     pub conversations: Vec<ConversationRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) deleted_chats: Vec<DeletedChat>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub(crate) pending_everyone_cleanup: std::collections::BTreeSet<String>,
     pub tasks: Vec<TaskRecord>,
@@ -328,6 +349,138 @@ pub struct ProductState {
 }
 
 impl ProductState {
+    pub(crate) fn retain_deleted_chat(
+        &mut self,
+        id: &str,
+        records: &[String],
+        thread: Option<&str>,
+    ) {
+        let conversations: Vec<_> = self
+            .conversations
+            .iter()
+            .filter(|record| records.contains(&record.id))
+            .cloned()
+            .map(|mut record| {
+                if thread.is_none() && record.marble_id.is_none() {
+                    record.marble_id = self
+                        .prism
+                        .owner_of(&record.id)
+                        .map(|agent| agent.id.clone());
+                }
+                record
+            })
+            .collect();
+        let keep_thread = |item: &&crate::threads::Thread| {
+            thread == Some(item.id.as_str())
+                || (thread.is_none() && records.contains(&item.conversation_id))
+        };
+        let threads: Vec<_> = self.threads.iter().filter(keep_thread).cloned().collect();
+        let tasks: Vec<_> = self
+            .tasks
+            .iter()
+            .filter(|task| records.contains(&task.conversation_id))
+            .cloned()
+            .collect();
+        let transcript = self
+            .transcript
+            .iter()
+            .filter(|entry| {
+                records.contains(&entry.conversation_id)
+                    || thread.is_some_and(|id| entry.thread_id.as_deref() == Some(id))
+            })
+            .cloned()
+            .collect();
+        let task_threads = self
+            .task_threads
+            .iter()
+            .filter(|(task, thread)| {
+                tasks.iter().any(|item| &item.id == *task)
+                    || threads.iter().any(|item| &item.id == *thread)
+            })
+            .map(|(task, thread)| (task.clone(), thread.clone()))
+            .collect();
+        let title = threads
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| &item.title)
+            .or_else(|| {
+                conversations
+                    .iter()
+                    .find(|item| item.id == id)
+                    .map(|item| &item.title)
+            })
+            .filter(|title| !title.is_empty())
+            .cloned()
+            .unwrap_or_else(|| "Untitled chat".into());
+        self.deleted_chats.push(DeletedChat {
+            id: id.into(),
+            title,
+            deleted_at: crate::worker::now_millis(),
+            conversations,
+            threads,
+            tasks,
+            transcript,
+            task_threads,
+        });
+    }
+
+    pub(crate) fn restore_deleted_chat(&mut self, id: &str, now: u64) -> bool {
+        let Some(index) = self.deleted_chats.iter().position(|item| {
+            item.id == id && now < item.deleted_at.saturating_add(CHAT_TRASH_RETENTION_MS)
+        }) else {
+            return false;
+        };
+        let item = self.deleted_chats.remove(index);
+        self.conversations.extend(item.conversations);
+        let thread_ids: Vec<_> = item
+            .threads
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect();
+        if item.threads.iter().any(|thread| thread.group.is_some()) {
+            self.conversation_mut(crate::threads::GROUP_CONVERSATION);
+        }
+        self.threads.extend(item.threads);
+        self.tasks.extend(item.tasks);
+        self.transcript.extend(item.transcript);
+        self.transcript.sort_by_key(|entry| entry.at);
+        for (task, thread) in item.task_threads {
+            self.bind_thread(&task, Some(&thread));
+        }
+        for thread in thread_ids {
+            self.refresh_thread(&thread);
+        }
+        true
+    }
+
+    pub(crate) fn chat_in_trash(&self, id: &str) -> bool {
+        self.deleted_chats
+            .iter()
+            .any(|item| item.id == id || item.conversations.iter().any(|record| record.id == id))
+    }
+
+    pub fn expire_deleted_chats(&mut self, now: u64) -> bool {
+        let count = self.deleted_chats.len();
+        self.deleted_chats.retain(|item| {
+            if now < item.deleted_at.saturating_add(CHAT_TRASH_RETENTION_MS) {
+                return true;
+            }
+            self.pending_everyone_cleanup.extend(
+                item.conversations
+                    .iter()
+                    .filter(|record| record.private_storage)
+                    .map(|record| record.id.clone()),
+            );
+            self.pending_everyone_cleanup.extend(
+                item.threads
+                    .iter()
+                    .filter(|thread| thread.group.is_some())
+                    .map(|thread| thread.id.clone()),
+            );
+            false
+        });
+        self.deleted_chats.len() != count
+    }
     pub fn record_failure(&mut self, conversation_id: &str, task_id: &str, error: &str) {
         self.push_transcript(TranscriptEntry {
             conversation_id: conversation_id.into(),
@@ -486,6 +639,18 @@ impl ProductState {
             return Err("a turn is still running in this conversation".into());
         }
         Ok(())
+    }
+
+    pub(crate) fn conversation_agent(&self, id: &str) -> Option<&crate::prism::PrismMarble> {
+        let assigned = self
+            .conversations
+            .iter()
+            .find(|record| record.id == id)
+            .and_then(|record| record.marble_id.as_deref());
+        match assigned {
+            Some(agent) => self.prism.get(agent),
+            None => self.prism.owner_of(id),
+        }
     }
 
     fn remove_conversation_history(&mut self, id: &str) {

@@ -57,6 +57,8 @@ struct MarbleConversation: Codable, Identifiable, Equatable {
     var title: String
     var taskIds: [String]
     var updatedAt: UInt64
+    var archived: Bool? = nil
+    var marbleId: String? = nil
 
     var displayTitle: String { title.isEmpty ? "New Chat" : title }
     var isEveryoneSession: Bool { id == everyoneConversationId || id.hasPrefix("everyone-session-") }
@@ -503,6 +505,7 @@ struct MarbleCoreTools: Decodable, Equatable {
 struct MarbleState: Decodable, Equatable {
     var revision: Int
     var conversations: [MarbleConversation]
+    var deletedChats: [MarbleDeletedChat]? = nil
     var tasks: [MarbleTask]
     var approvals: [MarbleApproval]
     var transcript: [MarbleEntry]
@@ -558,6 +561,12 @@ struct MarbleState: Decodable, Equatable {
         guard let conversationId else { return runningTask }
         return tasks.first { $0.isRunning && $0.conversationId == conversationId }
     }
+}
+
+struct MarbleDeletedChat: Decodable, Identifiable, Equatable {
+    let id: String
+    let title: String
+    let deletedAt: UInt64
 }
 
 struct MarbleEvent: Decodable, Equatable {

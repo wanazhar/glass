@@ -178,7 +178,11 @@ def run_turn(identifier, task, text, conversation, request):
             prior = context.split("Earlier replies this round (quoted, in order): ", 1)[-1]
             answer = "I have the checklist from Lead. @reviewer, please verify." if "coordinate the launch checklist" in prior else "Missing Lead context."
         elif agent == "Reviewer":
-            answer = "[[PASS]]"
+            prior = context.split("Earlier replies this round (quoted, in order): ", 1)[-1]
+            if "verify the handoff" in text.lower() and "I have the checklist from Lead" in prior:
+                answer = "I verified Engineer’s checklist."
+            else:
+                answer = "[[PASS]]"
         else:
             answer = "The handoff is ready for the team."
         event(turn, "text", {"text": "<working>Checking the launch plan…</working>\n"})
@@ -194,6 +198,11 @@ def run_turn(identifier, task, text, conversation, request):
         reply(identifier, {"settled": True})
         return
     if os.environ.get("MARBLE_FIXTURE_TURN_EVIDENCE") == "1":
+        if text == "Approve the report draft":
+            attempt_tool(turn, task, "glass.workspace.write", {"path": "report.md", "content": "Draft"})
+            event(turn, "settled", {"reason": "completed"})
+            reply(identifier, {"settled": True})
+            return
         event(turn, "reasoning", {"text": "Check the files before replying."})
         event(turn, "text", {"text": "<working>Checking the report…</working>"})
         for index, command, output, failed in [

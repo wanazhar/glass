@@ -9,7 +9,8 @@ struct MarbleAvatar: View {
     var body: some View {
         let shape = MarbleSilhouette(glyph: glyph)
         shape
-            .fill(MarbleTheme.hues[MarbleTheme.paletteIndex(for: hue)].fill)
+            .fill(MarbleTheme.hues.first { $0.degrees == hue }?.fill
+                  ?? MarbleTheme.marble(hue: hue, brightness: 0.85))
             .frame(width: size, height: size)
             .accessibilityHidden(true)
     }
@@ -69,8 +70,8 @@ struct HandoffLine: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(
-            Color(.secondarySystemBackground).opacity(0.7),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            MarbleTheme.card,
+            in: MarbleTheme.panel
         )
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -121,7 +122,7 @@ struct EveryoneHistoryView: View {
                     ContentUnavailableView {
                         Text("No one has spoken yet")
                     } description: {
-                        Text("Say something, or name a Marble with @ to call on it.")
+                        Text("Say something, or use @ to call on an agent.")
                     }
                 }
                 let transcript = MarbleReasoningAssociation(entries)
@@ -212,7 +213,7 @@ struct EveryoneHistoryView: View {
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 6)
                                     .background(
-                                        Color(.secondarySystemBackground),
+                                        MarbleTheme.card,
                                         in: Capsule()
                                     )
                             }
@@ -255,17 +256,10 @@ struct MarblesView: View {
                     navigation.setEveryonePath([])
                     navigation.selectTab(.everyone)
                 } label: {
-                    HStack {
-                        Text("Pick a Marble to talk one to one, or meet in \(Text("Everyone").underline()).")
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                    }
-                    .frame(minHeight: 44)
+                    Label("Everyone", systemImage: "bubble.left.and.bubble.right")
+                        .frame(minHeight: 44)
                 }
-                    .buttonStyle(.plain)
-                    .font(.subheadline)
-                    .foregroundStyle(MarbleTheme.muted)
-                    .listRowBackground(Color.clear)
+                .listRowBackground(MarbleTheme.card)
             }
             ForEach(store.prism.marbles) { marble in
                 let route = marble.isDefault ? ChatRoute.marbleChats : .marbleChat(marble.id)
@@ -290,7 +284,7 @@ struct MarblesView: View {
             }
             Section {
                 Button { showsNew = true } label: {
-                    Label("New Marble", systemImage: "plus.circle")
+                    Label("New agent", systemImage: "plus.circle")
                         .font(.headline)
                         .frame(minHeight: 44, alignment: .leading)
                 }
@@ -317,8 +311,9 @@ struct MarblesView: View {
     }
 
     private func person(_ marble: MarblePrismMarble) -> some View {
-        HStack(spacing: 14) {
-            MarbleAvatar(glyph: marble.glyph, hue: marble.hue, size: 50)
+        let style = store.rosterStyle(for: marble)
+        return HStack(spacing: 14) {
+            MarbleAvatar(glyph: style.glyph, hue: style.hue ?? marble.hue, size: 50)
             VStack(alignment: .leading, spacing: 4) {
                 Text(marble.name).font(.headline).foregroundStyle(MarbleTheme.ink)
                 if !marble.role.isEmpty {
@@ -398,7 +393,7 @@ struct NewMarbleView: View {
                 }
             } else {
                 Section("Name") {
-                    TextField("Name your Marble", text: $name)
+                    TextField("Name your agent", text: $name)
                     .textInputAutocapitalization(.words)
                         .frame(minHeight: 44)
                     if duplicate == nil {
@@ -472,7 +467,7 @@ struct NewMarbleView: View {
                 dismiss()
                 navigation.openMarble(id)
             } else {
-                creationError = store.errorMessage ?? "Couldn’t create this Marble. Try again."
+                creationError = store.errorMessage ?? "Couldn’t create this agent. Try again."
             }
         }
     }
@@ -582,6 +577,7 @@ struct MarbleChatScreen: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var draft = ""
+    @State private var creatingChat = false
 
     private var marble: MarblePrismMarble? {
         store.prism.marbles.first { $0.id == marbleId }
@@ -589,19 +585,49 @@ struct MarbleChatScreen: View {
 
     var body: some View {
         Group {
-            if let marble {
+            if let marble, store.state.conversation(marble.conversationId)?.archived == true {
+                ContentUnavailableView {
+                    Label("Chat archived", systemImage: "archivebox")
+                } actions: {
+                    MarbleInlineButton(title: "Restore") {
+                        Task { await store.archiveConversation(marble.conversationId, archived: false) }
+                    }
+                }
+            } else if let marble {
                 transcript(marble)
             } else {
                 ContentUnavailableView(
-                    "That Marble is gone",
+                    "That agent is gone",
                     systemImage: "person.crop.circle.badge.questionmark",
-                    description: Text("It was removed from your Marbles.")
+                    description: Text("It was removed from your agents.")
                 )
             }
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbarVisibility(.hidden, for: .tabBar)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("New chat", systemImage: "square.and.pencil") {
+                        creatingChat = true
+                        Task {
+                            defer { creatingChat = false }
+                            do {
+                                let chat = try await store.createConversation(marbleId: marbleId)
+                                navigation.openNewChat(chat.id)
+                            } catch {
+                                store.errorMessage = error.localizedDescription
+                            }
+                        }
+                    }
+                    ForEach(agentChats) { chat in
+                        NavigationLink(chat.displayTitle, value: ChatRoute.conversation(chat.id))
+                    }
+                } label: {
+                    Label("Chats", systemImage: "bubble.left.and.bubble.right")
+                }
+                .disabled(creatingChat)
+            }
             ToolbarItem(placement: .principal) {
                 MarbleTitleView(title: marble?.name ?? "Marble")
                     .marbleToolbarTitle()
@@ -615,7 +641,7 @@ struct MarbleChatScreen: View {
                         Image(systemName: "person.crop.circle")
                     }
                 }
-                .accessibilityLabel("About this Marble")
+                .accessibilityLabel("About this agent")
             }
             if let conversationId = marble?.conversationId, !conversationId.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -623,6 +649,11 @@ struct MarbleChatScreen: View {
                 }
             }
         }
+    }
+
+    private var agentChats: [MarbleConversation] {
+        store.state.conversations.filter { $0.marbleId == marbleId && $0.archived != true }
+            .sorted { $0.updatedAt > $1.updatedAt }
     }
 
     @ViewBuilder
@@ -812,7 +843,7 @@ struct MarbleInfoView: View {
             NavigationStack { NewMarbleView(duplicate: agent) }
         }
         .confirmationDialog(
-            "Remove \(marble?.name ?? "this Marble") and their chat?",
+            "Remove \(marble?.name ?? "this agent") and their chats?",
             isPresented: $confirmRemove,
             titleVisibility: .visible
         ) {

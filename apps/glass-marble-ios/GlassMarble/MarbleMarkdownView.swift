@@ -129,7 +129,7 @@ private struct MarbleCodeBlock: View {
                     .padding(12)
             }
         }
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(MarbleTheme.card, in: MarbleTheme.panel)
     }
 }
 
@@ -160,7 +160,7 @@ private struct MarbleTableBlock: View {
             }
             .padding(12)
         }
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(MarbleTheme.card, in: MarbleTheme.panel)
     }
 
     private func alignment(_ column: Int) -> HorizontalAlignment {

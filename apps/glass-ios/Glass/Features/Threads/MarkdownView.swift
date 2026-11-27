@@ -945,32 +945,23 @@ struct StreamFade: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var chunks: [Chunk] = []
     @State private var known: Int?
-    @State private var idle = false
 
     private var duration: Double { reduceMotion ? 0.08 : 0.3 }
     private var lag: Double { reduceMotion ? 0 : 0.08 }
 
     func body(content: Content) -> some View {
-        TimelineView(.animation(paused: idle)) { timeline in
+        // It lives only on the newest blocks of a reply that is still arriving, so its clock runs freely.
+        TimelineView(.animation) { timeline in
             content.textRenderer(StreamFadeRenderer(chunks: chunks, known: known ?? 0, count: count,
                                                     now: timeline.date, duration: duration, lag: lag))
                 .environment(\.fadingStream, true)
         }
         .onAppear { arrive(count) }
         .onChange(of: count) { _, value in arrive(value) }
-        .task {
-            // One cheap check a tenth of a second, rather than a task per token, pauses the clock once settled.
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(100))
-                let settled = chunks.last.map { Date.now.timeIntervalSince($0.date) > duration + lag } ?? true
-                if settled != idle { idle = settled }
-            }
-        }
     }
 
     private func arrive(_ value: Int) {
         let now = Date.now
-        idle = false
         chunks.removeAll { now.timeIntervalSince($0.date) > duration + lag || $0.start >= value }
         if value > (known ?? 0) { chunks.append(Chunk(start: known ?? 0, date: now)) }
         known = value
@@ -1052,7 +1043,8 @@ struct RevealingReply: View {
         .task(id: TaskKey(anchor: anchor, date: anchorDate, total: text.utf8.count)) {
             let remaining = Double(text.utf8.count - anchor) / rate
             guard remaining > 0 else { caughtUp = true; return }
-            try? await Task.sleep(for: .seconds(remaining + 0.02))
+            // Keep streaming until the last words have finished fading in.
+            try? await Task.sleep(for: .seconds(remaining + 0.45))
             if !Task.isCancelled { caughtUp = true }
         }
     }

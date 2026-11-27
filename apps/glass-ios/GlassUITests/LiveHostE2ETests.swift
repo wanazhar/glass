@@ -858,6 +858,22 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertFalse(banner("Alert away").waitForExistence(timeout: 5), "launch doesn't alert for old replies")
     }
 
+    /// A short reply streams in, then its copy and share row appears once it finishes.
+    @MainActor
+    func testFinishedReplyShowsCopyAndShare() throws {
+        let thread = try call("thread/new?title=Short%20reply", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        let copy = app.buttons["reply.copy"]
+        XCTAssertFalse(copy.exists, "no reply actions before there is a reply")
+        _ = try call("thread/send?id=\(thread)&text=lines%2024", method: "POST")
+        XCTAssertTrue(copy.waitForExistence(timeout: 30), "copy appears once the reply finishes")
+        XCTAssertTrue(app.buttons["reply.share"].exists, "share sits beside copy")
+        sleep(1)
+        attach(app, "e2e-reply-actions")
+    }
+
     @MainActor
     func testStreamingReplyIsFollowedUntilYouScrollThenResumes() throws {
         let thread = try call("thread/new?title=Follow", method: "POST")

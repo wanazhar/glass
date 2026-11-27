@@ -1330,6 +1330,8 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertTrue(waitUntil(90) {
             !streaming.exists && app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Line 60 of'")).firstMatch.exists
         }, "the long reply finishes")
+        sleep(1)
+        try save("chat-end")
         let screen = app.descendants(matching: .any)["conversation"].firstMatch
         screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).press(
             forDuration: 0.01, thenDragTo: screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)),

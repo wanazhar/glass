@@ -2591,6 +2591,12 @@ impl MarbleServer {
             "conversation",
             json!({"thread_id":id, "action":action}),
         );
+        if action == "restore"
+            && conversation == crate::everyone::EVERYONE_CONVERSATION
+            && let Some(pool) = &self.prism
+        {
+            pool.resume_held_everyone(id);
+        }
         Response::json(200, json!({"ok":true}))
     }
 

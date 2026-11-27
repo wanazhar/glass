@@ -2945,6 +2945,44 @@ fn paused_everyone_thread_messages_resume_as_sequential_rounds() {
 }
 
 #[test]
+fn restoring_an_archived_everyone_thread_resumes_its_held_round() {
+    if !python3_available() {
+        return;
+    }
+    let fixture =
+        NamedTurnFixture::with_args("everyone-archived-held", vec!["--group-rounds".into()]);
+    let (status, body) = fixture.post(
+        "/api/threads",
+        json!({"conversation_id":"everyone","title":"Temporarily archived"}),
+    );
+    assert_eq!(status, 201, "{body}");
+    let thread = body["thread"]["id"].as_str().unwrap();
+    let prompt = "@marble answer after restore";
+    assert_eq!(fixture.post("/api/control/pause", json!({})).0, 200);
+    let (status, body) = fixture.post("/api/everyone", json!({"threadId":thread,"text":prompt}));
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(body["queued"], true);
+    assert_eq!(
+        fixture
+            .post(&format!("/api/threads/{thread}/archive"), json!({}))
+            .0,
+        200
+    );
+    let (status, body) = fixture.post("/api/control/resume", json!({}));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["dispatched"], 0);
+    assert_eq!(fixture.state.lock().unwrap().control.queue.len(), 1);
+    assert_eq!(
+        fixture
+            .post(&format!("/api/threads/{thread}/restore"), json!({}))
+            .0,
+        200
+    );
+    fixture.completed(prompt);
+    assert!(fixture.state.lock().unwrap().control.queue.is_empty());
+}
+
+#[test]
 fn group_threads_keep_lead_and_stay_out_of_everyone() {
     let mut state = ProductState::default();
     state.prism.install_template();

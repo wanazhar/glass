@@ -1557,6 +1557,26 @@ impl PrismPool {
         )
     }
 
+    pub(crate) fn resume_held_everyone(self: &Arc<Self>, thread: &str) -> bool {
+        let entry = self
+            .lock_state()
+            .control
+            .queue
+            .iter()
+            .find(|entry| entry.everyone_round && entry.thread_id.as_deref() == Some(thread))
+            .cloned();
+        entry.is_some_and(|entry| {
+            self.start_round(
+                RoundScope::Everyone(thread.into()),
+                entry.text,
+                entry.client_message,
+                entry.device_time_zone,
+                RoundSource::Held(&entry.id),
+            )
+            .is_ok()
+        })
+    }
+
     pub fn resume_held(self: &Arc<Self>) -> usize {
         let queued = self.lock_state().control.queue.clone();
         let mut seen = HashSet::new();

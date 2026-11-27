@@ -146,7 +146,7 @@ def run_turn(identifier, task, text, conversation, request):
         attempt_tool(turn, task, "glass.workspace.list", {})
         answer = name + " says hello."
         if name == "Dietrich":
-            answer = "The user is asking for a greeting. I'll output only the final answer.\n\n" + answer
+            answer = "The user is asking for a greeting. I need to say hello. I should keep it short. I'll output only the final answer.\n\n" + answer
         event(turn, "text", {"text": answer})
         event(turn, "settled", {"reason": "completed"})
         reply(identifier, {"settled": True})

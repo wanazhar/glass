@@ -121,6 +121,7 @@ impl ProductState {
     }
 
     pub(crate) fn start_group_thread(&mut self, title: &str, mut group: GroupThread) -> Thread {
+        self.conversation_mut(GROUP_CONVERSATION);
         let now = crate::worker::now_millis();
         group.goal = group.goal.trim().chars().take(500).collect();
         group.done_when = group.done_when.trim().chars().take(500).collect();

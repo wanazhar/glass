@@ -514,6 +514,9 @@ impl ProductState {
     /// "recent turns" for a chat nobody can open. Dropping them on load keeps
     /// the document self-consistent.
     pub fn prune_orphaned_tasks(&mut self) -> usize {
+        if self.threads.iter().any(|thread| thread.group.is_some()) {
+            self.conversation_mut(crate::threads::GROUP_CONVERSATION);
+        }
         let known: std::collections::HashSet<&str> = self
             .conversations
             .iter()

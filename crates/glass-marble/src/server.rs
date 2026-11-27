@@ -1998,6 +1998,9 @@ impl MarbleServer {
         drop(guard);
         let mut value = snapshot.encode();
         if let Value::Object(ref mut map) = value {
+            if let Some(Value::Array(conversations)) = map.get_mut("conversations") {
+                conversations.retain(|chat| chat["id"] != crate::threads::GROUP_CONVERSATION);
+            }
             map.insert("transcriptCount".into(), json!(transcript_count));
             if lean {
                 map.insert("transcript".into(), Value::Array(Vec::new()));
@@ -2176,7 +2179,7 @@ impl MarbleServer {
     }
 
     fn delete_conversation(&self, id: &str) -> Response {
-        if crate::everyone::is_session(id) {
+        if crate::everyone::is_session(id) || id == crate::threads::GROUP_CONVERSATION {
             return Response::error(409, "thread_owned_conversation");
         }
         let outcome = {
@@ -3695,6 +3698,9 @@ impl MarbleServer {
                 ),
                 Err((status, error)) => Response::error(status, error),
             };
+        }
+        if conversation_id.as_deref() == Some(crate::threads::GROUP_CONVERSATION) {
+            return Response::error(409, "group_thread_required");
         }
         let marble = match parsed.get("marbleId") {
             None | Some(Value::Null) => None,

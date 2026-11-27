@@ -2784,6 +2784,39 @@ fn template_installation_keeps_existing_agents_and_duplicate_copies_only_the_car
 }
 
 #[test]
+fn group_prompts_survive_startup_orphan_pruning() {
+    let mut state = ProductState::default();
+    state.prism.install_template();
+    let server = server_with(
+        state,
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle(
+        "POST",
+        "/api/threads",
+        r#"{"conversation_id":"group-chats","title":"Keep the prompt","group":{"members":[]}}"#,
+    );
+    assert_eq!(status, 201, "{body}");
+    let id = serde_json::from_str::<Value>(&body).unwrap()["thread"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut reloaded: ProductState =
+        serde_json::from_value(serde_json::to_value(server.state()).unwrap()).unwrap();
+    reloaded.push_transcript(glass_marble::TranscriptEntry {
+        thread_id: Some(id),
+        conversation_id: "group-chats".into(),
+        kind: "user".into(),
+        text: "Start with this prompt".into(),
+        ..Default::default()
+    });
+    assert_eq!(reloaded.prune_orphaned_tasks(), 0);
+    assert_eq!(reloaded.transcript[0].text, "Start with this prompt");
+}
+
+#[test]
 fn prism_roster_is_served_and_editable_without_an_engine() {
     let server = server_with(
         ProductState::default(),

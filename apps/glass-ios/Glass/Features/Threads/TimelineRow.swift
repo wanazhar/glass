@@ -66,10 +66,10 @@ struct TimelineRow: View {
                         .glassButtonStyle()
                 }
                 if endsTurn, !streaming {
-                    ReplyActions(text: text).transition(.opacity)
+                    ReplyActions(text: text)
+                        .transition(.opacity.animation(reduceMotion ? .linear(duration: 0.08) : .easeOut(duration: 0.3)))
                 }
             }
-                .animation(reduceMotion ? .linear(duration: 0.08) : .easeOut(duration: 0.3), value: streaming)
                 .accessibilityIdentifier("timeline.streaming", isEnabled: streaming)
                 .sheet(isPresented: $showingFullAnswer) {
                     NavigationStack {

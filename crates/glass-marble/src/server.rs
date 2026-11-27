@@ -1556,6 +1556,7 @@ impl MarbleServer {
         let mut prepared = Vec::new();
         let mut busy = Vec::new();
         let mut seen = std::collections::HashSet::new();
+        let small_talk = crate::normalize::is_small_talk(text);
         for id in &ids {
             if !seen.insert(id.clone()) {
                 continue;
@@ -1567,6 +1568,7 @@ impl MarbleServer {
                     task.status == "running"
                         && !task.id.starts_with("queued-")
                         && task.conversation_id == conversation
+                        && crate::normalize::is_small_talk(&task.prompt) == small_talk
                 }) {
                     let task_id = task.id.clone();
                     let lane = state.conversation_mut(&conversation).lane;

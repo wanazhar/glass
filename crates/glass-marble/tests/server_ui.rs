@@ -7361,6 +7361,45 @@ fn everyone_follow_up_steers_the_active_agent_without_a_second_run() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn everyone_task_follow_up_waits_for_a_tool_free_greeting_to_settle() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_persistence(
+        "queued-after-greeting",
+        vec!["--delay-ms".into(), "1000".into()],
+        true,
+    );
+    let receiver = fixture.events.subscribe();
+    assert_eq!(
+        fixture
+            .post("/api/everyone", json!({"text":"@Ada hello"}))
+            .0,
+        202
+    );
+    while receiver.recv_timeout(Duration::from_secs(5)).unwrap().kind != "turn_start" {}
+    let prompt = "@Ada list the workspace files";
+    assert_eq!(fixture.post("/api/everyone", json!({"text":prompt})).0, 202);
+    let greeting = fixture.completed("@Ada hello");
+    let task = fixture.completed(prompt);
+    assert_ne!(greeting.id, task.id);
+    assert_eq!(greeting.conversation_id, task.conversation_id);
+    let state = fixture.server.state();
+    assert!(
+        !state
+            .transcript
+            .iter()
+            .any(|e| e.task_id == greeting.id && e.kind == "tool")
+    );
+    assert!(
+        state
+            .transcript
+            .iter()
+            .any(|e| e.task_id == task.id && e.kind == "tool")
+    );
+}
+
 /// One marble can ask another for help; both sides of the ask are written in
 /// plain words on the shared timeline.
 #[test]

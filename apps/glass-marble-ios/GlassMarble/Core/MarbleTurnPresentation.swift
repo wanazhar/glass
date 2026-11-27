@@ -1,5 +1,22 @@
 import Foundation
 
+enum MarbleReplyReveal {
+    static let interval: TimeInterval = 0.13
+    static let maximumFrames = 10
+    static let duration = interval * Double(maximumFrames)
+
+    static func frames(for text: String) -> [String] {
+        let words = text.indices.filter { index in
+            !text[index].isWhitespace && (index == text.startIndex || text[text.index(before: index)].isWhitespace)
+        }
+        guard words.count > 1 else { return [text] }
+        let stride = (words.count + maximumFrames - 1) / maximumFrames
+        return Swift.stride(from: stride, to: words.count, by: stride).map { word in
+            String(text[..<words[word]])
+        } + [text]
+    }
+}
+
 enum MarbleStreamingText {
     static func updating(_ current: String, for taskId: String, from event: MarbleEvent) -> String? {
         guard event.taskId == taskId else { return nil }

@@ -3,6 +3,19 @@ import XCTest
 @testable import MarbleCore
 
 final class MarbleTurnPresentationTests: XCTestCase {
+    func testRevealPreservesOriginalValidatedTextAndBoundsFrameCount() {
+        let text = "  A 👩🏽‍💻 reply.\n\n- Next item"
+        XCTAssertEqual(MarbleReplyReveal.frames(for: text), [
+            "  A ", "  A 👩🏽‍💻 ", "  A 👩🏽‍💻 reply.\n\n",
+            "  A 👩🏽‍💻 reply.\n\n- ", "  A 👩🏽‍💻 reply.\n\n- Next ", text,
+        ])
+        let long = String(repeating: "word ", count: 131)
+        let frames = MarbleReplyReveal.frames(for: long)
+        XCTAssertLessThanOrEqual(frames.count, MarbleReplyReveal.maximumFrames)
+        XCTAssertEqual(frames.last, long)
+        XCTAssertEqual(MarbleReplyReveal.frames(for: "Okay."), ["Okay."])
+    }
+
     func testStoppedPartialReplyKeepsItsTextAndOffersRetry() throws {
         let task = MarbleTask(id: "turn", conversationId: "chat", status: "cancelled",
                               owner: "user", prompt: "Do the work", at: 1)

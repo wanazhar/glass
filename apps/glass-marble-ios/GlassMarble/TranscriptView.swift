@@ -282,17 +282,9 @@ struct MarbleEntryView: View {
                 .padding(.leading, 48)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         } else if entry.kind == "pending" {
-            let retrying = store.automaticRetries.contains(entry.taskId)
-            let preview = store.pendingReplyText(for: entry.taskId)
-            Group {
-                if let preview, !retrying {
-                    replyBubble(preview).transition(.opacity)
-                } else {
-                    MarbleThinkingBubble(name: speaker?.name ?? store.agentName(for: entry.taskId) ?? "Marble",
-                                         retrying: retrying, status: store.workingLines[entry.taskId])
-                }
-            }
-            .animation(reduceMotion ? nil : .easeIn(duration: 0.18), value: preview == nil)
+            MarbleThinkingBubble(name: speaker?.name ?? store.agentName(for: entry.taskId) ?? "Marble",
+                                 retrying: store.automaticRetries.contains(entry.taskId),
+                                 status: store.workingLines[entry.taskId])
         } else if entry.kind == "handoff", let handoff = entry.handoff {
             HandoffLine(handoff: handoff)
         } else if entry.kind == "reasoning" {
@@ -324,18 +316,11 @@ struct MarbleEntryView: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(speaker.name) said")
             }
-            let blocks = store.retractedReplyBlocks(for: entry)
-            if blocks.isEmpty {
-                MarbleMarkdownView(text: text).equatable().textSelection(.enabled)
+            if !reduceMotion, let start = store.replyRevealStart(for: entry),
+               Date().timeIntervalSince(start) < MarbleReplyReveal.duration {
+                MarbleRevealedReply(text: text, startsAt: start)
             } else {
-                ZStack(alignment: .topLeading) {
-                    ForEach(blocks.indices, id: \.self) { index in
-                        MarbleMarkdownView(text: blocks[index]).equatable()
-                            .hidden()
-                            .accessibilityHidden(true)
-                    }
-                    MarbleMarkdownView(text: text).equatable().textSelection(.enabled)
-                }
+                MarbleMarkdownView(text: text).equatable().textSelection(.enabled)
             }
         }
         .padding(.horizontal, 12)
@@ -345,6 +330,32 @@ struct MarbleEntryView: View {
             MarbleTheme.card,
             in: RoundedRectangle(cornerRadius: 14)
         )
+    }
+}
+
+private struct MarbleRevealedReply: View {
+    let text: String
+    let startsAt: Date
+    @State private var frame = 0
+
+    var body: some View {
+        let frames = MarbleReplyReveal.frames(for: text)
+        let elapsed = max(0, Date().timeIntervalSince(startsAt))
+        let visible = min(max(frame, Int(elapsed / MarbleReplyReveal.interval)), frames.count - 1)
+        ZStack(alignment: .topLeading) {
+            MarbleMarkdownView(text: frames[visible]).equatable()
+                .textSelection(.enabled)
+                .id(visible)
+                .transition(.opacity)
+        }
+        .task(id: startsAt) {
+            for index in (visible + 1)..<frames.count {
+                let delay = startsAt.addingTimeInterval(Double(index) * MarbleReplyReveal.interval).timeIntervalSinceNow
+                if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: 0.11)) { frame = index }
+            }
+        }
     }
 }
 

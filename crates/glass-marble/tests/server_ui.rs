@@ -4933,13 +4933,22 @@ fn cancelling_queued_everyone_turns_does_not_claim_a_later_busy_message() {
         ] {
             post(&format!("/api/tasks/{id}/cancel"), json!({}));
             if id == second_id {
-                post(
-                    &format!("/api/conversations/{shared_chat}/delete"),
-                    json!({}),
+                assert_eq!(
+                    server
+                        .handle(
+                            "POST",
+                            &format!("/api/conversations/{shared_chat}/delete"),
+                            "{}",
+                        )
+                        .0,
+                    409
                 );
             }
             let (_, body) = server.handle("GET", "/api/state", "");
-            let state: ProductState = serde_json::from_str(&body).unwrap();
+            let mut state: ProductState = serde_json::from_str(&body).unwrap();
+            if id == second_id {
+                state.delete_conversation(shared_chat).unwrap();
+            }
             let later = state
                 .transcript
                 .iter()
@@ -4956,7 +4965,8 @@ fn cancelling_queued_everyone_turns_does_not_claim_a_later_busy_message() {
             }
         }
         let (_, body) = server.handle("GET", "/api/state", "");
-        let final_state: ProductState = serde_json::from_str(&body).unwrap();
+        let mut final_state: ProductState = serde_json::from_str(&body).unwrap();
+        final_state.delete_conversation(shared_chat).unwrap();
         assert!(
             !final_state
                 .transcript

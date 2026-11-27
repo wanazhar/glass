@@ -1393,7 +1393,7 @@ mod tests {
     #[test]
     fn chat_cap_does_not_shorten_routine_deadlines() {
         let host_timeout = std::time::Duration::from_secs(300);
-        let chat = super::TurnRequest::new(None, "Do the work".into());
+        let chat = super::TurnRequest::new(None, "Do the work");
         assert_eq!(
             chat.timeout_for_turn(host_timeout),
             crate::DEFAULT_TURN_TIMEOUT

@@ -557,7 +557,7 @@ mod tests {
         let dir = data_dir("legacy-reasoning");
         let store = StateStore::in_data_dir(&dir);
         let mut state = ProductState::default();
-        let plan = "The user is asking why. I need to explain. I'll output only the final answer.";
+        let plan = "The user is asking why. I need to explain. I should apologize. I'll output only the final answer.";
         let answer = "My bad — just the answer.";
         for conversation in ["private", "everyone"] {
             state.push_transcript(crate::state::TranscriptEntry {

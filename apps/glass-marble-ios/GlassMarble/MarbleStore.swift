@@ -1650,7 +1650,34 @@ final class MarbleStore: ObservableObject {
 
     /// The facts one marble keeps, plus the shared ones every marble gets.
     func memories(for marbleId: String) -> [MarbleMemoryFact] {
-        memory.facts.filter { $0.owner.isEmpty || $0.owner == marbleId }
+        memory.facts.filter { $0.shared || $0.owner.isEmpty || $0.owner == marbleId }
+    }
+
+    func knowledgeAgentName(_ id: String) -> String {
+        prism.marbles.first { $0.id == id }?.name ?? id
+    }
+
+    func knowledgeSource(conversationId: String?, threadId: String?, date: UInt64) -> String {
+        let threadTitle = threadId.flatMap { threadUpdates[$0]?.title ?? threadPages[$0]?.thread.title }
+        let chatTitle = conversationId.flatMap { state.conversation($0)?.title }
+        let source = [threadTitle, chatTitle].compactMap { $0 }.first { !$0.isEmpty }
+            ?? (threadId != nil ? "Thread" : conversationId?.isEmpty == false ? "Private chat" : "Added in Memory")
+        return "\(source) · \(knowledgeDate(date))"
+    }
+
+    func savedKnowledge(for entry: MarbleEntry) -> [MarbleSavedItem] {
+        guard let id = entry.serverID else { return [] }
+        let facts: [MarbleSavedItem] = memory.facts.filter { $0.sourceEntryId == id }.map { .memory($0) }
+        let skills: [MarbleSavedItem] = (memory.skills ?? [])
+            .filter { $0.sourceEntryId == id && $0.learnedFrom == nil }.map { .skill($0) }
+        return facts + skills
+    }
+
+    func updateKnowledge(
+        id: String, _ action: MarbleClient.KnowledgeAction, _ input: MarbleClient.KnowledgeInput = .init()
+    ) async {
+        guard let client else { return }
+        await perform { state.memory = try await client.updateKnowledge(id: id, action, input) }
     }
 
     func createConversation() async throws -> MarbleConversation {
@@ -2277,7 +2304,7 @@ final class MarbleStore: ObservableObject {
             }
         case "approval_pending":
             scheduleEventRefresh()
-        case "approval_resolved", "state":
+        case "approval_resolved", "state", "memory":
             scheduleEventRefresh()
         case "everyone":
             everyoneTimeline = MarbleEveryoneTimeline.applying(event, to: everyoneTimeline)
@@ -2493,7 +2520,7 @@ extension MarbleStore {
         state.prism = MarblePrism(
             marbles: [
                 MarblePrismMarble(
-                    id: "marble", name: "Marble", role: "the default assistant",
+                    id: "marble", name: "Marble", role: "The default assistant",
                     glyph: "circle", hue: 210, workspace: "", state: "idle",
                     conversationId: "", taskId: "", lastAt: 0, runs: 3,
                     lastError: "", persona: "", isDefault: true

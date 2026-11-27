@@ -1869,6 +1869,7 @@ impl PrismPool {
         conversation.set_store(self.store.as_deref());
         let (tool_limit, turn_timeout) = marble.turn_budget();
         conversation.set_tool_limit(tool_limit);
+        conversation.set_knowledge_owner(&marble.id);
         conversation.set_agent_tools(marble.card.as_ref().map(|card| card.tools.clone()));
         let host_model = self.lock_state().model.trim().to_owned();
         conversation.set_model((!host_model.is_empty()).then_some(host_model));
@@ -2060,6 +2061,7 @@ impl PrismPool {
                         &reply.text,
                         status,
                     );
+                    state.settle_knowledge(&reply, &marble.id, text);
                     state.bump();
                     state.clone()
                 };

@@ -1,10 +1,6 @@
 //! Durable memory the assistant carries between conversations.
 //!
-//! Memory is deliberately boring and legible: a short list of statements the
-//! person asked Marble to keep, plus suggestions Marble offers when it notices
-//! something worth keeping. Nothing is remembered silently — an explicit
-//! "remember this" command writes a fact, and a noticed fact waits as a
-//! suggestion until the person saves or dismisses it.
+//! Memories and skills are durable, scoped to their owner and editable.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -17,6 +13,7 @@ pub const MEMORY_LIMIT: usize = 200;
 pub const SUGGESTION_LIMIT: usize = 8;
 /// Longest fact Marble accepts from one command.
 pub const MAX_FACT_CHARS: usize = 280;
+const RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -70,6 +67,116 @@ pub struct MemoryFact {
     /// `"marble"` is the default assistant's own memory.
     #[serde(default)]
     pub owner: String,
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    #[serde(default)]
+    pub source_entry_id: Option<String>,
+    #[serde(default)]
+    pub permitted_threads: Vec<String>,
+    #[serde(default)]
+    pub shared: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Skill {
+    pub id: String,
+    pub owner: String,
+    pub name: String,
+    pub when_to_use: String,
+    pub steps: Vec<String>,
+    pub created_at: u64,
+    pub conversation_id: String,
+    pub thread_id: Option<String>,
+    pub source_entry_id: Option<String>,
+    pub shared_with: Vec<String>,
+    pub learned_from: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "item", rename_all = "camelCase")]
+pub enum SavedItem {
+    Memory(MemoryFact),
+    Skill(Skill),
+}
+
+impl SavedItem {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Memory(fact) => &fact.id,
+            Self::Skill(skill) => &skill.id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentlyDeleted {
+    pub saved: SavedItem,
+    pub deleted_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PruningProposal {
+    pub id: String,
+    pub owner: String,
+    pub task_id: String,
+    pub item_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryConsent {
+    pub id: String,
+    pub owner: String,
+    pub thread_id: String,
+    pub task_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(
+    tag = "action",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AgentKnowledgeAction {
+    Remember {
+        text: String,
+    },
+    SaveSkill {
+        name: String,
+        when_to_use: String,
+        steps: Vec<String>,
+    },
+    Teach {
+        skill_id: String,
+    },
+    Prune {
+        item_ids: Vec<String>,
+    },
+    AskToShare,
+}
+
+pub(crate) struct KnowledgeTurn<'a> {
+    pub owner: &'a str,
+    pub conversation: &'a str,
+    pub thread: Option<&'a str>,
+    pub task_id: &'a str,
+    pub source_entry_id: Option<String>,
+    pub recipient: Option<&'a str>,
+}
+
+pub(crate) fn extract_action(text: String) -> (Option<AgentKnowledgeAction>, String) {
+    if let Some((line, answer)) = text.trim_start().split_once('\n')
+        && let Some(payload) = line
+            .strip_prefix("[[KNOWLEDGE ")
+            .and_then(|line| line.strip_suffix("]]"))
+        && let Ok(action) = serde_json::from_str(payload)
+    {
+        return (Some(action), answer.trim().to_owned());
+    }
+    (None, text)
 }
 
 /// Something Marble noticed and wants permission to keep.
@@ -96,9 +203,361 @@ pub struct MemoryState {
     pub facts: Vec<MemoryFact>,
     #[serde(default)]
     pub suggestions: Vec<MemorySuggestion>,
+    #[serde(default)]
+    pub skills: Vec<Skill>,
+    #[serde(default)]
+    pub recently_deleted: Vec<RecentlyDeleted>,
+    #[serde(default)]
+    pub pruning_proposals: Vec<PruningProposal>,
+    #[serde(default)]
+    pub consent_requests: Vec<MemoryConsent>,
 }
 
 impl MemoryState {
+    pub fn expire_deleted(&mut self, now: u64) {
+        self.recently_deleted
+            .retain(|entry| now < entry.deleted_at.saturating_add(RETENTION_MS));
+    }
+
+    pub fn delete(&mut self, id: &str) -> bool {
+        let saved = if let Some(index) = self.facts.iter().position(|fact| fact.id == id) {
+            SavedItem::Memory(self.facts.remove(index))
+        } else if let Some(index) = self.skills.iter().position(|skill| skill.id == id) {
+            SavedItem::Skill(self.skills.remove(index))
+        } else {
+            return false;
+        };
+        let now = now_millis();
+        self.expire_deleted(now);
+        self.recently_deleted.push(RecentlyDeleted {
+            saved,
+            deleted_at: now,
+        });
+        true
+    }
+
+    pub fn restore(&mut self, id: &str) -> bool {
+        self.expire_deleted(now_millis());
+        let Some(index) = self
+            .recently_deleted
+            .iter()
+            .position(|entry| entry.saved.id() == id)
+        else {
+            return false;
+        };
+        let at_limit = match self.recently_deleted[index].saved {
+            SavedItem::Memory(_) => self.facts.len() >= MEMORY_LIMIT,
+            SavedItem::Skill(_) => self.skills.len() >= MEMORY_LIMIT,
+        };
+        if at_limit {
+            return false;
+        }
+        match self.recently_deleted.remove(index).saved {
+            SavedItem::Memory(fact) => self.facts.push(fact),
+            SavedItem::Skill(skill) => self.skills.push(skill),
+        }
+        true
+    }
+
+    pub(crate) fn save_skill(&mut self, mut skill: Skill) -> Result<(), &'static str> {
+        skill.name = normalize(&skill.name);
+        skill.when_to_use = normalize(&skill.when_to_use);
+        skill.steps = skill.steps.iter().map(|step| normalize(step)).collect();
+        if skill.name.is_empty()
+            || skill.name.chars().count() > 80
+            || skill.when_to_use.is_empty()
+            || skill.when_to_use.chars().count() > MAX_FACT_CHARS
+            || skill.steps.is_empty()
+            || skill.steps.len() > 12
+            || skill
+                .steps
+                .iter()
+                .any(|step| step.is_empty() || step.chars().count() > 500)
+        {
+            return Err("Give the skill a short name, a use case, and one to twelve steps.");
+        }
+        if let Some(existing) = self.skills.iter_mut().find(|item| item.id == skill.id) {
+            *existing = skill;
+        } else {
+            if self.skills.len() >= MEMORY_LIMIT {
+                return Err("Delete a skill before saving another.");
+            }
+            skill.id = next_id("skill");
+            self.skills.push(skill);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn update_skill(
+        &mut self,
+        id: &str,
+        name: String,
+        when_to_use: String,
+        steps: Vec<String>,
+    ) -> Result<(), &'static str> {
+        let Some(mut skill) = self.skills.iter().find(|skill| skill.id == id).cloned() else {
+            return Err("unknown_skill");
+        };
+        skill.name = name;
+        skill.when_to_use = when_to_use;
+        skill.steps = steps;
+        self.save_skill(skill)
+    }
+
+    pub(crate) fn propose_pruning(
+        &mut self,
+        owner: &str,
+        task_id: &str,
+        mut item_ids: Vec<String>,
+    ) {
+        item_ids.retain(|id| {
+            self.facts
+                .iter()
+                .any(|fact| fact.id == *id && fact.owner == owner)
+                || self
+                    .skills
+                    .iter()
+                    .any(|skill| skill.id == *id && skill.owner == owner)
+        });
+        item_ids.sort_unstable();
+        item_ids.dedup();
+        item_ids.truncate(24);
+        if !item_ids.is_empty() {
+            self.pruning_proposals.push(PruningProposal {
+                id: next_id("prune"),
+                owner: owner.into(),
+                task_id: task_id.into(),
+                item_ids,
+            });
+        }
+    }
+
+    pub(crate) fn resolve_pruning(&mut self, id: &str, selected: &[String]) -> bool {
+        let Some(index) = self
+            .pruning_proposals
+            .iter()
+            .position(|proposal| proposal.id == id)
+        else {
+            return false;
+        };
+        let proposal = self.pruning_proposals.remove(index);
+        for id in proposal.item_ids {
+            if selected.contains(&id) {
+                self.delete(&id);
+            }
+        }
+        true
+    }
+
+    pub(crate) fn ask_consent(&mut self, owner: &str, thread_id: &str, task_id: &str) {
+        if !self
+            .consent_requests
+            .iter()
+            .any(|request| request.owner == owner && request.thread_id == thread_id)
+        {
+            self.consent_requests.push(MemoryConsent {
+                id: next_id("consent"),
+                owner: owner.into(),
+                thread_id: thread_id.into(),
+                task_id: task_id.into(),
+            });
+        }
+    }
+
+    pub(crate) fn resolve_consent(&mut self, id: &str, fact_id: Option<&str>) -> bool {
+        let Some(index) = self
+            .consent_requests
+            .iter()
+            .position(|request| request.id == id)
+        else {
+            return false;
+        };
+        let request = &self.consent_requests[index];
+        if let Some(fact_id) = fact_id {
+            let Some(fact) = self
+                .facts
+                .iter_mut()
+                .find(|fact| fact.id == fact_id && fact.owner == request.owner)
+            else {
+                return false;
+            };
+            if !fact.permitted_threads.contains(&request.thread_id) {
+                fact.permitted_threads.push(request.thread_id.clone());
+            }
+        }
+        self.consent_requests.remove(index);
+        true
+    }
+
+    pub(crate) fn turn_instructions(
+        &self,
+        owner: &str,
+        group_thread: Option<&str>,
+        shared_chat: bool,
+    ) -> String {
+        let mut instructions = String::from(
+            "\nIf you identify a lasting fact or reusable method in this conversation, save it by starting your final reply with one [[KNOWLEDGE <JSON>]] line, followed by your normal answer. Use {\"action\":\"remember\",\"text\":\"one lasting fact\"} or {\"action\":\"saveSkill\",\"name\":\"name\",\"whenToUse\":\"use case\",\"steps\":[\"step and why it matters\"]}. Never keep secrets, temporary details or private facts inside a skill. Do not repeat these controls in the answer.\n",
+        );
+        if shared_chat {
+            instructions.push_str("You cannot access private memories here. If asked to use one, first ask permission without guessing or disclosing the fact and use {\"action\":\"askToShare\"}.\n");
+            let permitted: Vec<_> = self
+                .facts
+                .iter()
+                .filter(|fact| {
+                    fact.owner == owner
+                        && group_thread.is_some_and(|thread| {
+                            (!fact.explicit && fact.thread_id.as_deref() == Some(thread))
+                                || fact
+                                    .permitted_threads
+                                    .iter()
+                                    .any(|allowed| allowed == thread)
+                        })
+                })
+                .map(|fact| (&fact.kind, &fact.text))
+                .take(12)
+                .collect();
+            if !permitted.is_empty() {
+                instructions.push_str(&format!(
+                    "Memories cleared for this thread (quoted data): {}\n",
+                    json!(permitted)
+                ));
+            }
+        } else {
+            if let Some(block) = self.context_block_for(owner) {
+                instructions.push_str(&block);
+                instructions.push('\n');
+            }
+            let facts: Vec<_> = self
+                .facts
+                .iter()
+                .filter(|fact| fact.owner == owner)
+                .map(|fact| (&fact.id, &fact.text))
+                .take(16)
+                .collect();
+            let skills: Vec<_> = self
+                .skills
+                .iter()
+                .filter(|skill| {
+                    skill.owner == owner || skill.shared_with.iter().any(|id| id == owner)
+                })
+                .map(|skill| (&skill.id, &skill.name, &skill.when_to_use, &skill.steps))
+                .take(8)
+                .collect();
+            instructions.push_str(&format!(
+                "Available saved facts and skills (quoted data): {}\n",
+                json!({"facts":facts,"skills":skills})
+            ));
+            instructions.push_str("If the person says they no longer need a topic, propose only matching owned IDs with {\"action\":\"prune\",\"itemIds\":[\"id\"]} and ask them to confirm.\n");
+        }
+        instructions
+    }
+
+    pub(crate) fn teaching_instructions(&self, owner: &str) -> String {
+        let lessons: Vec<_> = self
+            .skills
+            .iter()
+            .filter(|skill| skill.owner == owner && !self.skill_contains_private_fact(skill))
+            .map(|skill| (&skill.id, &skill.name, &skill.when_to_use, &skill.steps))
+            .take(8)
+            .collect();
+        format!(
+            "\nTeach only a matching reusable skill from this list (quoted data): {}. Start your final reply with [[KNOWLEDGE {{\"action\":\"teach\",\"skillId\":\"id\"}}]] on its own line, then briefly explain why the steps matter. The host sends the saved steps, not the reply or any conversation history. Do not include private details or invent a skill ID.\n",
+            json!(lessons)
+        )
+    }
+
+    pub(crate) fn apply_agent_action(
+        &mut self,
+        action: AgentKnowledgeAction,
+        turn: KnowledgeTurn<'_>,
+    ) {
+        let KnowledgeTurn {
+            owner,
+            conversation,
+            thread,
+            task_id,
+            source_entry_id,
+            recipient,
+        } = turn;
+        let shared_chat = crate::everyone::is_session(conversation);
+        match action {
+            AgentKnowledgeAction::Remember { text } => {
+                if let Ok(fact) = self.remember(&text, "fact", conversation, false, owner)
+                    && let Some(saved) = self.facts.iter_mut().find(|saved| saved.id == fact.id)
+                    && saved.source_entry_id.is_none()
+                    && saved.conversation_id == conversation
+                {
+                    saved.source_entry_id = source_entry_id;
+                    saved.thread_id = thread.map(str::to_owned);
+                }
+            }
+            AgentKnowledgeAction::SaveSkill {
+                name,
+                when_to_use,
+                steps,
+            } => {
+                let _ = self.save_skill(Skill {
+                    id: String::new(),
+                    owner: owner.into(),
+                    name,
+                    when_to_use,
+                    steps,
+                    created_at: now_millis(),
+                    conversation_id: conversation.into(),
+                    thread_id: thread.map(str::to_owned),
+                    source_entry_id,
+                    shared_with: Vec::new(),
+                    learned_from: None,
+                });
+            }
+            AgentKnowledgeAction::Teach { skill_id } if !shared_chat => {
+                if let Some(recipient) = recipient.filter(|id| *id != owner)
+                    && let Some(mut skill) = self
+                        .skills
+                        .iter()
+                        .find(|skill| skill.id == skill_id && skill.owner == owner)
+                        .cloned()
+                    && !self.skill_contains_private_fact(&skill)
+                {
+                    skill.id.clear();
+                    skill.owner = recipient.into();
+                    skill.learned_from = Some(owner.into());
+                    skill.shared_with.clear();
+                    skill.created_at = now_millis();
+                    skill.conversation_id = conversation.into();
+                    skill.thread_id = thread.map(str::to_owned);
+                    skill.source_entry_id = source_entry_id;
+                    let _ = self.save_skill(skill);
+                }
+            }
+            AgentKnowledgeAction::Prune { item_ids } if !shared_chat => {
+                self.propose_pruning(owner, task_id, item_ids)
+            }
+            AgentKnowledgeAction::AskToShare if shared_chat => {
+                if let Some(thread) = thread {
+                    self.ask_consent(owner, thread, task_id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn skill_contains_private_fact(&self, skill: &Skill) -> bool {
+        let lesson = normalize(&format!(
+            "{} {} {}",
+            skill.name,
+            skill.when_to_use,
+            skill.steps.join(" ")
+        ))
+        .to_lowercase();
+        self.facts.iter().any(|fact| {
+            fact.owner == skill.owner
+                && !fact.shared
+                && !fact.text.is_empty()
+                && lesson.contains(&normalize(&fact.text).to_lowercase())
+        })
+    }
+
     /// Whether an equivalent fact is already kept.
     pub fn knows(&self, text: &str) -> bool {
         let candidate = normalize(text).to_ascii_lowercase();
@@ -151,6 +610,10 @@ impl MemoryState {
             explicit,
             conversation_id: conversation_id.to_string(),
             owner: owner.to_string(),
+            thread_id: None,
+            source_entry_id: None,
+            permitted_threads: Vec::new(),
+            shared: false,
         };
         self.facts.push(fact.clone());
         self.suggestions
@@ -192,7 +655,10 @@ impl MemoryState {
             .iter_mut()
             .find(|fact| fact.id == id)
             .ok_or_else(|| "unknown memory".to_string())?;
-        fact.text = text;
+        if fact.text != text {
+            fact.permitted_threads.clear();
+            fact.text = text;
+        }
         if !kind.trim().is_empty() {
             fact.kind = normalize_kind(kind).to_string();
         }
@@ -203,9 +669,7 @@ impl MemoryState {
 
     /// Forget one fact by id.
     pub fn forget(&mut self, id: &str) -> bool {
-        let before = self.facts.len();
-        self.facts.retain(|fact| fact.id != id);
-        self.facts.len() != before
+        self.delete(id)
     }
 
     /// Forget matching facts belonging to one owner.
@@ -214,16 +678,28 @@ impl MemoryState {
         if needle.is_empty() {
             return 0;
         }
-        let before = self.facts.len();
-        self.facts.retain(|fact| {
-            fact.owner != owner || !normalize(&fact.text).to_ascii_lowercase().contains(&needle)
-        });
-        before - self.facts.len()
+        let ids = self
+            .facts
+            .iter()
+            .filter(|fact| {
+                fact.owner == owner && normalize(&fact.text).to_ascii_lowercase().contains(&needle)
+            })
+            .map(|fact| fact.id.clone())
+            .collect::<Vec<_>>();
+        for id in &ids {
+            self.delete(id);
+        }
+        ids.len()
     }
 
     /// Actually write to memory on disk: called by the store after a change.
     pub fn is_empty(&self) -> bool {
-        self.facts.is_empty() && self.suggestions.is_empty()
+        self.facts.is_empty()
+            && self.suggestions.is_empty()
+            && self.skills.is_empty()
+            && self.recently_deleted.is_empty()
+            && self.pruning_proposals.is_empty()
+            && self.consent_requests.is_empty()
     }
 
     /// Offer one statement for confirmation. Returns `None` when it is already
@@ -296,7 +772,7 @@ impl MemoryState {
         let facts: Vec<&MemoryFact> = self
             .facts
             .iter()
-            .filter(|fact| fact.owner.is_empty() || fact.owner == owner)
+            .filter(|fact| fact.shared || fact.owner.is_empty() || fact.owner == owner)
             .collect();
         if facts.is_empty() {
             return None;
@@ -324,7 +800,7 @@ impl MemoryState {
     /// the speaker's own.
     pub fn note_use(&mut self, owner: &str) {
         for fact in self.facts.iter_mut() {
-            if fact.owner.is_empty() || fact.owner == owner {
+            if fact.shared || fact.owner.is_empty() || fact.owner == owner {
                 fact.uses = fact.uses.saturating_add(1);
             }
         }
@@ -334,6 +810,16 @@ impl MemoryState {
     pub fn document(&self) -> Value {
         let mut value = serde_json::to_value(self).unwrap_or(Value::Null);
         if let Value::Object(ref mut map) = value {
+            let now = now_millis();
+            map.insert(
+                "recentlyDeleted".into(),
+                json!(
+                    self.recently_deleted
+                        .iter()
+                        .filter(|entry| now < entry.deleted_at.saturating_add(RETENTION_MS))
+                        .collect::<Vec<_>>()
+                ),
+            );
             map.insert("count".into(), json!(self.facts.len()));
             map.insert("limit".into(), json!(MEMORY_LIMIT));
         }
@@ -705,6 +1191,57 @@ mod tests {
         );
         assert_eq!(detect("run the tests"), None);
         assert_eq!(detect("Remember this: I prefer tabs"), None);
+    }
+
+    #[test]
+    fn private_facts_require_thread_consent_and_expired_items_cannot_be_restored() {
+        let mut memory = MemoryState::default();
+        let fact = memory
+            .remember(
+                "Private project details",
+                "fact",
+                "private-chat",
+                false,
+                "ada",
+            )
+            .unwrap();
+        assert!(
+            !memory
+                .turn_instructions("ada", Some("group-one"), true)
+                .contains(&fact.text)
+        );
+        memory.ask_consent("ada", "group-one", "task");
+        let consent = memory.consent_requests[0].id.clone();
+        assert!(memory.resolve_consent(&consent, Some(&fact.id)));
+        assert!(
+            memory
+                .turn_instructions("ada", Some("group-one"), true)
+                .contains(&fact.text)
+        );
+        assert!(
+            !memory
+                .turn_instructions("ada", Some("group-two"), true)
+                .contains(&fact.text)
+        );
+        assert!(
+            !memory
+                .turn_instructions("dietrich", Some("group-one"), true)
+                .contains(&fact.text)
+        );
+        memory
+            .update(&fact.id, "Edited private project details", "fact")
+            .unwrap();
+        assert!(
+            !memory
+                .turn_instructions("ada", Some("group-one"), true)
+                .contains("Edited private project details")
+        );
+        assert!(memory.delete(&fact.id));
+        let deleted_at = memory.recently_deleted[0].deleted_at;
+        memory.expire_deleted(deleted_at + RETENTION_MS - 1);
+        assert_eq!(memory.recently_deleted.len(), 1);
+        memory.expire_deleted(deleted_at + RETENTION_MS);
+        assert!(!memory.restore(&fact.id));
     }
 
     #[test]

@@ -357,6 +357,29 @@ final class MarbleClient: @unchecked Sendable {
     }
 
     private struct MemoryReply: Decodable { var memory: MarbleMemory }
+    enum KnowledgeAction: String {
+        case delete, restore
+        case shareMemory = "share-memory"
+        case editSkill = "edit-skill"
+        case shareSkill = "share-skill"
+        case confirmPruning = "confirm-pruning"
+        case resolveConsent = "resolve-consent"
+    }
+
+    struct KnowledgeInput: Encodable {
+        var shared: Bool?
+        var name: String?
+        var whenToUse: String?
+        var steps: [String]?
+        var agents: [String]?
+        var selected: [String]?
+        var factId: String?
+    }
+
+    func updateKnowledge(id: String, _ action: KnowledgeAction, _ input: KnowledgeInput) async throws -> MarbleMemory {
+        let reply: MemoryReply = try await postJSON("/api/knowledge/\(encoded(id))/\(action.rawValue)", body: input)
+        return reply.memory
+    }
     private struct RoutinesReply: Decodable { var routines: MarbleRoutines }
     private struct OkReply: Decodable { var ok: Bool }
 

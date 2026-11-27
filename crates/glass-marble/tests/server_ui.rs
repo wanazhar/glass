@@ -6933,6 +6933,113 @@ fn thread_turns_route_and_propagate_to_every_entry_and_retry_after_reload() {
 }
 
 #[test]
+fn agent_knowledge_is_saved_taught_and_pruned_with_confirmation() {
+    if !python3_available() {
+        return;
+    }
+    let fixture =
+        NamedTurnFixture::with_persistence("agent-knowledge", vec!["--knowledge".into()], true);
+    let diet = fixture
+        .state
+        .lock()
+        .unwrap()
+        .prism
+        .add("Dietrich", "Engineer", "", 0, "", "")
+        .unwrap()
+        .id
+        .clone();
+    let send = |prompt: &str| {
+        let (status, body) = fixture.post(
+            "/api/turns",
+            json!({"text":prompt,"marbleId":fixture.marble_id}),
+        );
+        assert_eq!(status, 202, "{body}");
+        fixture.completed(prompt)
+    };
+    let first = send("Record my lasting preference");
+    let saved = fixture.server.state();
+    let fact = saved.memory.facts.first().unwrap().clone();
+    assert_eq!(fact.owner, fixture.marble_id);
+    assert_eq!(fact.conversation_id, first.conversation_id);
+    assert!(fact.created_at > 0);
+    assert!(saved.transcript.iter().any(|entry| {
+        Some(&entry.id) == fact.source_entry_id.as_ref() && entry.text == "I can help with that."
+    }));
+    send("Save our repeatable checklist");
+    send("Ada, teach Dietrich how you did that");
+    let snapshot = fixture.server.state();
+    let original = snapshot
+        .memory
+        .skills
+        .iter()
+        .find(|skill| skill.owner == fixture.marble_id)
+        .unwrap()
+        .clone();
+    let learned = snapshot
+        .memory
+        .skills
+        .iter()
+        .find(|skill| skill.owner == diet)
+        .unwrap()
+        .clone();
+    assert_ne!(learned.id, original.id);
+    assert_eq!(
+        learned.learned_from.as_deref(),
+        Some(fixture.marble_id.as_str())
+    );
+    assert_eq!(learned.steps, original.steps);
+    assert_eq!(snapshot.memory.facts.len(), 1);
+    assert_eq!(fixture.post(&format!("/api/knowledge/{}/edit-skill", learned.id), json!({
+        "name":"My release plan","whenToUse":learned.when_to_use,"steps":["Adapt the checklist"]
+    })).0, 200);
+    assert_eq!(
+        fixture
+            .server
+            .state()
+            .memory
+            .skills
+            .iter()
+            .find(|skill| skill.id == original.id)
+            .unwrap(),
+        &original
+    );
+    send("I'm done with the cobalt project");
+    let proposed = fixture.server.state();
+    let proposal = proposed.memory.pruning_proposals.first().unwrap();
+    assert!(proposal.item_ids.contains(&fact.id));
+    assert!(proposal.item_ids.contains(&original.id));
+    assert_eq!(
+        fixture
+            .post(
+                &format!("/api/knowledge/{}/confirm-pruning", proposal.id),
+                json!({"selected":[fact.id]})
+            )
+            .0,
+        200
+    );
+    assert_eq!(fixture.server.state().memory.skills.len(), 2);
+    let after = send("Which facts are in my saved memories?");
+    assert!(
+        fixture
+            .server
+            .state()
+            .transcript
+            .iter()
+            .any(|entry| entry.task_id == after.id && entry.text == "Memory not available.")
+    );
+    let reloaded = fixture.store.as_ref().unwrap().load().unwrap();
+    assert!(reloaded.memory.facts.is_empty());
+    assert_eq!(reloaded.memory.recently_deleted[0].saved.id(), fact.id);
+    assert_eq!(
+        fixture
+            .post(&format!("/api/knowledge/{}/restore", fact.id), json!({}))
+            .0,
+        200
+    );
+    assert_eq!(fixture.server.state().memory.facts, vec![fact]);
+}
+
+#[test]
 fn named_engines_use_the_host_model_and_keep_tool_rows_after_reload() {
     if !python3_available() {
         return;
@@ -7363,8 +7470,17 @@ fn private_small_talk_disables_tools_without_changing_the_conversation() {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     };
     let greeting = turn("Hello!");
+    let mut configured = fixture_json("fixture-tool-policy.json");
+    assert!(
+        configured
+            .as_object_mut()
+            .unwrap()
+            .remove("instructions")
+            .unwrap()
+            .is_string()
+    );
     assert_eq!(
-        fixture_json("fixture-tool-policy.json"),
+        configured,
         json!({"toolMode":"host","tools":[],"model":"fixture-default-model"})
     );
     assert_eq!(

@@ -303,6 +303,8 @@ private struct MarbleThreadView: View {
     @State private var changeFailed = false
     @State private var confirmDelete = false
     @State private var showingGroupInfo = false
+    @State private var memoryConsent: MarbleMemoryConsent?
+    @State private var pendingMemoryGrant: (requestId: String, factId: String)?
     @State private var respondingToSuggestion = false
     @State private var loadGeneration = UUID()
 
@@ -368,6 +370,12 @@ private struct MarbleThreadView: View {
         .sheet(isPresented: $showingGroupInfo) {
             if let group = page?.thread.group { groupInfo(group) }
         }
+        .sheet(item: $memoryConsent, onDismiss: grantMemoryAccess) { request in
+            MarbleMemoryConsentPicker(request: request) { factId in
+                pendingMemoryGrant = (request.id, factId)
+                memoryConsent = nil
+            }
+        }
         .confirmationDialog("Delete this thread?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete thread", role: .destructive) { update("delete") }
         }
@@ -389,6 +397,14 @@ private struct MarbleThreadView: View {
             } catch {
                 changeFailed = true
             }
+        }
+    }
+
+    private func grantMemoryAccess() {
+        guard let grant = pendingMemoryGrant else { return }
+        pendingMemoryGrant = nil
+        Task {
+            await store.updateKnowledge(id: grant.requestId, .resolveConsent, .init(factId: grant.factId))
         }
     }
 
@@ -433,7 +449,8 @@ private struct MarbleThreadView: View {
             workingNames: presentation.responders.filter { !reserved.contains($0) }.map { id in
                 store.prism.marbles.first { $0.id == id }?.name ?? page.thread.participants.first ?? "Marble"
             } + workingGroupNames,
-            loadOlder: { await store.loadOlderThread(id, beforePrepend: $0) }
+            loadOlder: { await store.loadOlderThread(id, beforePrepend: $0) },
+            chooseMemory: { memoryConsent = $0 }
         )
         .safeAreaInset(edge: .top, spacing: 0) {
             if let group = page.thread.group,
@@ -635,6 +652,7 @@ private struct MarbleJumpTimeline: View {
     var outgoing: UUID? = nil
     var workingNames: [String] = []
     var loadOlder: MarbleOlderHistoryLoader? = nil
+    var chooseMemory: ((MarbleMemoryConsent) -> Void)? = nil
     @State private var highlight: String?
 
     var body: some View {
@@ -647,7 +665,7 @@ private struct MarbleJumpTimeline: View {
                             MarbleEntryView(entry: entry, speaker: store.speakerStyle(for: entry),
                                             reasoning: transcript.attached[entry.id], toolRows: transcript.tools[entry.id] ?? [],
                                             timestamp: transcript.timestamps[entry.id],
-                                            allowsThreads: parentId == nil)
+                                            allowsThreads: parentId == nil, chooseMemory: chooseMemory)
                             if entry.id == parentId && entries.count > 1 { Divider() }
                         }
                         .padding(.vertical, 3)

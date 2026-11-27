@@ -629,6 +629,70 @@ impl ProductState {
         }
     }
 
+    pub(crate) fn settle_knowledge(
+        &mut self,
+        reply: &crate::MarbleReply,
+        owner: &str,
+        prompt: &str,
+    ) {
+        let Some(action) = reply.knowledge_action.clone().filter(|_| !reply.cancelled) else {
+            return;
+        };
+        let recipient = self.teaching_recipient(owner, prompt);
+        let entry_id = self
+            .transcript
+            .iter()
+            .rev()
+            .find(|entry| entry.task_id == reply.task_id && entry.kind == "assistant")
+            .map(|entry| entry.id.clone());
+        self.memory.apply_agent_action(
+            action,
+            crate::memory::KnowledgeTurn {
+                owner,
+                conversation: &reply.conversation_id,
+                thread: self.task_threads.get(&reply.task_id).map(String::as_str),
+                task_id: &reply.task_id,
+                source_entry_id: entry_id,
+                recipient: recipient.as_deref(),
+            },
+        );
+    }
+
+    pub(crate) fn teaching_recipient(&self, owner: &str, prompt: &str) -> Option<String> {
+        prompt
+            .trim_start()
+            .to_lowercase()
+            .split_once("teach ")
+            .and_then(|(address, request)| {
+                let speaker = self
+                    .prism
+                    .get(owner)
+                    .map_or("Marble", |agent| agent.name.as_str());
+                let address = address
+                    .trim()
+                    .trim_start_matches('@')
+                    .trim_end_matches(',')
+                    .trim();
+                if !address.is_empty() && !address.eq_ignore_ascii_case(speaker) {
+                    return None;
+                }
+                let (name, _) = request
+                    .split_once(" how ")
+                    .or_else(|| request.split_once(" to "))?;
+                let name = name.trim().trim_start_matches('@');
+                if name == "marble" {
+                    Some("marble".to_owned())
+                } else {
+                    self.prism
+                        .marbles
+                        .iter()
+                        .find(|agent| agent.name.to_lowercase() == name || agent.id == name)
+                        .map(|agent| agent.id.clone())
+                }
+            })
+            .filter(|recipient| recipient != owner)
+    }
+
     /// Append one transcript entry.
     pub fn push_transcript(&mut self, mut entry: TranscriptEntry) {
         let pending = matches!(entry.kind.as_str(), "assistant" | "failure" | "system")

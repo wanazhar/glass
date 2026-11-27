@@ -128,6 +128,7 @@ struct MarbleEntryView: View {
     var timestamp: String? = nil
     var allowsThreads = true
     var usesThreadActionsDialog = false
+    var chooseMemory: ((MarbleMemoryConsent) -> Void)? = nil
 
     private var isUser: Bool { entry.kind == "user" }
     private var exactTime: String {
@@ -164,6 +165,9 @@ struct MarbleEntryView: View {
                 }
             }
             entryContent(isFailure: failure)
+            if entry.kind == "assistant" && !failure {
+                MarbleKnowledgeCards(entry: entry, chooseMemory: chooseMemory)
+            }
             if !failure && MarbleTurnFailure.isStoppedPartialReply(entry, taskStatus: task?.status) {
                 MarbleFailedTurnRow(task: task, entry: entry, sender: speaker?.name)
             }

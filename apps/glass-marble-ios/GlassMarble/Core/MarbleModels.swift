@@ -346,6 +346,7 @@ struct MarblePrismMarble: Codable, Identifiable, Equatable {
     var id: String
     var name: String
     var role: String
+    var displayRole: String { role.prefix(1).uppercased() + role.dropFirst() }
     var glyph: String
     var hue: Int
     var workspace: String
@@ -827,9 +828,13 @@ struct MarbleMemoryFact: Decodable, Identifiable, Equatable {
     var uses: UInt64
     /// Empty means shared with every marble; otherwise the owning marble's id.
     var owner: String
+    var conversationId: String?
+    var threadId: String?
+    var sourceEntryId: String?
+    var shared: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, text, kind, createdAt, uses, owner
+        case id, text, kind, createdAt, uses, owner, conversationId, threadId, sourceEntryId, shared
     }
 
     init(from decoder: Decoder) throws {
@@ -840,6 +845,10 @@ struct MarbleMemoryFact: Decodable, Identifiable, Equatable {
         createdAt = try container.decode(UInt64.self, forKey: .createdAt)
         uses = try container.decodeIfPresent(UInt64.self, forKey: .uses) ?? 0
         owner = try container.decodeIfPresent(String.self, forKey: .owner) ?? ""
+        conversationId = try container.decodeIfPresent(String.self, forKey: .conversationId)
+        threadId = try container.decodeIfPresent(String.self, forKey: .threadId)
+        sourceEntryId = try container.decodeIfPresent(String.self, forKey: .sourceEntryId)
+        shared = try container.decodeIfPresent(Bool.self, forKey: .shared) ?? false
     }
 
     init(
@@ -852,7 +861,77 @@ struct MarbleMemoryFact: Decodable, Identifiable, Equatable {
         self.createdAt = createdAt
         self.uses = uses
         self.owner = owner
+        self.shared = false
     }
+}
+
+struct MarbleSkill: Decodable, Identifiable, Equatable {
+    var id: String
+    var owner: String
+    var name: String
+    var whenToUse: String
+    var steps: [String]
+    var createdAt: UInt64
+    var conversationId: String
+    var threadId: String?
+    var sourceEntryId: String?
+    var sharedWith: [String]
+    var learnedFrom: String?
+}
+
+enum MarbleSavedItem: Decodable, Identifiable, Equatable {
+    case memory(MarbleMemoryFact)
+    case skill(MarbleSkill)
+
+    private enum CodingKeys: String, CodingKey { case kind, item }
+    private enum Kind: String, Decodable { case memory, skill }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .memory: self = .memory(try container.decode(MarbleMemoryFact.self, forKey: .item))
+        case .skill: self = .skill(try container.decode(MarbleSkill.self, forKey: .item))
+        }
+    }
+
+    var id: String {
+        switch self { case let .memory(fact): fact.id; case let .skill(skill): skill.id }
+    }
+
+    var owner: String {
+        switch self { case let .memory(fact): fact.owner; case let .skill(skill): skill.owner }
+    }
+
+    var title: String {
+        switch self { case let .memory(fact): fact.text; case let .skill(skill): skill.name }
+    }
+
+    var summary: String {
+        switch self {
+        case let .memory(fact): fact.text
+        case let .skill(skill): "\(skill.name) — \(skill.whenToUse)"
+        }
+    }
+}
+
+struct MarbleRecentlyDeleted: Decodable, Identifiable, Equatable {
+    var saved: MarbleSavedItem
+    var deletedAt: UInt64
+    var id: String { saved.id }
+}
+
+struct MarblePruningProposal: Decodable, Identifiable, Equatable {
+    var id: String
+    var owner: String
+    var taskId: String
+    var itemIds: [String]
+}
+
+struct MarbleMemoryConsent: Decodable, Identifiable, Equatable {
+    var id: String
+    var owner: String
+    var threadId: String
+    var taskId: String
 }
 
 /// Something Marble noticed and wants permission to keep.
@@ -869,6 +948,14 @@ struct MarbleMemory: Decodable, Equatable {
     var suggestions: [MarbleMemorySuggestion]
     var count: Int?
     var limit: Int?
+    var skills: [MarbleSkill]?
+    var recentlyDeleted: [MarbleRecentlyDeleted]?
+    var pruningProposals: [MarblePruningProposal]?
+    var consentRequests: [MarbleMemoryConsent]?
+
+    var savedItems: [MarbleSavedItem] {
+        facts.map { .memory($0) } + (skills ?? []).map { .skill($0) }
+    }
 
     static let empty = MarbleMemory(facts: [], suggestions: [], count: 0, limit: nil)
 }

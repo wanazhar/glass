@@ -23,7 +23,8 @@ enum MarbleTheme {
     }
 
     static let hues: [(degrees: Int, name: String, fill: Color)] = [
-        (15, "Clay", clay), (85, "Moss", moss), (280, "Plum", adaptive(0xD8BFDE, 0xC9A8D1)),
+        (15, "Clay", clay), (27, "Peach", adaptive(0xF6C8AE, 0xE9AD92)),
+        (85, "Moss", moss), (280, "Plum", adaptive(0xD8BFDE, 0xC9A8D1)),
         (42, "Honey", adaptive(0xECC988, 0xDDB570)), (230, "Iris", adaptive(0xC5C9E9, 0xADB4DD)),
         (329, "Rose", adaptive(0xE9BDD0, 0xDDA9C3))
     ]

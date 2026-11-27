@@ -437,6 +437,7 @@ fn call_path(call: &ToolRequest) -> String {
 pub struct Conversation {
     text_block_boundaries: bool,
     speaker: String,
+    knowledge_owner: String,
     engine_id: u64,
     client: RuntimeClient,
     cwd: PathBuf,
@@ -551,6 +552,7 @@ impl Conversation {
         Ok(Self {
             text_block_boundaries: init["capabilities"]["textBlockBoundaries"] == true,
             speaker: "Marble".into(),
+            knowledge_owner: "marble".into(),
             client,
             cwd: cwd.to_path_buf(),
             host,
@@ -705,6 +707,7 @@ impl Conversation {
         scoped.model = self.model.clone();
         scoped.card_model.clone_from(&self.card_model);
         scoped.speaker.clone_from(&self.speaker);
+        scoped.knowledge_owner.clone_from(&self.knowledge_owner);
         scoped.tool_limit = self.tool_limit;
         scoped.agent_tools.clone_from(&self.agent_tools);
         scoped.steering = self.steering.take();
@@ -895,6 +898,18 @@ impl Conversation {
         self
     }
 
+    pub(crate) fn set_knowledge_owner(&mut self, owner: &str) {
+        self.knowledge_owner = owner.into();
+    }
+
+    fn base_instructions(&self) -> String {
+        self.instructions_fn
+            .as_ref()
+            .map(|instructions| instructions(&self.cwd))
+            .or_else(|| self.instructions.clone())
+            .unwrap_or_else(|| default_assistant_instructions("", &self.cwd))
+    }
+
     pub(crate) fn clean_reply(&self, text: &str) -> String {
         strip_self_mention(text, &self.speaker).to_string()
     }
@@ -922,13 +937,7 @@ impl Conversation {
 
     fn create_using_model(&mut self, model: Option<String>) -> Result<String, MarbleError> {
         let mut options = self.tool_options(false);
-        options.instructions = Some(
-            self.instructions_fn
-                .as_ref()
-                .map(|instructions| instructions(&self.cwd))
-                .or_else(|| self.instructions.clone())
-                .unwrap_or_else(|| default_assistant_instructions("", &self.cwd)),
-        );
+        options.instructions = Some(self.base_instructions());
         options.model = model;
         let created = self.client.durable_create(&options);
         let create_id = self.issue(created)?;
@@ -1116,6 +1125,63 @@ impl Conversation {
         }
         if let Some(model) = self.card_model.as_ref().or(chat_model.as_ref()) {
             agent["model"] = value!(model);
+        }
+        if let Some(product) = &self.product {
+            let mut instructions = self.base_instructions();
+            let state = product.lock().unwrap_or_else(|e| e.into_inner());
+            let card = if self.knowledge_owner == "marble" {
+                state.prism.default_marble().card
+            } else {
+                state
+                    .prism
+                    .get(&self.knowledge_owner)
+                    .and_then(|agent| agent.card.clone())
+            };
+            let voice = card.as_ref().map_or("", |card| card.voice.trim());
+            let voice = if voice.is_empty() {
+                match self.knowledge_owner.as_str() {
+                    "marble" => "Warm and plainspoken. Use a dry aside when it fits",
+                    "lead" => "Steady and encouraging. Suggest one clear next step",
+                    "engineer" => "Direct and curious. Use a concrete example to explain an idea",
+                    "designer" => "Observant and light. Reach for visual analogies",
+                    "researcher" => "Curious and measured. Share a surprising detail when it fits",
+                    "reviewer" => "Candid and kind. Name what works before what could improve",
+                    "finance" => "Calm and practical. Give a ballpark before the precise figure",
+                    "shopper" => "Conversational and decisive. Say what you would pick and why",
+                    _ => {
+                        "Friendly and concise. Let your own role and personality guide your phrasing"
+                    }
+                }
+            } else {
+                voice
+            };
+            instructions.push_str(&format!(
+                "\nCasual voice: {voice}. Stay professional for serious work.\n"
+            ));
+            let shared_chat = crate::everyone::is_session(conversation_id);
+            let thread = state
+                .threads
+                .iter()
+                .find(|thread| crate::everyone::session_in_thread(conversation_id, &thread.id))
+                .map(|thread| thread.id.as_str());
+            let prompt = input
+                .text
+                .rsplit_once("[User message]\n")
+                .map_or(input.text.as_str(), |(_, prompt)| prompt);
+            let teaching = !shared_chat
+                && state
+                    .teaching_recipient(&self.knowledge_owner, prompt)
+                    .is_some();
+            if teaching {
+                instructions.push_str(&state.memory.teaching_instructions(&self.knowledge_owner));
+            } else {
+                instructions.push_str(&state.memory.turn_instructions(
+                    &self.knowledge_owner,
+                    thread,
+                    shared_chat,
+                ));
+            }
+            agent["instructions"] = value!(instructions);
         }
         let configure = self.client.request(
             "durable/configure",

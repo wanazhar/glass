@@ -676,19 +676,28 @@ impl ProductState {
                 if !address.is_empty() && !address.eq_ignore_ascii_case(speaker) {
                     return None;
                 }
-                let (name, _) = request
-                    .split_once(" how ")
-                    .or_else(|| request.split_once(" to "))?;
-                let name = name.trim().trim_start_matches('@');
-                if name == "marble" {
-                    Some("marble".to_owned())
-                } else {
-                    self.prism
-                        .marbles
-                        .iter()
-                        .find(|agent| agent.name.to_lowercase() == name || agent.id == name)
-                        .map(|agent| agent.id.clone())
-                }
+                let request = request.trim_start().trim_start_matches('@');
+                self.prism
+                    .marbles
+                    .iter()
+                    .flat_map(|agent| {
+                        [
+                            (agent.name.to_lowercase(), agent.id.as_str()),
+                            (agent.id.clone(), agent.id.as_str()),
+                        ]
+                    })
+                    .chain(std::iter::once(("marble".to_owned(), "marble")))
+                    .filter(|(name, _)| {
+                        request
+                            .strip_prefix(name)
+                            .and_then(|tail| tail.strip_prefix(char::is_whitespace))
+                            .is_some_and(|tail| {
+                                let tail = tail.trim_start();
+                                tail.starts_with("how ") || tail.starts_with("to ")
+                            })
+                    })
+                    .max_by_key(|(name, _)| name.len())
+                    .map(|(_, id)| id.to_owned())
             })
             .filter(|recipient| recipient != owner)
     }
@@ -1166,6 +1175,41 @@ impl ProductState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn review_teaching_matches_roster_before_parsing_the_request() {
+        let mut state = super::ProductState::default();
+        let ada = state
+            .prism
+            .add("Ada", "Designer", "circle", 20, "", "")
+            .unwrap()
+            .id
+            .clone();
+        let dietrich = state
+            .prism
+            .add("Dietrich Braun", "Engineer", "circle", 20, "", "")
+            .unwrap()
+            .id
+            .clone();
+        assert_eq!(
+            state.teaching_recipient(
+                &ada,
+                "@Ada, teach @Dietrich Braun to explain how the workflow works"
+            ),
+            Some(dietrich)
+        );
+        assert_eq!(
+            state
+                .teaching_recipient(&ada, "Teach Marble how you did that")
+                .as_deref(),
+            Some("marble")
+        );
+        assert_eq!(
+            state.teaching_recipient(&ada, "Teach Dietrich Braunson to explain"),
+            None
+        );
+        assert_eq!(state.teaching_recipient(&ada, "Teach Ada to explain"), None);
+    }
+
     #[test]
     fn agent_presence_only_counts_the_owning_agents_running_tasks() {
         let mut state = super::ProductState::default();

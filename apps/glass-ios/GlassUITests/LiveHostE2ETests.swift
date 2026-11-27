@@ -1306,6 +1306,7 @@ final class LiveHostE2ETests: XCTestCase {
         for title in ["Fix the login redirect", "Plan the release notes", "Review the payments diff", "Draft onboarding copy"] {
             _ = try call("thread/new?title=\(title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)", method: "POST")
         }
+        let long = try call("thread/new?title=Long%20answer", method: "POST")
         let busy = try call("thread/new?title=Markdown%20tour", method: "POST")
         _ = try call("thread/markdown?id=\(busy)", method: "POST")
         let app = try pairedApp()
@@ -1321,13 +1322,14 @@ final class LiveHostE2ETests: XCTestCase {
         try save("sidebar")
 
         // Mid-reply: a long answer scrolled so its text sits under the title row.
-        let long = try call("thread/new?title=Long%20answer", method: "POST")
+        if !app.descendants(matching: .any)["thread.\(long)"].firstMatch.exists, back.exists { back.tap() }
         open(app, thread: long)
         XCTAssertTrue(waitForConnection(app, "Live"))
-        let copies = app.buttons.matching(identifier: "reply.copy")
-        let before = copies.count
         _ = try call("thread/send?id=\(long)&text=lines%2060", method: "POST")
-        XCTAssertTrue(waitUntil(60) { copies.count > before }, "the long reply finishes")
+        let streaming = app.descendants(matching: .any)["timeline.streaming"]
+        XCTAssertTrue(waitUntil(90) {
+            !streaming.exists && app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Line 60 of'")).firstMatch.exists
+        }, "the long reply finishes")
         let screen = app.descendants(matching: .any)["conversation"].firstMatch
         screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).press(
             forDuration: 0.01, thenDragTo: screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)),

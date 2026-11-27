@@ -7083,6 +7083,47 @@ fn changing_new_chat_model_keeps_the_existing_default_chat_model() {
 }
 
 #[test]
+fn older_chats_pin_the_saved_engine_model_not_the_new_chat_model() {
+    if !python3_available() {
+        return;
+    }
+    let mut fixture = NamedTurnFixture::new("legacy-chat-model");
+    fixture.state.lock().unwrap().model = "saved-engine-model".into();
+    fixture.install_default_worker();
+    let (_, created) = fixture.post("/api/conversations", json!({}));
+    let id = created["conversation"]["id"].as_str().unwrap();
+    let send = |prompt: &str| {
+        let (status, body) = fixture.post("/api/turns", json!({"conversationId":id,"text":prompt}));
+        assert!(status < 300, "{body}");
+        fixture.completed(prompt);
+        let path = fixture
+            .root
+            .join("default-sessions/fixture-tool-policy.json");
+        serde_json::from_slice::<Value>(&std::fs::read(path).unwrap()).unwrap()["model"].clone()
+    };
+    assert_eq!(send("Start on the saved model"), "saved-engine-model");
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.conversation_mut(id).chat_model = None;
+        state.model = "changed-new-chat-model".into();
+    }
+    assert_eq!(
+        send("Continue a chat from before model pinning"),
+        "saved-engine-model"
+    );
+    assert_eq!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .conversation_mut(id)
+            .chat_model
+            .as_deref(),
+        Some("saved-engine-model")
+    );
+}
+
+#[test]
 fn budget_stops_private_tools_and_everyone_time_with_an_agent_reply() {
     if !python3_available() {
         return;

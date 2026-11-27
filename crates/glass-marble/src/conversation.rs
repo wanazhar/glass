@@ -1011,6 +1011,12 @@ impl Conversation {
             .and_then(|record| record.chat_model.as_deref())
         {
             Some(model) => (!model.is_empty()).then(|| model.to_owned()),
+            None if record
+                .as_ref()
+                .is_some_and(|record| !record.needs_engine_session) =>
+            {
+                None
+            }
             None => self.model.clone(),
         };
         let mut engine_id = match &record {
@@ -1096,6 +1102,7 @@ impl Conversation {
                 .as_array()
                 .and_then(|items| items.iter().find(|item| item["type"] == "conversation"))
                 .and_then(|item| item["value"]["agent"]["model"].as_str())
+                .filter(|model| !model.is_empty())
                 .map(str::to_owned);
         }
         if let (Some(product), Some(model)) = (&self.product, chat_model.as_ref()) {

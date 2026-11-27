@@ -246,8 +246,18 @@ impl MemoryState {
         else {
             return false;
         };
-        let at_limit = match self.recently_deleted[index].saved {
-            SavedItem::Memory(_) => self.facts.len() >= MEMORY_LIMIT,
+        let at_limit = match &self.recently_deleted[index].saved {
+            SavedItem::Memory(fact) => {
+                let candidate = normalize(&fact.text).to_ascii_lowercase();
+                if self.facts.iter().any(|active| {
+                    active.owner == fact.owner
+                        && normalize(&active.text).to_ascii_lowercase() == candidate
+                }) {
+                    self.recently_deleted.remove(index);
+                    return true;
+                }
+                self.facts.len() >= MEMORY_LIMIT
+            }
             SavedItem::Skill(_) => self.skills.len() >= MEMORY_LIMIT,
         };
         if at_limit {
@@ -1197,6 +1207,34 @@ mod tests {
         );
         assert_eq!(detect("run the tests"), None);
         assert_eq!(detect("Remember this: I prefer tabs"), None);
+    }
+
+    #[test]
+    fn review_restore_keeps_only_the_active_copy_for_the_same_owner() {
+        let mut memory = MemoryState::default();
+        let old = memory
+            .remember("Prefer cobalt maps", "fact", "old", true, "ada")
+            .unwrap();
+        assert!(memory.delete(&old.id));
+        memory
+            .remember(
+                "Prefer cobalt maps",
+                "fact",
+                "another chat",
+                false,
+                "dietrich",
+            )
+            .unwrap();
+        let current = memory
+            .remember("prefer  cobalt maps", "fact", "new", false, "ada")
+            .unwrap();
+        assert!(memory.restore(&old.id));
+        assert_eq!(memory.facts.len(), 2);
+        assert_eq!(
+            memory.facts.iter().find(|fact| fact.owner == "ada"),
+            Some(&current)
+        );
+        assert!(memory.recently_deleted.is_empty());
     }
 
     #[test]

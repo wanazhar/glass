@@ -18,7 +18,17 @@ fn real_core_provider_reasoning_is_private_in_named_and_everyone_transcripts() {
         eprintln!("Set GLASS_CORE_TEST_BINARY to run the real Core/provider integration.");
         return;
     };
-    for case in dietrich::cases() {
+    let mut cases = dietrich::cases();
+    cases.push(dietrich::Case {
+        name: "chat-plain-text-preamble",
+        provider: "openai",
+        frames: vec![
+            json!({"choices":[{"delta":{"content":"The user is "}}]}),
+            json!({"choices":[{"delta":{"content":dietrich::PLAN.strip_prefix("The user is ").unwrap()}}]}),
+            json!({"choices":[{"delta":{"content":dietrich::ANSWER},"finish_reason":"stop"}]}),
+        ],
+    });
+    for case in cases {
         for everyone in [false, true] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let base_url = format!("http://{}", listener.local_addr().unwrap());
@@ -180,7 +190,11 @@ fn real_core_provider_reasoning_is_private_in_named_and_everyone_transcripts() {
                     && event.conversation_id == private.conversation_id
                 {
                     match event.kind.as_str() {
-                        "text" => visible.push_str(event.data["text"].as_str().unwrap()),
+                        "text" => {
+                            let text = event.data["text"].as_str().unwrap();
+                            assert!(!text.contains("The user is"), "{}", case.name);
+                            visible.push_str(text);
+                        }
                         "text_reset" => visible.clear(),
                         _ => {}
                     }

@@ -1,9 +1,8 @@
 //! The shared chat plane where the person talks to all their marbles at once.
 //!
 //! `everyone` is a product-level conversation, not an engine one: a message is
-//! mirrored into the timeline, the marbles it names (or the default assistant
-//! when it names nobody) answer in their own engine conversations, and each
-//! reply is mirrored back labelled with who said it.
+//! mirrored into the timeline, and each chosen marble answers in an engine
+//! session scoped to the thread. Replies carry the speaker's name.
 
 use crate::state::{HandoffEntry, ProductState, TranscriptEntry};
 
@@ -61,50 +60,46 @@ pub(crate) fn rekey(state: &mut ProductState, source: &str, target: &str) {
     }
 }
 
-pub(crate) fn default_conversation(state: &ProductState) -> Option<String> {
-    state
-        .tasks
-        .iter()
-        .rev()
-        .filter(|task| {
-            state.transcript.iter().any(|entry| {
-                entry.conversation_id == EVERYONE_CONVERSATION && entry.task_id == task.id
-            }) || state
-                .everyone_pending
-                .contains_key(&format!("task:{}", task.id))
-                || state
-                    .everyone_ready
-                    .values()
-                    .any(|entry| entry.task_id == task.id)
-        })
-        .chain(state.tasks.iter())
-        .find(|task| {
-            (task.marble_id.is_empty() || task.marble_id == DEFAULT_SPEAKER)
-                && task.owner != "prism"
-                && state.prism.owner_of(&task.conversation_id).is_none()
-                && task.status != "queued"
-                && !task.conversation_id.is_empty()
-                && !task.conversation_id.starts_with("recovered-")
-        })
-        .map(|task| task.conversation_id.clone())
+const SESSION_PREFIX: &str = "everyone-session-";
+
+pub(crate) fn session_id(speaker: &str, thread: Option<&str>) -> String {
+    format!(
+        "{SESSION_PREFIX}{}{speaker}",
+        thread.map_or_else(|| "lobby__".into(), |id| format!("{id}__"))
+    )
+}
+
+pub(crate) fn is_session(id: &str) -> bool {
+    id.starts_with(SESSION_PREFIX)
+}
+
+pub(crate) fn session_in_thread(id: &str, thread: &str) -> bool {
+    id.strip_prefix(SESSION_PREFIX)
+        .and_then(|id| id.split_once("__"))
+        .is_some_and(|(scope, _)| scope == thread)
+}
+
+pub(crate) fn ensure_session(state: &mut ProductState, id: &str) {
+    if !state.conversations.iter().any(|record| record.id == id) {
+        let record = state.conversation_mut(id);
+        record.needs_engine_session = true;
+        record.lane = crate::state::ConversationRecord::UNASSIGNED_LANE;
+    }
 }
 
 /// Who should answer one Everyone message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EveryoneTarget {
-    /// Nobody was named: the default assistant answers.
-    Default,
     /// These marble ids were named — each one answers.
     Named(Vec<String>),
-    /// `@everyone` — the whole roster answers.
+    /// No known mention or `@everyone` — the whole roster answers.
     All,
 }
 
 /// Parse `@name` mentions against the roster, whole-word and case-insensitive.
 ///
 /// `@everyone` names the whole roster; a named marble that is not on the
-/// roster is treated as ordinary text rather than a failed mention, so
-/// `@someone` the person mistyped does not silently become a dispatch.
+/// roster is treated as ordinary text rather than a failed mention.
 pub fn plan(state: &ProductState, text: &str) -> EveryoneTarget {
     let lowered = text.to_lowercase();
     let default = state.prism.default_marble();
@@ -134,7 +129,7 @@ pub fn plan(state: &ProductState, text: &str) -> EveryoneTarget {
         }
     }
     if named.is_empty() {
-        EveryoneTarget::Default
+        EveryoneTarget::All
     } else {
         EveryoneTarget::Named(named)
     }
@@ -166,7 +161,9 @@ fn mention_position(text: &str, word: &str) -> Option<usize> {
 pub(crate) fn addressing(state: &ProductState, text: &str, owner: &str) -> String {
     let ids = match plan(state, text) {
         EveryoneTarget::Named(ids) => ids,
-        _ => vec![owner.to_string()],
+        EveryoneTarget::All => std::iter::once(DEFAULT_SPEAKER.to_string())
+            .chain(state.prism.marbles.iter().map(|marble| marble.id.clone()))
+            .collect(),
     };
     let name = |id: &str| {
         if id == DEFAULT_SPEAKER {
@@ -414,7 +411,7 @@ mod tests {
     #[test]
     fn mentions_route_to_the_named_marbles() {
         let state = roster();
-        assert_eq!(plan(&state, "hi there"), EveryoneTarget::Default);
+        assert_eq!(plan(&state, "hi there"), EveryoneTarget::All);
         assert_eq!(
             plan(&state, "@everyone ship it"),
             EveryoneTarget::Named(vec![
@@ -432,8 +429,8 @@ mod tests {
             other => panic!("expected two named targets: {other:?}"),
         }
         // A mistyped or partial name is plain text, not a mention.
-        assert_eq!(plan(&state, "@adaptive thing"), EveryoneTarget::Default);
-        assert_eq!(plan(&state, "asked by radar"), EveryoneTarget::Default);
+        assert_eq!(plan(&state, "@adaptive thing"), EveryoneTarget::All);
+        assert_eq!(plan(&state, "asked by radar"), EveryoneTarget::All);
     }
 
     #[test]
@@ -457,8 +454,8 @@ mod tests {
             plan(&state, "@Ben @everyone @Ada @Ben"),
             EveryoneTarget::Named(vec![ben, ada.clone(), "marble".into()])
         );
-        assert_eq!(plan(&state, ""), EveryoneTarget::Default);
-        assert_eq!(plan(&state, "hello"), EveryoneTarget::Default);
+        assert_eq!(plan(&state, ""), EveryoneTarget::All);
+        assert_eq!(plan(&state, "hello"), EveryoneTarget::All);
         assert!(
             addressing(&state, "@Marble @everyone", &ada)
                 .starts_with("This message is addressed to: Marble (lead), Ada, Ben. You are Ada.")

@@ -2,7 +2,7 @@
 
 use crate::{
     MarbleError,
-    conversation::{CancelToken, Conversation},
+    conversation::{CancelToken, Conversation, RunBudget},
     live::LiveTurn,
 };
 use glass_runtime_client::TurnInput;
@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// How long one durable turn may run before it is reported as timed out.
-pub const DEFAULT_TURN_TIMEOUT: Duration = Duration::from_secs(900);
+pub const DEFAULT_TURN_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const DEFAULT_TOOL_LIMIT: usize = 8;
 
 /// Durable turn submitted to a Glass conversation.
 #[derive(Debug, Clone)]
@@ -179,7 +180,26 @@ pub fn run_turn(
     conversation: &mut Conversation,
     mut options: TurnOptions<'_>,
 ) -> Result<MarbleReply, MarbleError> {
-    let result = run_with_retry(turn, conversation, &mut options);
+    let result = (|| {
+        if !conversation.can_scope_runtime() {
+            return run_with_retry(turn, conversation, &mut options);
+        }
+        let mut turn = turn.clone();
+        let id = turn
+            .conversation_id
+            .take()
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| format!("chat-{}", crate::next_request_id()));
+        let scoped = conversation.scoped_runtime(&id)?;
+        turn.conversation_id = Some(id);
+        if let Some(mut scoped) = scoped {
+            let result = run_with_retry(&turn, &mut scoped, &mut options);
+            conversation.close_scoped_runtime(scoped);
+            result
+        } else {
+            run_with_retry(&turn, conversation, &mut options)
+        }
+    })();
     if let Some(live) = options.live {
         live.finish();
     }
@@ -268,23 +288,19 @@ fn run_attempt(
     // without finish is exactly the crash the journal exists for.
     let conversation_id = match turn.conversation_id.as_deref() {
         Some(id) if !id.is_empty() => id.to_string(),
-        _ => conversation.create().or_else(|error| {
-            if !crate::failure::transient(&error.to_string()) {
-                return Err(error);
-            }
-            conversation.publish(
-                "task_retry",
-                serde_json::json!({"attempt":1,"phase":"admission","reason":"transient_failure"}),
-            );
-            conversation.ensure_runtime()?;
-            conversation.create()
-        })?,
+        _ => conversation.create_for_turn()?,
     };
     // Durable request ids are scoped to the real durable conversation so a
     // resumed conversation keeps its submission identity, while each new turn
     // still carries a distinct id.
     let request_id = format!("marble-{conversation_id}-{}", turn.request_id);
-    let engine_task_id = conversation.submit(&conversation_id, &request_id, &turn.input)?;
+    let small_talk = crate::normalize::is_small_talk(&turn.input.text);
+    let engine_task_id = conversation.submit_with_tool_policy(
+        &conversation_id,
+        &request_id,
+        &turn.input,
+        small_talk,
+    )?;
     let task_id = logical_task.unwrap_or(&engine_task_id).to_string();
     if logical_task.is_some()
         && let Some(product) = conversation.product_state()
@@ -308,33 +324,9 @@ fn run_attempt(
     let mut reasoning = String::new();
     let mut reasoning_boundary = false;
     let mut splitter = ThinkSplitter::default();
-    let mut last_segment = String::new();
     let mut usage: Option<Value> = None;
     let events = conversation.events().clone();
-    let streaming = conversation.streams_text_blocks();
-    let publish_text = |delta: &str| {
-        if streaming && !delta.is_empty() {
-            events.publish(
-                &conversation_id,
-                &task_id,
-                "text",
-                serde_json::json!({"text":delta}),
-            );
-        }
-    };
-    let reset_text = |live: Option<&mut LiveTurn>, reasoning: &str| {
-        if let Some(turn) = live {
-            turn.progress("", reasoning);
-        }
-        if streaming {
-            events.publish(
-                &conversation_id,
-                &task_id,
-                "text_reset",
-                serde_json::json!({"text":""}),
-            );
-        }
-    };
+    let text_block_boundaries = conversation.streams_text_blocks();
     let publish_reasoning = |delta: &str| {
         if !delta.is_empty() {
             events.publish(
@@ -345,75 +337,87 @@ fn run_attempt(
             );
         }
     };
-    let cancel = options.cancel.map(|requested| CancelToken {
-        requested,
+    let uncancelled = AtomicBool::new(false);
+    let cancel = CancelToken {
+        requested: options.cancel.unwrap_or(&uncancelled),
         task_id: &engine_task_id,
-    });
-    let outcome = conversation.pump(&run_id, deadline, cancel, &mut |event| match event
-        .kind
-        .as_str()
+        deadline: Some(deadline),
+    };
+    let mut budget = RunBudget::new(conversation.tool_limit());
+    let outcome =
+        conversation.pump_run(
+            &run_id,
+            deadline,
+            cancel,
+            &mut budget,
+            &mut |event| match event.kind.as_str() {
+                "text" => {
+                    if let Some(delta) = event.data.get("text").and_then(Value::as_str) {
+                        // Providers may inline `<think>` blocks inside ordinary text
+                        // deltas; split them out so reasoning never lands in replies.
+                        let (visible, thought) = splitter.feed(delta);
+                        publish_reasoning(&append_reasoning(
+                            &mut reasoning,
+                            &mut reasoning_boundary,
+                            &thought,
+                        ));
+                        text.push_str(&visible);
+                        if let Some(turn) = live.as_deref_mut() {
+                            turn.progress("", &reasoning);
+                        }
+                    }
+                }
+                "reasoning" => {
+                    if let Some(delta) = event.data.get("text").and_then(Value::as_str) {
+                        publish_reasoning(&append_reasoning(
+                            &mut reasoning,
+                            &mut reasoning_boundary,
+                            delta,
+                        ));
+                        if let Some(turn) = live.as_deref_mut() {
+                            turn.progress("", &reasoning);
+                        }
+                    }
+                }
+                "text_block_start" | "tool_start" => {
+                    if event.kind == "text_block_start"
+                        && (!text_block_boundaries
+                            || event
+                                .data
+                                .get("blockId")
+                                .and_then(Value::as_str)
+                                .is_none_or(str::is_empty))
+                    {
+                        return;
+                    }
+                    let (visible, thought) = splitter.flush();
+                    text.push_str(&visible);
+                    publish_reasoning(&append_reasoning(
+                        &mut reasoning,
+                        &mut reasoning_boundary,
+                        &thought,
+                    ));
+                    let commentary = take_commentary(&mut text, &mut reasoning);
+                    if event.kind == "text_block_start" {
+                        splitter = ThinkSplitter::default();
+                    }
+                    if let Some(turn) = live.as_deref_mut() {
+                        turn.progress("", &reasoning);
+                    }
+                    publish_reasoning(&commentary);
+                    reasoning_boundary = true;
+                }
+                "usage" => usage = Some(event.data.clone()),
+                _ => {}
+            },
+        );
+    let limit_reply = budget.reply();
+    if let Err(error) = outcome
+        && limit_reply.is_none()
     {
-        "text" => {
-            if let Some(delta) = event.data.get("text").and_then(Value::as_str) {
-                // Providers may inline `<think>` blocks inside ordinary text
-                // deltas; split them out so reasoning never lands in replies.
-                let (visible, thought) = splitter.feed(delta);
-                publish_reasoning(&append_reasoning(
-                    &mut reasoning,
-                    &mut reasoning_boundary,
-                    &thought,
-                ));
-                text.push_str(&visible);
-                publish_text(&visible);
-                if let Some(turn) = live.as_deref_mut() {
-                    turn.progress(if streaming { &text } else { "" }, &reasoning);
-                }
-            }
+        if let Some(turn) = live.as_deref_mut() {
+            turn.progress("", &reasoning);
         }
-        "reasoning" => {
-            if let Some(delta) = event.data.get("text").and_then(Value::as_str) {
-                publish_reasoning(&append_reasoning(
-                    &mut reasoning,
-                    &mut reasoning_boundary,
-                    delta,
-                ));
-                if let Some(turn) = live.as_deref_mut() {
-                    turn.progress(if streaming { &text } else { "" }, &reasoning);
-                }
-            }
-        }
-        "text_block_start" | "tool_start" => {
-            if event.kind == "text_block_start"
-                && (!streaming
-                    || event
-                        .data
-                        .get("blockId")
-                        .and_then(Value::as_str)
-                        .is_none_or(str::is_empty))
-            {
-                return;
-            }
-            let (visible, thought) = splitter.flush();
-            text.push_str(&visible);
-            publish_reasoning(&append_reasoning(
-                &mut reasoning,
-                &mut reasoning_boundary,
-                &thought,
-            ));
-            let commentary = take_commentary(&mut text, &mut reasoning, &mut last_segment);
-            if event.kind == "text_block_start" {
-                splitter = ThinkSplitter::default();
-                last_segment.clear();
-            }
-            reset_text(live.as_deref_mut(), &reasoning);
-            publish_reasoning(&commentary);
-            reasoning_boundary = true;
-        }
-        "usage" => usage = Some(event.data.clone()),
-        _ => {}
-    });
-    if let Err(error) = outcome {
-        reset_text(live.as_deref_mut(), &reasoning);
         conversation.publish("error", serde_json::json!({ "message": error.to_string() }));
         return Err(error);
     }
@@ -424,18 +428,23 @@ fn run_attempt(
         &thought,
     ));
     text.push_str(&visible);
-    publish_text(&visible);
-    if !streaming && text.trim().is_empty() {
-        text = last_segment;
+    if let Some((plan, answer)) = split_plan_preamble(&text) {
+        publish_reasoning(&append_reasoning(&mut reasoning, &mut true, plan));
+        text = answer.to_string();
     }
     text = conversation.clean_reply(&text);
+    if let Some(reply) = limit_reply {
+        text = reply;
+    }
     if text.trim_start().starts_with("[Generation failed]") {
-        reset_text(live, &reasoning);
         return Err(MarbleError::Protocol(
             "provider_rejected: model returned a generation failure".into(),
         ));
     }
-    if !streaming && !text.is_empty() {
+    if let Some(turn) = live {
+        turn.progress(&text, &reasoning);
+    }
+    if !text.is_empty() {
         conversation.publish("text", serde_json::json!({"text": text}));
     }
     let cancelled = options
@@ -480,12 +489,11 @@ fn append_reasoning(reasoning: &mut String, boundary: &mut bool, delta: &str) ->
     delta
 }
 
-fn take_commentary(text: &mut String, reasoning: &mut String, last: &mut String) -> String {
+fn take_commentary(text: &mut String, reasoning: &mut String) -> String {
     let segment = std::mem::take(text);
     if segment.trim().is_empty() {
         return String::new();
     }
-    last.clone_from(&segment);
     let delta = if reasoning.is_empty() {
         segment
     } else {
@@ -495,23 +503,96 @@ fn take_commentary(text: &mut String, reasoning: &mut String, last: &mut String)
     delta
 }
 
+fn split_plan_preamble(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim_start();
+    let lowered = text.to_ascii_lowercase();
+    if !lowered.starts_with("the user is asking ") {
+        return None;
+    }
+    let marker = "i'll output only the final answer.";
+    let at = lowered.find(marker)?;
+    let preamble = &lowered[..at];
+    let need = preamble.find(". i need to ")?;
+    let should = preamble.find(". i should ")?;
+    if need >= should {
+        return None;
+    }
+    let end = at + marker.len();
+    Some((text[..end].trim_end(), text[end..].trim_start()))
+}
+
+fn separate_legacy_reply(text: &str) -> Option<(String, String)> {
+    split_plan_preamble(text).map(|(plan, answer)| (answer.into(), plan.into()))
+}
+
+pub(crate) fn separate_stored_reasoning(state: &mut crate::ProductState) {
+    let mut thoughts = Vec::new();
+    let mut split = |entry: &mut crate::state::TranscriptEntry| {
+        if entry.kind != "assistant" {
+            return;
+        }
+        let Some((answer, thought)) = separate_legacy_reply(&entry.text) else {
+            return;
+        };
+        entry.text = answer;
+        if entry.text.is_empty() {
+            entry.kind = "reasoning".into();
+            entry.text = thought;
+        } else if !thought.is_empty() {
+            thoughts.push(crate::state::TranscriptEntry {
+                id: format!("thought-{}", entry.id),
+                kind: "reasoning".into(),
+                text: thought,
+                thread: None,
+                ..entry.clone()
+            });
+        }
+    };
+    state.transcript.iter_mut().for_each(&mut split);
+    state.everyone_ready.values_mut().for_each(split);
+    for thought in thoughts {
+        let reply_id = thought.id.strip_prefix("thought-").unwrap();
+        if let Some(index) = state
+            .transcript
+            .iter()
+            .position(|entry| entry.id == reply_id)
+        {
+            state.transcript.insert(index, thought);
+        } else {
+            state.transcript.push(thought);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ThinkSplitter;
 
     #[test]
-    fn tool_boundaries_separate_commentary_and_keep_a_fallback() {
+    fn plan_detection_preserves_plain_and_quoted_answers() {
+        for text in [
+            "The user wants a budget. Final answer: 42.",
+            "The user is asking about an idiom. I'll output only the final answer.",
+            "An XML example: <think>an idea</think>",
+        ] {
+            assert!(super::split_plan_preamble(text).is_none(), "{text}");
+            assert!(super::separate_legacy_reply(text).is_none(), "{text}");
+        }
+        let plan = "The user is asking about a leak. I need to respond. I should apologize. I'll output only the final answer.";
+        let text = format!("{plan}My bad.");
+        assert_eq!(super::split_plan_preamble(&text), Some((plan, "My bad.")));
+    }
+
+    #[test]
+    fn tool_boundaries_separate_commentary() {
         let mut text = "Research info.".to_string();
         let mut reasoning = String::new();
-        let mut last = String::new();
-        super::take_commentary(&mut text, &mut reasoning, &mut last);
+        super::take_commentary(&mut text, &mut reasoning);
         assert!(text.is_empty());
         text.push_str("Checking sources.");
-        super::take_commentary(&mut text, &mut reasoning, &mut last);
+        super::take_commentary(&mut text, &mut reasoning);
         assert_eq!(reasoning, "Research info.\n\nChecking sources.");
-        assert_eq!(last, "Checking sources.");
-        assert!(super::take_commentary(&mut text, &mut reasoning, &mut last).is_empty());
-        assert_eq!(last, "Checking sources.");
+        assert!(super::take_commentary(&mut text, &mut reasoning).is_empty());
         text.push_str("The answer.");
         assert_eq!(text, "The answer.");
         let mut boundary = true;

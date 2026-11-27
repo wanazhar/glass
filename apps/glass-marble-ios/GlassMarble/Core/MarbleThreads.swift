@@ -47,6 +47,8 @@ struct MarbleThread: Codable, Identifiable, Hashable, Sendable {
     let parentSender: String
     let createdAt: UInt64
     let participants: [String]
+    let title: String
+    let archived: Bool
 
     var id: String { summary.id }
 
@@ -59,6 +61,8 @@ struct MarbleThread: Codable, Identifiable, Hashable, Sendable {
         parentSender = try values.optional("parent_sender", "parentSender") ?? ""
         createdAt = try values.required("created_at", "createdAt")
         participants = try values.optional("participants") ?? []
+        title = try values.optional("title") ?? ""
+        archived = try values.optional("archived") ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -72,6 +76,8 @@ struct MarbleThread: Codable, Identifiable, Hashable, Sendable {
         try values.encode(parentSender, forKey: .init("parentSender"))
         try values.encode(createdAt, forKey: .init("createdAt"))
         try values.encode(participants, forKey: .init("participants"))
+        try values.encode(title, forKey: .init("title"))
+        try values.encode(archived, forKey: .init("archived"))
     }
 }
 

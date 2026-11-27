@@ -7,7 +7,6 @@ use crate::{
 };
 use glass_runtime_client::{RuntimeClient, protocol::ToolRequest};
 use serde_json::Value;
-use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
 /// Refusal used when a stop request ends a tool call that was already running.
@@ -224,7 +223,7 @@ pub fn run_interruptibly(
     let Some(cancel) = cancel else {
         return Some(body());
     };
-    if cancel.requested.load(Ordering::Relaxed) {
+    if cancel.interrupted() {
         return None;
     }
     let (sender, receiver) = mpsc::channel();
@@ -232,7 +231,7 @@ pub fn run_interruptibly(
         let _ = sender.send(body());
     });
     loop {
-        if cancel.requested.load(Ordering::Relaxed) {
+        if cancel.interrupted() {
             return None;
         }
         match receiver.recv_timeout(PUMP_INTERVAL) {
@@ -249,13 +248,14 @@ pub fn run_interruptibly(
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
     fn token(requested: &AtomicBool) -> CancelToken<'_> {
         CancelToken {
             requested,
             task_id: "task-1",
+            deadline: None,
         }
     }
 

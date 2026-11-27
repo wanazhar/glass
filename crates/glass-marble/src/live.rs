@@ -148,24 +148,58 @@ impl LiveStore {
     /// conversation clears its in-flight record too; a turn that is still
     /// running cannot be deleted, so anything left for it is finished.
     pub fn remove_conversation(&self, conversation_id: &str) -> usize {
-        let Ok(entries) = fs::read_dir(&self.dir) else {
-            return 0;
+        self.remove_conversation_entries(conversation_id).0
+    }
+
+    pub(crate) fn cleanup_conversation(&self, conversation_id: &str) -> std::io::Result<()> {
+        match self.remove_conversation_entries(conversation_id).1 {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    fn remove_conversation_entries(
+        &self,
+        conversation_id: &str,
+    ) -> (usize, Option<std::io::Error>) {
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return (0, None),
+            Err(error) => return (0, Some(error)),
         };
         let mut removed = 0;
-        for path in entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-        {
-            let belongs = fs::read_to_string(&path)
+        let mut failure = None;
+        for entry in entries {
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(error) => {
+                    failure = Some(error);
+                    continue;
+                }
+            };
+            if !path.extension().is_some_and(|ext| ext == "json") {
+                continue;
+            }
+            let encoded = match fs::read_to_string(&path) {
+                Ok(encoded) => encoded,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    failure = Some(error);
+                    continue;
+                }
+            };
+            let belongs = serde_json::from_str::<LiveRecord>(&encoded)
                 .ok()
-                .and_then(|encoded| serde_json::from_str::<LiveRecord>(&encoded).ok())
                 .is_some_and(|record| record.conversation_id == conversation_id);
-            if belongs && fs::remove_file(&path).is_ok() {
-                removed += 1;
+            if belongs {
+                match fs::remove_file(&path) {
+                    Ok(()) => removed += 1,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => failure = Some(error),
+                }
             }
         }
-        removed
+        (removed, failure)
     }
 
     /// Fold every journal entry left by a previous process into the document.
@@ -203,6 +237,13 @@ impl LiveStore {
                     continue;
                 }
             };
+            if state
+                .pending_everyone_cleanup
+                .contains(&record.conversation_id)
+            {
+                let _ = fs::remove_file(&path);
+                continue;
+            }
             apply(&record, state);
             outcome.turns += 1;
             if !record.text.trim().is_empty() {

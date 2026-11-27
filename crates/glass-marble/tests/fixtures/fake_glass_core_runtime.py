@@ -140,6 +140,23 @@ def run_turn(identifier, task, text, conversation, request):
     text = str(text).split("[/Marble host context]\n\n[User message]\n", 1)[-1]
     turn = "turn-1"
     event(turn, "turn_start", {})
+    if os.environ.get("MARBLE_FIXTURE_EVERYONE_THREADS") == "1":
+        with open(os.path.join(STORAGE_DIR, "fixture-session-options.json"), "r", encoding="utf-8") as handle:
+            name = json.load(handle)["instructions"].split("You are ", 1)[1].split(",", 1)[0].split(".", 1)[0]
+        attempt_tool(turn, task, "glass.workspace.list", {})
+        answer = name + " says hello."
+        if name == "Dietrich":
+            answer = "The user is asking for a greeting. I need to say hello. I should keep it short. I'll output only the final answer.\n\n" + answer
+        event(turn, "text", {"text": answer})
+        event(turn, "settled", {"reason": "completed"})
+        reply(identifier, {"settled": True})
+        return
+    if "--isolated-greeting" in sys.argv and text == "@Ada hello":
+        if not any("remark.pdf" in row["text"] for row in HISTORY["conversations"][conversation]):
+            event(turn, "text", {"text": "Hello!"})
+            event(turn, "settled", {"reason": "completed"})
+            reply(identifier, {"settled": True})
+            return
     if "--everyone-reasoning" in sys.argv:
         with open(os.path.join(STORAGE_DIR, "fixture-session-options.json"), "r", encoding="utf-8") as handle:
             name = json.load(handle)["instructions"].split("You are ", 1)[1].split(",", 1)[0].split(".", 1)[0]
@@ -220,6 +237,18 @@ def run_turn(identifier, task, text, conversation, request):
         target, _, instruction = ask_text.partition(":")
         tool_name = "glass.marble.ask"
         tool_args = {"to": target.strip(), "instruction": instruction.strip() or "help"}
+    attempt_tool(turn, task, tool_name, tool_args)
+    chunks = argument("--text-chunks")
+    for chunk in json.loads(chunks) if chunks else ["handled " + str(text).strip()]:
+        event(turn, "text", {"text": chunk})
+        if chunks:
+            time.sleep(0.3)
+    event(turn, "usage", {"input": 1, "output": 1})
+    event(turn, "settled", {"reason": "completed"})
+    reply(identifier, {"sessionId": SESSION_ID, "settled": True})
+
+
+def attempt_tool(turn, task, tool_name, tool_args):
     frame_id = "host:" + SESSION_ID + ":" + task + ":call-1"
     if "--core-tool-progress" in sys.argv:
         event(turn, "tool_start", {"callId": "call-1", "name": tool_name})
@@ -259,18 +288,10 @@ def run_turn(identifier, task, text, conversation, request):
         except OSError:
             pass
     event(turn, "tool_end", {"callId": "call-1", "isError": bool(result.get("isError")), "text": str(result.get("text") or "")})
-    chunks = argument("--text-chunks")
-    for chunk in json.loads(chunks) if chunks else ["handled " + str(text).strip()]:
-        event(turn, "text", {"text": chunk})
-        if chunks:
-            time.sleep(0.3)
-    event(turn, "usage", {"input": 1, "output": 1})
-    event(turn, "settled", {"reason": "completed"})
-    reply(identifier, {"sessionId": SESSION_ID, "settled": True})
 
 
 def main():
-    global STORAGE_DIR, HISTORY
+    global STORAGE_DIR, HISTORY, ID_PREFIX
     while True:
         line = sys.stdin.readline()
         if not line:
@@ -285,6 +306,9 @@ def main():
         if method == "initialize":
             STORAGE_DIR = params.get("storageDir")
             if STORAGE_DIR:
+                if (os.environ.get("MARBLE_FIXTURE_EVERYONE_THREADS") == "1"
+                        or os.path.basename(os.path.dirname(STORAGE_DIR)) == "conversation-sessions"):
+                    ID_PREFIX = os.path.basename(STORAGE_DIR) + "-"
                 os.makedirs(STORAGE_DIR, exist_ok=True)
             load_submissions()
             history_file = os.path.join(STORAGE_DIR, "fixture-history.json") if STORAGE_DIR else None
@@ -360,7 +384,14 @@ def main():
                 CONVERSATION_SEQ += 1
                 conversation_id = ID_PREFIX + "durable-fixture-" + str(CONVERSATION_SEQ)
                 KNOWN_CONVERSATIONS.add(conversation_id)
+                HISTORY["conversations"].setdefault(conversation_id, [])
+                save_history()
                 reply(identifier, {"conversationId": conversation_id, "sequence": CONVERSATION_SEQ})
+        elif method == "durable/configure":
+            if STORAGE_DIR:
+                with open(os.path.join(STORAGE_DIR, "fixture-tool-policy.json"), "w", encoding="utf-8") as handle:
+                    json.dump(params["agent"], handle)
+            reply(identifier, {"sequence": HISTORY["sequence"]})
         elif method == "durable/inspect":
             reply(identifier, {"sequence": HISTORY["sequence"], "items": [], "hasMore": False})
         elif method == "durable/fork":
@@ -410,6 +441,14 @@ def main():
                 PARKED_RUN["id"] = identifier
                 continue
             task_id = params.get("taskId") or task_id_for(params.get("conversationId"), params.get("requestId"))
+            if count := argument("--budget-tools"):
+                PARKED_RUN["id"] = identifier
+                event("turn-1", "turn_start", {})
+                for index in range(int(count)):
+                    call = "budget-" + str(index)
+                    event("turn-1", "tool_start", {"callId": call, "name": "read"})
+                    event("turn-1", "tool_end", {"callId": call, "isError": False})
+                continue
             if WAIT_FOR_STEER:
                 PARKED_RUN["id"] = identifier
                 event("turn-1", "turn_start", {})
@@ -418,6 +457,9 @@ def main():
                 continue
             run_turn(identifier, task_id, INPUT_TEXT.get("value", ""), INPUT_TEXT.get("conversation") or SESSION_ID, params.get("requestId") or "")
         elif method == "durable/abort":
+            if STORAGE_DIR and argument("--budget-tools"):
+                with open(os.path.join(STORAGE_DIR, "fixture-aborted-task"), "w", encoding="utf-8") as handle:
+                    handle.write(params["taskId"])
             if PARKED_RUN.get("id"):
                 reply(PARKED_RUN.pop("id"), {"sessionId": SESSION_ID, "settled": True})
             reply(identifier, {"aborted": True, "taskId": params.get("taskId")})

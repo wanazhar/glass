@@ -99,7 +99,7 @@ struct HandoffLine: View {
 
 /// The shared chat: one timeline where the person talks to every marble at
 /// once. The speaker label identifies whose reply you’re reading.
-struct EveryoneView: View {
+struct EveryoneHistoryView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var draft = ""
@@ -175,9 +175,6 @@ struct EveryoneView: View {
             ToolbarItem(placement: .principal) {
                 MarbleTitleView(title: "Everyone")
                     .marbleToolbarTitle()
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                MarbleThreadInboxLink(conversationId: everyoneConversationId)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink(value: ChatRoute.find(everyoneConversationId)) {

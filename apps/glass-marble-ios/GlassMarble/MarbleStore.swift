@@ -1325,6 +1325,20 @@ final class MarbleStore: ObservableObject {
         return thread
     }
 
+    func startEveryoneThread(title: String) async throws -> MarbleThread {
+        let thread = try await withChatClient {
+            try await $0.createThread(conversationId: everyoneConversationId, title: title)
+        }
+        threadUpdates[thread.id] = thread
+        return thread
+    }
+
+    func updateEveryoneThread(_ id: String, action: String) async throws {
+        try await withChatClient { try await $0.updateEveryoneThread(id, action: action) }
+        threadPages.removeValue(forKey: id)
+        threadUpdates.removeValue(forKey: id)
+    }
+
     func threadSummary(for entry: MarbleEntry) -> MarbleThreadSummary? {
         if let id = entry.thread?.id {
             return threadUpdates[id]?.summary ?? entry.thread

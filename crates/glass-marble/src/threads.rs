@@ -29,6 +29,10 @@ pub struct Thread {
     pub last_activity_at: u64,
     pub created_at: u64,
     pub participants: Vec<String>,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub archived: bool,
 }
 
 impl Thread {
@@ -42,6 +46,22 @@ impl Thread {
 }
 
 impl ProductState {
+    pub fn start_everyone_thread(&mut self, title: &str) -> Thread {
+        crate::everyone::ensure_conversation(self);
+        let now = crate::worker::now_millis();
+        let thread = Thread {
+            id: format!("thread-{}", crate::next_request_id()),
+            conversation_id: crate::everyone::EVERYONE_CONVERSATION.into(),
+            title: title.trim().chars().take(80).collect(),
+            created_at: now,
+            last_activity_at: now,
+            ..Default::default()
+        };
+        self.threads.push(thread.clone());
+        self.refresh_thread(&thread.id);
+        thread
+    }
+
     pub fn ensure_entry_ids(&mut self) {
         let mut used: std::collections::HashSet<String> = self
             .transcript
@@ -204,7 +224,7 @@ impl ProductState {
         let entries = self.thread_entries(&self.threads[index]);
         let count = entries
             .iter()
-            .skip(1)
+            .skip(usize::from(!self.threads[index].parent_entry_id.is_empty()))
             .filter(|e| matches!(e.kind.as_str(), "user" | "assistant" | "failure"))
             .count();
         let mut participants = Vec::new();
@@ -280,8 +300,11 @@ impl ProductState {
     }
 
     pub(crate) fn prune_threads(&mut self) {
-        self.threads
-            .retain(|t| self.transcript.iter().any(|e| e.id == t.parent_entry_id));
+        self.threads.retain(|t| {
+            (t.parent_entry_id.is_empty()
+                && t.conversation_id == crate::everyone::EVERYONE_CONVERSATION)
+                || self.transcript.iter().any(|e| e.id == t.parent_entry_id)
+        });
         let valid: std::collections::HashSet<_> =
             self.threads.iter().map(|t| t.id.clone()).collect();
         for entry in self

@@ -133,7 +133,7 @@ struct ConversationListView: View {
         // is the default assistant's conversations.
         store.state.conversations
             .filter { conversation in
-                conversation.id != everyoneConversationId
+                !conversation.isEveryoneSession
                     && !store.prism.marbles.contains {
                         !$0.isDefault && $0.conversationId == conversation.id
                     }

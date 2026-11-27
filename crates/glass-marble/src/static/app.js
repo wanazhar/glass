@@ -7,7 +7,7 @@
     const enc = encodeURIComponent;
     const s = {
         data: { tasks: [], conversations: [], approvals: [], memory: {}, routines: {}, control: {} },
-        people: [], shared: [], entries: [], status: { stream: false, requestFailed: false, engine: false },
+        people: [], shared: [], threads: [], entries: [], status: { stream: false, requestFailed: false, engine: false },
         health: {}, route: L.route(location.hash), generation: 0, refreshId: 0, sequence: 0,
         defaultChat: undefined, missing: false, transcriptError: '', live: new Map(), drafts: new Map(),
         errors: new Map(), open: new Set(), loaded: false, busy: false, tools: null, crates: null, approvalChats: new Map(),
@@ -56,7 +56,7 @@
     const personForChat = id => s.people.find(p => !p.isDefault && p.conversationId === id) || person('marble');
     function defaultChats() {
         const owned = new Set(s.people.filter(p => !p.isDefault).map(p => p.conversationId));
-        return (s.data.conversations || []).filter(c => c.id !== 'everyone' && !owned.has(c.id)).sort((a, b) => b.updatedAt - a.updatedAt);
+        return (s.data.conversations || []).filter(c => c.id !== 'everyone' && !c.id.startsWith('everyone-session-') && !owned.has(c.id)).sort((a, b) => b.updatedAt - a.updatedAt);
     }
     function conversation() { return current()?.isDefault ? s.defaultChat : current()?.conversationId; }
     function running() { const id = conversation(); return tasks().find(task => id && task.conversationId === id && task.status === 'running'); }
@@ -120,6 +120,37 @@
             if (confirm(t('Clear Everyone? This deletes the shared timeline, not the individual chats.'))) action('conversation', '/api/everyone/clear');
         }, 'danger'))); return details;
     }
+    const threadUrl = id => '#/everyone/' + enc(id);
+    const threadTitle = thread => thread.title || thread.parentPreview || t('Thread');
+    function threadAction(thread, verb) {
+        if (verb === 'delete' && !confirm(t('Delete this thread and its history?'))) return;
+        action('conversation', '/api/threads/' + enc(thread.id) + '/' + verb, {}, () => {
+            if (s.route.id === thread.id) location.hash = '#/everyone';
+        });
+    }
+    function createEveryoneThread() {
+        const title = prompt(t('Thread title'));
+        if (title?.trim()) action('conversation', '/api/threads', {
+            conversation_id: 'everyone', title: title.trim()
+        }, result => { location.hash = threadUrl(result.thread.id); });
+    }
+    function renderEveryoneLobby() {
+        const active = s.threads.filter(thread => !thread.archived);
+        const archived = s.threads.filter(thread => thread.archived);
+        const row = (thread, actions) => el('div', 'record',
+            link(threadTitle(thread), threadUrl(thread.id)),
+            el('div', 'actions', ...actions.map(([verb, label]) =>
+                button(t(label), () => threadAction(thread, verb)))));
+        const page = el('div', 'timeline');
+        if (!active.length) page.append(el('div', 'empty', icon('everyone'),
+            el('h2', '', t('No threads yet')), el('p', '', t('Start a thread to talk with Everyone.'))));
+        for (const thread of active) page.append(row(thread, [['archive', 'Archive'], ['delete', 'Delete']]));
+        const old = link(t('Earlier messages'), threadUrl('history'), 'button');
+        const archive = el('details', '', el('summary', '', t('Archived')));
+        for (const thread of archived) archive.append(row(thread, [['restore', 'Restore']]));
+        page.append(old, archive, errorNode('conversation'));
+        $('main').replaceChildren(page);
+    }
     function earlierChats() {
         const details = el('details', 'menu', el('summary', '', t('Earlier chats')));
         const items = el('div', 'menu-content');
@@ -146,12 +177,22 @@
     function header() {
         const screen = s.route.screen; const p = current();
         const chat = screen === 'chat' || screen === 'info';
-        const title = chat ? p?.name || t('Missing Marble') : ({ everyone: t('Everyone'), marbles: t('Marbles'), activity: t('Activity'), settings: t('Settings'), new: t('New Marble') }[screen] || t('Not found'));
+        const thread = screen === 'everyone' && s.threads.find(item => item.id === s.route.id);
+        const title = chat ? p?.name || t('Missing Marble') : thread ? threadTitle(thread) : ({ everyone: t('Everyone'), marbles: t('Marbles'), activity: t('Activity'), settings: t('Settings'), new: t('New Marble') }[screen] || t('Not found'));
         const titleBlock = el('div', 'heading', el('h1', '', title));
         if (chat && p) titleBlock.append(el('p', 'muted', statusText(p)));
         if (screen !== 'everyone') titleBlock.append(connection('mobile-status'));
         const actions = el('div', 'header-actions');
-        if (screen === 'everyone') actions.append(connection('mobile-status'), overflow());
+        if (screen === 'everyone') {
+            actions.append(connection('mobile-status'));
+            if (!s.route.id) actions.append(button(t('New thread'), createEveryoneThread));
+            else {
+                actions.append(link(t('Threads'), '#/everyone', 'button'));
+                if (thread && !thread.archived) actions.append(button(t('Archive'), () => threadAction(thread, 'archive')));
+                if (thread) actions.append(button(t('Delete'), () => threadAction(thread, 'delete')));
+                if (s.route.id === 'history') actions.append(overflow());
+            }
+        }
         if (chat && p) {
             if (p.isDefault) actions.append(earlierChats(), button(t('New chat'), () => { s.defaultChat = null; s.generation++; s.entries = []; s.missing = false; s.transcriptError = ''; s.errors.delete('conversation'); render(); }));
             const infoToggle = link(t('Info'), chatRoute(p.id) + (screen === 'info' ? '' : '/info'), 'button');
@@ -290,8 +331,11 @@
     }
     function composer() {
         const shared = s.route.screen === 'everyone';
+        if (shared && (!s.route.id || s.threads.find(thread => thread.id === s.route.id)?.archived)) {
+            $('composer-area').replaceChildren(); return;
+        }
         if (!(shared || ['chat', 'info'].includes(s.route.screen)) || !current() && !shared || s.missing || s.transcriptError || s.route.screen === 'info' && innerWidth < 1200) { $('composer-area').replaceChildren(); return; }
-        const key = shared ? 'everyone' : 'chat-' + s.route.id;
+        const key = shared ? 'everyone-' + s.route.id : 'chat-' + s.route.id;
         if ($('composer-area').dataset.key === key && $('message')) { updateComposer(); return; }
         $('composer-area').dataset.key = key;
         const input = el('textarea'); input.id = 'message'; input.rows = 1; input.value = s.drafts.get(key) || '';
@@ -346,12 +390,12 @@
         const input = $('message'); const text = input?.value.trim(); if (!text) return;
         const shared = s.route.screen === 'everyone'; const active = !shared && running(); const p = current(); const generation = s.generation;
         const path = shared ? '/api/everyone' : active ? '/api/turns/steer' : '/api/turns';
-        const body = shared ? { text } : active ? { text, taskId: active.id, conversationId: active.conversationId } : { text, ...(conversation() ? { conversationId: conversation() } : {}), ...(!p.isDefault ? { marbleId: p.id } : {}) };
+        const body = shared ? { text, ...(s.route.id !== 'history' ? { thread_id: s.route.id } : {}) } : active ? { text, taskId: active.id, conversationId: active.conversationId } : { text, ...(conversation() ? { conversationId: conversation() } : {}), ...(!p.isDefault ? { marbleId: p.id } : {}) };
         const newDefault = !shared && !active && p.isDefault && !conversation();
         const knownChats = new Set(defaultChats().map(chat => chat.id));
         s.busy = true; updateComposer();
         await action('send', path, body, result => {
-            s.drafts.delete(shared ? 'everyone' : 'chat-' + p.id);
+            s.drafts.delete(shared ? 'everyone-' + s.route.id : 'chat-' + p.id);
             if (generation !== s.generation) return;
             input.value = ''; input.style.height = '36px'; if (!shared && p.isDefault && result.conversationId) s.defaultChat = result.conversationId;
             if (newDefault && !result.conversationId) s.pendingDefault = { knownChats, text };
@@ -592,7 +636,8 @@
         document.body.classList.toggle('info-layout', wideInfo); document.body.classList.toggle('info-sheet', sheetInfo); $('info-panel').hidden = !(wideInfo || sheetInfo);
         const editing = $('main').querySelector('form[data-dirty="true"]') || $('main').contains(document.activeElement) && document.activeElement.closest('form');
         if (!editing || ['activity', 'settings'].includes(s.route.screen)) {
-            if (s.route.screen === 'everyone') renderTimeline(true);
+            if (s.route.screen === 'everyone' && !s.route.id) renderEveryoneLobby();
+            else if (s.route.screen === 'everyone') renderTimeline(true);
             else if (s.route.screen === 'chat' || wideInfo || sheetInfo) { if (current()) renderTimeline(); else $('main').replaceChildren(el('div', 'empty', t('This Marble no longer exists'), link(t('Back to Marbles'), '#/marbles', 'button'))); }
             else if (s.route.screen === 'marbles') renderPeople();
             else if (info) $('main').replaceChildren(infoPage(current()));
@@ -611,9 +656,15 @@
     async function refresh() {
         const generation = s.generation; const request = ++s.refreshId;
         try {
-            const [data, people, shared] = await Promise.all([api('/api/state?lean=1'), api('/api/prism'), api('/api/everyone'), api('/healthz')]);
+            const sharedPath = s.route.screen === 'everyone' && s.route.id && s.route.id !== 'history'
+                ? '/api/threads/' + enc(s.route.id) : '/api/everyone?main=1';
+            const [data, people, shared, threads] = await Promise.all([
+                api('/api/state?lean=1'), api('/api/prism'),
+                api(sharedPath).catch(error => { if (error.status === 404) return {}; throw error; }),
+                api('/api/threads?conversation_id=everyone'), api('/healthz')
+            ]);
             if (generation !== s.generation || request !== s.refreshId) return;
-            s.data = data; s.people = people.marbles || []; s.limit = people.limit; s.shapes = people.glyphs; s.shared = shared.entries || []; s.loaded = true;
+            s.data = data; s.people = people.marbles || []; s.limit = people.limit; s.shapes = people.glyphs; s.shared = shared.entries || []; s.threads = threads.threads || []; s.loaded = true;
             if (s.route.screen === 'info' && !s.tools) {
                 try { s.tools = await api('/api/tools'); } catch (error) { s.toolsError = humanError(error); }
                 if (generation !== s.generation || request !== s.refreshId) return;

@@ -59,6 +59,7 @@ struct MarbleConversation: Decodable, Identifiable, Equatable {
     var updatedAt: UInt64
 
     var displayTitle: String { title.isEmpty ? "New Chat" : title }
+    var isEveryoneSession: Bool { id == everyoneConversationId || id.hasPrefix("everyone-session-") }
 }
 
 struct MarbleTask: Decodable, Identifiable, Equatable {

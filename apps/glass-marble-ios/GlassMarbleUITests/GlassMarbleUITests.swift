@@ -27,12 +27,12 @@ final class GlassMarbleUITests: XCTestCase {
 
     func testColdOpenShowsLatestEveryoneAndThreadHistoryWithoutScrolling() {
         app.tabBars.buttons["Everyone"].tap()
+        app.staticTexts["Earlier messages"].tap()
         assertHittable("Everyone history row 59")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         for count in [60, 2] {
-            app.buttons["Threads"].tap()
             app.staticTexts["Thread with \(count) fixture replies"].tap()
             assertHittable("Thread \(count) history row \(count)")
-            app.navigationBars.buttons.element(boundBy: 0).tap()
             app.navigationBars.buttons.element(boundBy: 0).tap()
         }
     }
@@ -42,6 +42,7 @@ final class GlassMarbleUITests: XCTestCase {
         app.launchArguments.append("-MarbleUITestDelayedEveryone")
         app.launch()
         app.tabBars.buttons["Everyone"].tap()
+        app.staticTexts["Earlier messages"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["Loading messages"].firstMatch.waitForExistence(timeout: 2))
         XCTAssertFalse(app.staticTexts["No one has spoken yet"].exists)
         // Allow an accessibility poll after the fixture's five-second delay.
@@ -50,6 +51,7 @@ final class GlassMarbleUITests: XCTestCase {
 
     func testEveryoneSavedMessageCanBeCopied() {
         app.tabBars.buttons["Everyone"].tap()
+        app.staticTexts["Earlier messages"].tap()
         let text = "Everyone history row 59"
         assertHittable(text)
 
@@ -71,6 +73,7 @@ final class GlassMarbleUITests: XCTestCase {
         app.launchArguments.append("-MarbleUITestEveryoneSend")
         app.launch()
         app.tabBars.buttons["Everyone"].tap()
+        app.staticTexts["Earlier messages"].tap()
         assertHittable("Everyone history row 59")
 
         let message = "@everyone whats the system time?"
@@ -194,8 +197,9 @@ final class GlassMarbleUITests: XCTestCase {
         XCTAssertTrue(app.textFields["Name your Marble"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
         app.tabBars.buttons["Everyone"].tap()
+        XCTAssertTrue(app.buttons["New Everyone thread"].isHittable)
+        app.staticTexts["Earlier messages"].tap()
         assertHittable("Everyone history row 59")
-        XCTAssertTrue(app.buttons["Threads"].isHittable)
     }
 
     func testConversationListSearchOpensMatchingChat() {

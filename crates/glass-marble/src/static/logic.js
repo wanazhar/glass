@@ -45,6 +45,11 @@
         return state.requestFailed ? "Can't reach the host" : 'Reconnecting…';
     }
     function route(hash) {
+        const thread = /^#\/everyone\/([^/]+)$/.exec(hash);
+        if (thread) {
+            try { return { screen: 'everyone', id: decodeURIComponent(thread[1]) }; }
+            catch (_) { return { screen: 'missing' }; }
+        }
         const match = /^#\/m\/([^/]+)(\/info)?$/.exec(hash);
         if (match) { try { return { screen: match[2] ? 'info' : 'chat', id: decodeURIComponent(match[1]) }; } catch (_) { return { screen: 'missing' }; } }
         const screen = hash.replace(/^#\//, '');

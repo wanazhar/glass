@@ -68,7 +68,7 @@ enum MarbleMentions {
         if mentioned("everyone", in: text) {
             ids += roster.map(\.id).filter { !mentions.contains($0) }
         }
-        return ids.isEmpty ? ["marble"] : ids
+        return ids.isEmpty ? (roster.isEmpty ? ["marble"] : roster.map(\.id)) : ids
     }
 
     private static func mentionPosition(_ word: String, in text: String) -> String.Index? {

@@ -88,6 +88,10 @@ pub struct PrismMarble {
     /// Falls back to the one-line `role` when empty.
     #[serde(default)]
     pub persona: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_timeout_secs: Option<u64>,
 }
 
 fn default_glyph() -> String {
@@ -99,6 +103,28 @@ fn idle() -> String {
 }
 
 impl PrismMarble {
+    fn turn_budget(&self) -> (usize, Duration) {
+        let engineer = self.role.eq_ignore_ascii_case("engineer")
+            || self.name.eq_ignore_ascii_case("engineer");
+        let tools = self
+            .tool_call_limit
+            .filter(|limit| *limit > 0)
+            .unwrap_or(if engineer {
+                25
+            } else {
+                crate::turn::DEFAULT_TOOL_LIMIT
+            });
+        let seconds = self
+            .turn_timeout_secs
+            .filter(|seconds| *seconds > 0)
+            .unwrap_or(if engineer {
+                600
+            } else {
+                crate::DEFAULT_TURN_TIMEOUT.as_secs()
+            });
+        (tools, Duration::from_secs(seconds))
+    }
+
     /// Whether this marble is running a turn right now.
     pub fn is_working(&self) -> bool {
         self.state == "working"
@@ -213,6 +239,8 @@ impl PrismState {
             runs: 0,
             last_error: String::new(),
             persona: valid_persona(persona)?,
+            tool_call_limit: None,
+            turn_timeout_secs: None,
         };
         self.marbles.push(marble);
         Ok(self
@@ -239,6 +267,8 @@ impl PrismState {
             runs: self.dispatched,
             last_error: String::new(),
             persona: self.default_persona.clone(),
+            tool_call_limit: None,
+            turn_timeout_secs: None,
         }
     }
 
@@ -365,7 +395,9 @@ impl PrismState {
     /// Record which durable task now carries one marble's turn.
     fn note_task(&mut self, id: &str, conversation_id: &str, task_id: &str) {
         if let Some(marble) = self.find_mut(id) {
-            marble.conversation_id = conversation_id.to_string();
+            if !crate::everyone::is_session(conversation_id) {
+                marble.conversation_id = conversation_id.to_string();
+            }
             marble.task_id = task_id.to_string();
             marble.state = "working".to_string();
             marble.last_at = now_millis();
@@ -940,6 +972,8 @@ impl PrismPool {
             state.prism.marbles.clone()
         };
         let (steer, steer_rx) = mpsc::channel();
+        let instructions_marble = marble.clone();
+        let factory = Arc::clone(&self.factory);
         let conversation = conversation
             .with_steering(steer_rx)
             .with_product(Arc::clone(&self.state))
@@ -948,9 +982,10 @@ impl PrismPool {
                 let state = self.lock_state();
                 (!state.model.trim().is_empty()).then(|| state.model.trim().to_string())
             })
-            .with_instructions(crate::conversation::marble_session_instructions(
-                marble, &roster, root,
-            ));
+            .with_instructions_fn(move |cwd| {
+                crate::conversation::marble_session_instructions(&instructions_marble, &roster, cwd)
+            })
+            .with_respawn(move || factory());
         let engine = Arc::new(Mutex::new(conversation));
         let watched = Arc::downgrade(&engine);
         let state = Arc::downgrade(&self.state);
@@ -1254,14 +1289,9 @@ impl PrismPool {
         let mut guard = engine.lock().unwrap_or_else(|error| error.into_inner());
         let conversation = &mut *guard;
         conversation.set_store(self.store.as_deref());
-        let conversation_id = {
-            let state = self.lock_state();
-            state
-                .prism
-                .get(&marble.id)
-                .map(|m| m.conversation_id.clone())
-                .unwrap_or_default()
-        };
+        let (tool_limit, turn_timeout) = marble.turn_budget();
+        conversation.set_tool_limit(tool_limit);
+        let conversation_id = self.turn_conversation(marble, thread_id.as_deref());
         let mut accepted: Option<(String, String)> = None;
         let request_id = crate::next_request_id();
         let mut live_turn = self
@@ -1374,7 +1404,7 @@ impl PrismPool {
             conversation,
             TurnOptions {
                 cancel: Some(cancel.as_ref()),
-                timeout: self.timeout,
+                timeout: self.timeout.min(turn_timeout),
                 on_accepted: Some(&mut on_accepted),
                 live: live_turn.as_mut(),
             },
@@ -1530,12 +1560,13 @@ impl PrismPool {
         client: Option<&crate::state::ClientMessage>,
     ) {
         let task_id = format!("failed-{}", crate::next_request_id());
+        let conversation_id = self.turn_conversation(marble, thread_id);
         let snapshot = {
             let mut state = self.lock_state();
-            let conversation_id = if marble.conversation_id.is_empty() {
+            let conversation_id = if conversation_id.is_empty() {
                 format!("recovered-{task_id}")
             } else {
-                marble.conversation_id.clone()
+                conversation_id
             };
             let now = now_millis();
             let checkpoint = state
@@ -1603,6 +1634,38 @@ impl PrismPool {
             "prism",
             json!({ "marble": marble.id, "status": "failed", "message": crate::failure::MESSAGE }),
         );
+    }
+
+    fn turn_conversation(&self, marble: &PrismMarble, thread: Option<&str>) -> String {
+        let mut state = self.lock_state();
+        if state
+            .everyone_pending
+            .contains_key(&format!("marble:{}", marble.id))
+            || thread.is_some_and(|id| {
+                state.threads.iter().any(|thread| {
+                    thread.id == id
+                        && thread.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                })
+            })
+        {
+            let id = crate::everyone::session_id(&marble.id, thread);
+            crate::everyone::ensure_session(&mut state, &id);
+            return id;
+        }
+        let id = state
+            .prism
+            .get(&marble.id)
+            .map(|m| m.conversation_id.clone())
+            .unwrap_or_default();
+        if id.is_empty() && self.store.is_some() {
+            let id = format!("chat-{}", crate::next_request_id());
+            if let Some(marble) = state.prism.find_mut(&marble.id) {
+                marble.conversation_id.clone_from(&id);
+            }
+            state.conversation_mut(&id).needs_engine_session = true;
+            return id;
+        }
+        id
     }
 
     /// Stop every prism engine, used when a marble leaves the roster.

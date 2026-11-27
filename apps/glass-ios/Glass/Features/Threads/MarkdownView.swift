@@ -86,15 +86,26 @@ struct MarkdownView: View, Equatable {
     static func settledBreak(in text: String) -> String.Index? {
         guard let blank = text.range(of: "\n\n", options: .backwards) else { return nil }
         let head = text[..<blank.lowerBound]
-        var fences = 0
+        // A fence closes only on a bare run of its own character at least as long as the opener.
+        var fence: (mark: Character, length: Int)?
         var details = 0
         for line in head.split(separator: "\n", omittingEmptySubsequences: true) {
             let trimmed = line.drop { $0 == " " }
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") || trimmed.hasPrefix("$$") { fences += 1 }
-            if trimmed.hasPrefix("<details") { details += 1 }
-            if trimmed.hasPrefix("</details") { details -= 1 }
+            if let mark = trimmed.first, "`~$".contains(mark) {
+                let length = trimmed.prefix { $0 == mark }.count
+                if length >= (mark == "$" ? 2 : 3) {
+                    if let open = fence {
+                        if open.mark == mark, length >= open.length,
+                           trimmed.dropFirst(length).allSatisfy(\.isWhitespace) { fence = nil }
+                    } else {
+                        fence = (mark, length)
+                    }
+                }
+            }
+            if fence == nil, trimmed.hasPrefix("<details") { details += 1 }
+            if fence == nil, trimmed.hasPrefix("</details") { details -= 1 }
         }
-        return fences.isMultiple(of: 2) && details <= 0 ? blank.upperBound : nil
+        return fence == nil && details <= 0 ? blank.upperBound : nil
     }
 
     var body: some View {

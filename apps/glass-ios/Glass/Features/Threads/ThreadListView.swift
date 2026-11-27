@@ -86,16 +86,14 @@ private struct ConversationShell: View {
             ZStack(alignment: .leading) {
                 detail
                     .environment(\.sidebarOpen, drawer)
+                    .blur(radius: drawer && !reduceTransparency ? 12 : 0)
                     .accessibilityHidden(drawer)
                 if drawer {
                     Color.primary.opacity(0.18)
                         .ignoresSafeArea()
                         .onTapGesture { setDrawer(false) }
                         .accessibilityHidden(true)
-                    NavigationStack {
-                        ThreadListView(threads: threads, choose: open, new: newChat, close: { setDrawer(false) })
-                            .containerBackground(.clear, for: .navigation)
-                    }
+                    ThreadListView(threads: threads, choose: open, new: newChat, close: { setDrawer(false) })
                     .frame(width: width)
                     // One floating glass panel: header, search, list and footer all sit on this surface.
                     .clipShape(.rect(cornerRadius: Design.drawerCorner, style: .continuous))
@@ -173,6 +171,47 @@ struct ThreadListView: View {
         let groups = sections
         let titles = threads.titles()
         ScrollViewReader { proxy in
+            // Header, list and footer each get their own zone, so nothing floats over the rows.
+            VStack(spacing: 0) {
+                header(groups, proxy: proxy)
+                    .padding(.top, close == nil ? Design.small : Design.padding)
+                    .padding(.bottom, Design.small)
+                list(groups, titles: titles)
+                    .contentMargins(.vertical, Design.padding, for: .scrollContent)
+                    .mask { edgeFade }
+                accountBar
+                    .padding(.top, Design.gap)
+            }
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .task(id: Filter(query: threads.query, project: threads.project, archived: threads.archived)) {
+            if !threads.query.isEmpty {
+                do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+            }
+            await threads.reload()
+        }
+        .refreshable { await threads.reload() }
+        .overlay {
+            if threads.isLoading && !threads.loaded { ProgressView().allowsHitTesting(false) }
+        }
+        .toolbarVisibility(.hidden, for: .navigationBar)
+        .alert("Rename Conversation", isPresented: Binding(get: { rename != nil }, set: { if !$0 { rename = nil } })) {
+            TextField("Title", text: $name)
+            Button("Save") {
+                if let rename { Task { await threads.update(rename, .rename(name)) } }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Delete Conversation?", isPresented: Binding(get: { delete != nil }, set: { if !$0 { delete = nil } }), titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                if let delete { Task { await threads.update(delete, .delete) } }
+            }
+        } message: {
+            Text(delete?.displayTitle ?? "")
+        }
+    }
+
+    private func list(_ groups: [(label: String, threads: [ThreadSummary])], titles: [String: String]) -> some View {
         List {
             if threads.loaded, threads.threads.isEmpty, threads.error == nil {
                 ContentUnavailableView(threads.query.isEmpty ? "No conversations yet" : "No matching conversations",
@@ -214,8 +253,10 @@ struct ThreadListView: View {
         .listSectionSpacing(Design.padding)
         .scrollContentBackground(.hidden)
         .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
-        .safeAreaBar(edge: .top, spacing: Design.small) {
-          VStack(spacing: Design.gap) {
+    }
+
+    private func header(_ groups: [(label: String, threads: [ThreadSummary])], proxy: ScrollViewProxy) -> some View {
+        VStack(spacing: Design.gap) {
             LensTitleBar(sideWidth: 2 * Design.control + 2 * Design.small) {
                 if let close {
                     LensBarGroup {
@@ -240,34 +281,14 @@ struct ThreadListView: View {
                 .frame(height: Design.control)
                 .padding(.horizontal, Design.padding)
           }
-        }
-        .safeAreaBar(edge: .bottom, spacing: Design.small) { accountBar }
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .task(id: Filter(query: threads.query, project: threads.project, archived: threads.archived)) {
-            if !threads.query.isEmpty {
-                do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
-            }
-            await threads.reload()
-        }
-        .refreshable { await threads.reload() }
-        .overlay {
-            if threads.isLoading && !threads.loaded { ProgressView().allowsHitTesting(false) }
-        }
-        .toolbarVisibility(.hidden, for: .navigationBar)
-        .alert("Rename Conversation", isPresented: Binding(get: { rename != nil }, set: { if !$0 { rename = nil } })) {
-            TextField("Title", text: $name)
-            Button("Save") {
-                if let rename { Task { await threads.update(rename, .rename(name)) } }
-            }
-            Button("Cancel", role: .cancel) {}
-        }
-        .confirmationDialog("Delete Conversation?", isPresented: Binding(get: { delete != nil }, set: { if !$0 { delete = nil } }), titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
-                if let delete { Task { await threads.update(delete, .delete) } }
-            }
-        } message: {
-            Text(delete?.displayTitle ?? "")
+    }
+
+    /// The list fades out where it meets the header and footer instead of ending on a hard line.
+    private var edgeFade: some View {
+        VStack(spacing: 0) {
+            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: Design.padding)
+            Color.black
+            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: Design.padding)
         }
     }
 
@@ -298,7 +319,7 @@ struct ThreadListView: View {
         .font(.subheadline.weight(.semibold))
         .lineLimit(1)
         .padding(.horizontal, Design.padding)
-        .padding(.bottom, Design.small)
+        .padding(.bottom, Design.padding)
     }
 
     private func filters(_ groups: [(label: String, threads: [ThreadSummary])], proxy: ScrollViewProxy) -> some View {

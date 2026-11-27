@@ -95,6 +95,7 @@ struct ConversationView: View {
                         .overlay(alignment: .top) { jumpToLatest(proxy) }
                 }
                 .frame(maxWidth: .infinity)
+                .hiddenUnderSidebar()
             }
             .onChange(of: conversation.firstRequest) { _, request in
                 guard let request else { return }
@@ -300,15 +301,15 @@ struct ConversationView: View {
         return ZStack {
             if shown {
                 Button { resume(proxy) } label: {
-                    Label("Jump to latest", systemImage: "arrow.down")
-                        .font(.subheadline.weight(.semibold))
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Design.ink)
-                        .padding(.horizontal, Design.padding)
-                        .frame(height: Design.control)
-                        .contentShape(.capsule)
-                        .glassEffect(.regular.interactive(), in: .capsule)
+                        .frame(width: Design.control, height: Design.control)
+                        .contentShape(.circle)
+                        .glassEffect(.regular.interactive(), in: .circle)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Jump to latest")
                 .accessibilityIdentifier("conversation.latest")
                 .accessibilityHint("Returns to the newest message")
                 .transition(.opacity)

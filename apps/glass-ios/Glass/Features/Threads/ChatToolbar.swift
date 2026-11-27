@@ -5,8 +5,23 @@ extension EnvironmentValues {
     @Entry var sidebarOpen = false
 }
 
-struct ChatToolbar<Title: View>: View {
+extension View {
+    /// Chat chrome steps away while the Threads panel is open, so the panel is the only glass on screen.
+    func hiddenUnderSidebar() -> some View { modifier(HiddenUnderSidebar()) }
+}
+
+private struct HiddenUnderSidebar: ViewModifier {
     @Environment(\.sidebarOpen) private var sidebarOpen
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(sidebarOpen ? 0 : 1)
+            .allowsHitTesting(!sidebarOpen)
+            .accessibilityHidden(sidebarOpen)
+    }
+}
+
+struct ChatToolbar<Title: View>: View {
     let menu: () -> Void
     let newChat: () -> Void
     @ViewBuilder let title: () -> Title
@@ -24,12 +39,10 @@ struct ChatToolbar<Title: View>: View {
                 control("square.and.pencil", label: "New chat", action: newChat)
                     .accessibilityIdentifier("conversation.new")
             }
-            .opacity(sidebarOpen ? 0 : 1)
-            .allowsHitTesting(!sidebarOpen)
-            .accessibilityHidden(sidebarOpen)
         }
         .frame(maxWidth: Design.readingWidth)
         .frame(maxWidth: .infinity)
+        .hiddenUnderSidebar()
     }
 
     private func control(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {

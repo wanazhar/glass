@@ -1180,8 +1180,13 @@ impl PrismPool {
                     .control
                     .queue
                     .iter()
-                    .position(|entry| entry.id == id)
+                    .position(|entry| {
+                        entry.everyone_round && entry.thread_id.as_deref() == Some(scope.thread())
+                    })
                     .ok_or((404, "unknown_queue_entry"))?;
+                if state.control.queue[index].id != id {
+                    return Err((409, "queue_entry_not_head"));
+                }
                 state.control.queue.remove(index);
             }
             if matches!(scope, RoundScope::Everyone(_)) {
@@ -1235,8 +1240,8 @@ impl PrismPool {
             }
             drop(latest);
             drop(running);
-            if matches!(scope, RoundScope::Everyone(_)) {
-                pool.resume_held();
+            if let RoundScope::Everyone(thread) = scope {
+                pool.resume_held_everyone(&thread);
             }
         });
         Ok(None)
@@ -1580,19 +1585,13 @@ impl PrismPool {
     pub fn resume_held(self: &Arc<Self>) -> usize {
         let queued = self.lock_state().control.queue.clone();
         let mut seen = HashSet::new();
+        let mut seen_threads = HashSet::new();
         let mut dispatched = 0;
         for entry in queued {
             if entry.everyone_round {
                 if let Some(thread) = entry.thread_id
-                    && self
-                        .start_round(
-                            RoundScope::Everyone(thread),
-                            entry.text,
-                            entry.client_message,
-                            entry.device_time_zone,
-                            RoundSource::Held(&entry.id),
-                        )
-                        .is_ok()
+                    && seen_threads.insert(thread.clone())
+                    && self.resume_held_everyone(&thread)
                 {
                     dispatched += 1;
                 }
@@ -2770,6 +2769,60 @@ impl From<MarbleError> for DispatchRefusal {
 mod tests {
     use super::*;
     use crate::control::ControlState;
+
+    #[test]
+    fn an_idle_everyone_lane_rejects_a_later_held_candidate() {
+        let mut state = ProductState::default();
+        let thread = state.start_everyone_thread("FIFO").id;
+        let scope = RoundScope::Everyone(thread.clone());
+        let root = std::env::temp_dir();
+        let pool = Arc::new(PrismPool::new(PrismPoolParts {
+            factory: Arc::new(|| panic!("a rejected candidate cannot start an engine")),
+            cwd: root.clone(),
+            sessions: root.clone(),
+            state: Arc::new(Mutex::new(state)),
+            store: None,
+            live: LiveStore::in_data_dir(&root),
+            events: EventBus::default(),
+            cancels: CancelRegistry::default(),
+            approvals: ApprovalInbox::default(),
+            timeout: Duration::from_secs(1),
+        }));
+        pool.lock_state().control.paused = true;
+        let hold = |text: &str| {
+            pool.start_everyone_round(thread.clone(), text.into(), None, None)
+                .unwrap()
+                .unwrap()
+                .id
+        };
+        let first = hold("First");
+        let second = hold("Second");
+        pool.lock_state().control.paused = false;
+        let lane = pool.groups.lock().unwrap().get(&scope).unwrap().clone();
+        let _running = lane.running.lock().unwrap();
+        let stale_dispatch = pool.start_round(
+            scope,
+            "Second".into(),
+            None,
+            None,
+            RoundSource::Held(&second),
+        );
+        if let Some(cancel) = lane.latest.lock().unwrap().as_ref() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        assert!(matches!(stale_dispatch, Err((409, "queue_entry_not_head"))));
+        let state = pool.lock_state();
+        assert_eq!(
+            state
+                .control
+                .queue
+                .iter()
+                .map(|entry| &entry.id)
+                .collect::<Vec<_>>(),
+            [&first, &second]
+        );
+        assert!(state.transcript.is_empty());
+    }
 
     fn roster() -> PrismState {
         let mut state = PrismState::default();

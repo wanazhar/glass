@@ -8,7 +8,7 @@ import Testing
         let info = AppInfo(bundle: .main)
         #expect(info.bundleIdentifier == "com.wanazhar.glass")
         #expect(info.displayName == "Glass")
-        #expect(info.version == "0.1.0")
+        #expect(info.version == "0.1.1")
         #expect(Int(info.build) != nil)
     }
 

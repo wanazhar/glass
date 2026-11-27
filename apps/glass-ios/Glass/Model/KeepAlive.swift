@@ -1,28 +1,43 @@
 import ActivityKit
 import CoreLocation
+import Observation
 import os
 import UIKit
 
+/// The Live Activity type used up to 0.1.0 (16). Kept only so launch can end activities an older install left.
+struct ConnectionActivityAttributes: ActivityAttributes {
+    struct ContentState: Codable, Hashable {
+        var status: String?
+    }
+
+    var host: String?
+}
+
 /// Keeps Glass running in the background while it holds a live host connection, by asking iOS for the
 /// coarsest location updates. Each location is dropped the moment it arrives: nothing is stored or sent.
-@MainActor
+@MainActor @Observable
 final class KeepAlive: NSObject {
     static let shared = KeepAlive()
     static let key = "glass.keepAlive.v1"
 
     /// Location updates are running, so iOS keeps Glass awake in the background.
     private(set) var running = false
-    private let manager = CLLocationManager()
-    private var session: CLBackgroundActivitySession?
+    /// The last time iOS refused to show the Live Activity, in its words.
+    private(set) var activityError: String?
+    private(set) var activitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
+    private(set) var location: CLAuthorizationStatus = .notDetermined
+    private(set) var isOn = UserDefaults.standard.bool(forKey: KeepAlive.key)
+    @ObservationIgnored private let manager = CLLocationManager()
+    @ObservationIgnored private var session: CLBackgroundActivitySession?
     private var holds: [String: @MainActor () -> Void] = [:]
-    private var activity: Activity<ConnectionActivityAttributes>?
-    private var authorizing: [CheckedContinuation<Void, Never>] = []
+    private(set) var activity: Activity<LensConnectionAttributes>?
+    @ObservationIgnored private var authorizing: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var enablement: Task<Void, Never>?
     var hostName = "Glass host"
 
-    var isOn: Bool { UserDefaults.standard.bool(forKey: Self.key) }
     var isConnected: Bool { !holds.isEmpty }
     private var authorized: Bool {
-        [.authorizedWhenInUse, .authorizedAlways].contains(manager.authorizationStatus)
+        [.authorizedWhenInUse, .authorizedAlways].contains(location)
     }
 
     override private init() {
@@ -32,6 +47,7 @@ final class KeepAlive: NSObject {
         manager.distanceFilter = CLLocationDistanceMax
         manager.pausesLocationUpdatesAutomatically = false
         manager.activityType = .other
+        location = manager.authorizationStatus
         let center = NotificationCenter.default
         center.addObserver(forName: .glassDisconnect, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { KeepAlive.shared.disconnect() }
@@ -54,10 +70,20 @@ final class KeepAlive: NSObject {
                 KeepAlive.shared.endActivitiesBeforeExit()
             }
         }
-        // An activity left over from a previous run describes a connection that no longer exists.
+        // An activity left over from a previous run, or from an older install, describes a connection
+        // that no longer exists.
         Task {
+            for stale in Activity<LensConnectionAttributes>.activities {
+                await stale.end(nil, dismissalPolicy: .immediate)
+            }
             for stale in Activity<ConnectionActivityAttributes>.activities {
                 await stale.end(nil, dismissalPolicy: .immediate)
+            }
+        }
+        enablement = Task { [weak self] in
+            for await enabled in ActivityAuthorizationInfo().activityEnablementUpdates {
+                self?.activitiesEnabled = enabled
+                if enabled { self?.update() }
             }
         }
     }
@@ -80,6 +106,7 @@ final class KeepAlive: NSObject {
         }
         let enabled = on && authorized
         UserDefaults.standard.set(enabled, forKey: Self.key)
+        isOn = enabled
         update()
         return enabled
     }
@@ -117,7 +144,9 @@ final class KeepAlive: NSObject {
             manager.allowsBackgroundLocationUpdates = false
             running = false
         }
-        if !wanted { endActivity() } else { refreshActivity() }
+        if !wanted { endActivity() }
+        else if activity == nil { startActivity() }
+        else { refreshActivity() }
     }
 
     private var status: String {
@@ -131,13 +160,17 @@ final class KeepAlive: NSObject {
         }
     }
 
+    /// iOS only accepts a new Live Activity while Glass is in the foreground, so this runs both when a
+    /// connection opens and as Glass is on its way out.
     private func startActivity() {
-        guard running, activity == nil,
-              ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        let state = ConnectionActivityAttributes.ContentState(status: status)
+        activitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
+        guard running, activity == nil, activitiesEnabled,
+              UIApplication.shared.applicationState != .background else { return }
+        let state = LensConnectionAttributes.ContentState(status: status, pulse: false)
         do {
-            activity = try Activity.request(attributes: ConnectionActivityAttributes(host: hostName),
+            activity = try Activity.request(attributes: LensConnectionAttributes(host: hostName),
                                             content: Self.content(state), pushType: nil)
+            activityError = nil
             renewal = Task { [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(for: Self.freshFor / 3)
@@ -146,13 +179,14 @@ final class KeepAlive: NSObject {
                 }
             }
         } catch {
+            activityError = error.localizedDescription
             Self.log.error("Live Activity not started: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     private static let log = Logger(subsystem: "com.wanazhar.glass", category: "keep-alive")
 
-    private static func content(_ state: ConnectionActivityAttributes.ContentState) -> ActivityContent<ConnectionActivityAttributes.ContentState> {
+    private static func content(_ state: LensConnectionAttributes.ContentState) -> ActivityContent<LensConnectionAttributes.ContentState> {
         ActivityContent(state: state, staleDate: .now + TimeInterval(freshFor.components.seconds))
     }
 
@@ -160,11 +194,11 @@ final class KeepAlive: NSObject {
         guard let activity else { return }
         let previous = activity.content.state
         guard renew || previous.status != status else { return }
-        let state = ConnectionActivityAttributes.ContentState(status: status, pulse: !(previous.pulse ?? false))
+        let state = LensConnectionAttributes.ContentState(status: status, pulse: !previous.pulse)
         let id = activity.id
         let content = Self.content(state)
         Task.detached {
-            for current in Activity<ConnectionActivityAttributes>.activities where current.id == id {
+            for current in Activity<LensConnectionAttributes>.activities where current.id == id {
                 await current.update(content)
             }
         }
@@ -174,8 +208,8 @@ final class KeepAlive: NSObject {
     func previewActivity() {
         guard activity == nil, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         do {
-            activity = try Activity.request(attributes: ConnectionActivityAttributes(host: "Studio Mac"),
-                                            content: ActivityContent(state: .init(status: "Connected"), staleDate: nil),
+            activity = try Activity.request(attributes: LensConnectionAttributes(host: "Studio Mac"),
+                                            content: ActivityContent(state: .init(status: "Connected", pulse: false), staleDate: nil),
                                             pushType: nil)
         } catch {
             Self.log.error("Live Activity preview not started: \(error.localizedDescription, privacy: .public)")
@@ -188,10 +222,10 @@ final class KeepAlive: NSObject {
         renewal?.cancel()
         renewal = nil
         activity = nil
-        guard !Activity<ConnectionActivityAttributes>.activities.isEmpty else { return }
+        guard !Activity<LensConnectionAttributes>.activities.isEmpty else { return }
         let done = DispatchSemaphore(value: 0)
         Task.detached {
-            for current in Activity<ConnectionActivityAttributes>.activities {
+            for current in Activity<LensConnectionAttributes>.activities {
                 await current.end(nil, dismissalPolicy: .immediate)
             }
             done.signal()
@@ -206,18 +240,35 @@ final class KeepAlive: NSObject {
         self.activity = nil
         let id = activity.id
         Task.detached {
-            for current in Activity<ConnectionActivityAttributes>.activities where current.id == id {
+            for current in Activity<LensConnectionAttributes>.activities where current.id == id {
                 await current.end(nil, dismissalPolicy: .immediate)
             }
         }
     }
 
     fileprivate func authorizationChanged() {
-        guard manager.authorizationStatus != .notDetermined else { return }
+        location = manager.authorizationStatus
+        guard location != .notDetermined else { return }
         authorizing.forEach { $0.resume() }
         authorizing.removeAll()
-        if isOn, !authorized { UserDefaults.standard.set(false, forKey: Self.key) }
+        if isOn, !authorized {
+            UserDefaults.standard.set(false, forKey: Self.key)
+            isOn = false
+        }
         update()
+    }
+
+    /// Why the background connection isn't running right now, in plain words; nil when it is, or is ready to.
+    var blocker: Blocker? {
+        if location == .denied || location == .restricted { return .location }
+        if !isOn { return .off }
+        if !activitiesEnabled { return .liveActivities }
+        if let activityError, activity == nil { return .request(activityError) }
+        return nil
+    }
+
+    enum Blocker: Equatable {
+        case off, location, liveActivities, request(String)
     }
 }
 

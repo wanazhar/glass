@@ -232,16 +232,13 @@ struct NotificationSettingsView: View {
 
 struct ConnectionSettingsView: View {
     @AppStorage(KeepAlive.key) private var keepAlive = false
-    @State private var denied = false
+    private var keeper = KeepAlive.shared
 
     var body: some View {
         Form {
             Section {
                 Toggle("Keep connection alive in background", isOn: Binding(get: { keepAlive }, set: { on in
-                    Task {
-                        keepAlive = await KeepAlive.shared.set(on)
-                        denied = on && !keepAlive
-                    }
+                    Task { keepAlive = await keeper.set(on) }
                 }))
                 .accessibilityIdentifier("settings.keepAlive")
             } footer: {
@@ -253,17 +250,39 @@ struct ConnectionSettingsView: View {
                 more battery, and stops as soon as nothing is connected.
                 """)
             }
-            if denied {
-                Section {
+            Section {
+                LabeledContent("Status", value: status.title)
+                    .accessibilityIdentifier("settings.keepAlive.status")
+                if let reason = status.reason {
+                    Text(reason).font(.footnote).foregroundStyle(Design.muted)
+                        .accessibilityIdentifier("settings.keepAlive.reason")
+                }
+                if status.opensSettings {
                     Button("Open iPhone Settings") {
                         if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                     }
-                } footer: {
-                    Text("Location is turned off for Glass in iPhone Settings, so it can't stay connected in the background.")
                 }
             }
         }
         .navigationTitle("Background connection")
+    }
+
+    private var status: (title: String, reason: String?, opensSettings: Bool) {
+        switch keeper.blocker {
+        case .off:
+            return ("Not running", "Keep connection alive is off, so iPhone pauses Glass soon after you leave it.", false)
+        case .location:
+            return ("Not running", "Location is turned off for Glass in iPhone Settings, so it can't stay connected in the background.", true)
+        case .liveActivities:
+            return ("Running without Lock Screen",
+                    "Live Activities are turned off for Glass in iPhone Settings, so the Lock Screen and Dynamic Island can't show the connection.", true)
+        case .request(let error):
+            return ("Running without Lock Screen", "iPhone didn't show the connection on the Lock Screen: \(error)", false)
+        case nil:
+            if keeper.activity != nil { return ("Running", "Shown on the Lock Screen and in the Dynamic Island.", false) }
+            if keeper.running { return ("Running", "Shown on the Lock Screen once you leave Glass.", false) }
+            return ("Ready", "Starts when you open a conversation or the desktop.", false)
+        }
     }
 }
 

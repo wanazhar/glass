@@ -135,20 +135,35 @@ final class ConversationModel {
     func watchChild() async {
         guard let api = app.api, let parent, let agentID else { return }
         repeat {
-            if let page = try? await api.agentHistory(agentID, thread: parent.thread.id, sourceRef: parent.thread.sourceRef),
-               !Task.isCancelled, page != parent.agentHistory[agentID] || !loadedHistory {
-                parent.agentHistory[agentID] = page
-                timeline.replaceHistory(page)
-                loadedHistory = true
-            }
+            try? await refreshChildHistory(api: api, parent: parent, agentID: agentID)
+            guard agent?.isWorking == true else { return }
             do { try await Task.sleep(for: .seconds(1)) } catch { return }
-        } while agent?.status == "working" && !Task.isCancelled
-        if !Task.isCancelled, let page = try? await api.agentHistory(agentID, thread: parent.thread.id, sourceRef: parent.thread.sourceRef),
-           page != parent.agentHistory[agentID] {
-            parent.agentHistory[agentID] = page
-            timeline.replaceHistory(page)
-            loadedHistory = true
+        } while !Task.isCancelled
+    }
+
+    private func refreshChildHistory(api: GlassClient, parent: ConversationModel, agentID: String) async throws {
+        let page = try await api.agentHistory(agentID, thread: parent.thread.id, sourceRef: parent.thread.sourceRef)
+        let previous = parent.agentHistory[agentID]
+        guard page != previous || !loadedHistory else { return }
+        var pages = [page]
+        if loadedHistory, let end = previous?.totalBytes {
+            var before = page.before
+            while before > end {
+                let intermediate = try await api.agentHistory(agentID, thread: parent.thread.id,
+                                                              sourceRef: parent.thread.sourceRef, before: before)
+                guard intermediate.before < before else { return }
+                pages.append(intermediate)
+                before = intermediate.before
+            }
         }
+        try Task.checkCancellation()
+        if loadedHistory {
+            for window in pages.reversed() { timeline.appendHistory(window) }
+        } else {
+            timeline.replaceHistory(page)
+        }
+        parent.agentHistory[agentID] = page
+        loadedHistory = true
     }
 
     /// The first message that asks for something, skipping greetings and commands; nil until the start is loaded.

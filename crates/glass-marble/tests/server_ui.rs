@@ -2938,6 +2938,115 @@ fn group_workspaces_are_shared_inside_one_thread_only() {
 }
 
 #[test]
+fn group_admission_refreshes_card_while_engine_is_busy() {
+    blocked_group_admission(false);
+}
+
+#[test]
+fn group_admission_can_be_stopped_while_engine_is_busy() {
+    blocked_group_admission(true);
+}
+
+fn blocked_group_admission(stop: bool) {
+    if !python3_available() {
+        return;
+    }
+    {
+        let fixture = NamedTurnFixture::new(if stop {
+            "group-stop-before-engine"
+        } else {
+            "group-policy-before-engine"
+        });
+        fixture.state.lock().unwrap().prism.install_template();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(Some(release_rx));
+        let script = fixture.script.clone();
+        let factory: Arc<dyn Fn() -> Command + Send + Sync> = Arc::new(move || {
+            if let Some(release) = release_rx.lock().unwrap().take() {
+                entered_tx.send(()).unwrap();
+                let _ = release.recv_timeout(Duration::from_secs(5));
+            }
+            let mut command = Command::new("python3");
+            command.arg(&script).arg("runtime").arg("--group-rounds");
+            command
+        });
+        let cancels = CancelRegistry::default();
+        let pool = Arc::new(glass_marble::PrismPool::new(glass_marble::PrismPoolParts {
+            factory,
+            cwd: fixture.root.clone(),
+            sessions: fixture.root.join("prism-sessions"),
+            state: fixture.state.clone(),
+            store: None,
+            live: LiveStore::in_data_dir(&fixture.root),
+            events: fixture.events.clone(),
+            cancels: cancels.clone(),
+            approvals: ApprovalInbox::default(),
+            timeout: Duration::from_secs(10),
+        }));
+        let server = MarbleServer::new(MarbleServerParts {
+            listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+            state: fixture.state.clone(),
+            store: None,
+            approvals: ApprovalInbox::default(),
+            events: fixture.events.clone(),
+            turn_tx: TurnSender::detached(),
+            steer_tx: mpsc::channel().0,
+            policy: AccessPolicy::new(None),
+            cancels: cancels.clone(),
+        })
+        .with_prism(pool);
+        let (status, body) = server.handle(
+            "POST",
+            "/api/threads",
+            r#"{"conversation_id":"group-chats","title":"Waiting","group":{"members":[]}}"#,
+        );
+        assert_eq!(status, 201, "{body}");
+        let created: Value = serde_json::from_str(&body).unwrap();
+        let turn = json!({"threadId":created["thread"]["id"],"text":"Start the work"}).to_string();
+        assert_eq!(server.handle("POST", "/api/turns", &turn).0, 202);
+        entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        if stop {
+            let (_, body) = server.handle("POST", "/api/control/stop", "");
+            let stopped: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(server.handle("POST", "/api/control/resume", "").0, 200);
+            release_tx.send(()).unwrap();
+            assert_eq!(stopped["cancelled"].as_array().unwrap().len(), 1);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !cancels.is_empty() {
+                assert!(
+                    Instant::now() < deadline,
+                    "stopped group round did not finish"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(fixture.state.lock().unwrap().tasks.is_empty());
+        } else {
+            let mut state = fixture.state.lock().unwrap();
+            state
+                .prism
+                .find_mut("lead")
+                .unwrap()
+                .card
+                .as_mut()
+                .unwrap()
+                .tools
+                .allowed
+                .clear();
+            drop(state);
+            release_tx.send(()).unwrap();
+            assert_eq!(fixture.completed("Start the work").marble_id, "lead");
+            let path = fixture
+                .root
+                .join("prism-sessions/lead/fixture-tool-policy.json");
+            let configured: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(configured["toolMode"], "host");
+            assert_eq!(configured["tools"], json!([]));
+        }
+    }
+}
+
+#[test]
 fn prism_roster_is_served_and_editable_without_an_engine() {
     let server = server_with(
         ProductState::default(),

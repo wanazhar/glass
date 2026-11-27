@@ -1000,6 +1000,7 @@ impl PrismPool {
             .or_default()
             .clone();
         let cancel = Arc::new(AtomicBool::new(false));
+        let round_id = format!("group-round-{}", crate::next_request_id());
         let mut latest = lane.latest.lock().unwrap_or_else(|e| e.into_inner());
         let snapshot = {
             let mut state = self.lock_state();
@@ -1018,6 +1019,7 @@ impl PrismPool {
             if let Some(previous) = latest.replace(cancel.clone()) {
                 previous.store(true, Ordering::Relaxed);
             }
+            self.cancels.register(&round_id, cancel.clone());
             state.push_transcript(TranscriptEntry {
                 id: client
                     .as_ref()
@@ -1040,6 +1042,7 @@ impl PrismPool {
         std::thread::spawn(move || {
             let _running = lane.running.lock().unwrap_or_else(|e| e.into_inner());
             pool.run_group_round(&thread, &text, zone.as_deref(), &cancel);
+            pool.cancels.forget(&round_id);
             let mut latest = lane.latest.lock().unwrap_or_else(|e| e.into_inner());
             if latest
                 .as_ref()
@@ -1836,12 +1839,32 @@ impl PrismPool {
             }
         };
         let mut guard = engine.lock().unwrap_or_else(|error| error.into_inner());
-        if group
-            .as_ref()
-            .is_some_and(|group| group.cancel.load(Ordering::Relaxed))
-        {
-            return None;
-        }
+        let refreshed;
+        let marble = if let Some(group) = &group {
+            let state = self.lock_state();
+            if group.cancel.load(Ordering::Relaxed) || state.control.paused {
+                return None;
+            }
+            let still_member = state.threads.iter().any(|thread| {
+                Some(thread.id.as_str()) == thread_id.as_deref()
+                    && !thread.archived
+                    && thread
+                        .group
+                        .as_ref()
+                        .is_some_and(|group| !group.closed && group.members.contains(&marble.id))
+            });
+            if !still_member {
+                return None;
+            }
+            refreshed = if marble.id == "marble" {
+                state.prism.default_marble()
+            } else {
+                state.prism.get(&marble.id)?.clone()
+            };
+            &refreshed
+        } else {
+            marble
+        };
         let conversation = &mut *guard;
         conversation.set_store(self.store.as_deref());
         let (tool_limit, turn_timeout) = marble.turn_budget();

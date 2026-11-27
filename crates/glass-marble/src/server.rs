@@ -3564,19 +3564,22 @@ impl MarbleServer {
 
     /// Pause admission and cancel every running task in one deliberate stop.
     fn stop_all(&self) -> Response {
-        {
+        let flags = {
             let mut guard = self.lock_state();
             guard.control.paused = true;
             guard
                 .control
                 .note("", "", "", "", "allowed", "stop requested for every task");
             guard.bump();
-        }
+            let flags = self.cancels.running();
+            for (_, flag) in &flags {
+                flag.store(true, Ordering::Relaxed);
+            }
+            flags
+        };
         self.save_state();
-        let flags = self.cancels.running();
         let mut cancelled = Vec::new();
-        for (task_id, flag) in flags {
-            flag.store(true, Ordering::Relaxed);
+        for (task_id, _) in flags {
             self.events.publish(
                 "",
                 &task_id,

@@ -2660,16 +2660,12 @@ impl MarbleServer {
                 let Some(mut agents) = strings(&data["agents"]) else {
                     return Response::error(400, "invalid_agents");
                 };
-                if agents
-                    .iter()
-                    .any(|agent| agent != "marble" && state.prism.get(agent).is_none())
-                {
-                    return Response::error(400, "unknown_agent");
-                }
                 let Some(skill) = state.memory.skills.iter().find(|skill| skill.id == id) else {
                     return Response::error(404, "unknown_skill");
                 };
-                agents.retain(|agent| agent != &skill.owner);
+                agents.retain(|agent| {
+                    agent != &skill.owner && (agent == "marble" || state.prism.get(agent).is_some())
+                });
                 agents.sort_unstable();
                 agents.dedup();
                 if !agents.is_empty() && state.memory.skill_contains_private_fact(skill) {

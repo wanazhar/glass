@@ -6972,6 +6972,46 @@ fn review_shared_skill_edit_rejects_private_memory_without_mutating_it() {
 }
 
 #[test]
+fn review_skill_sharing_drops_recipients_who_left_the_roster() {
+    let mut state = ProductState::default();
+    let recipient = state
+        .prism
+        .add("Dietrich", "Engineer", "", 0, "", "")
+        .unwrap()
+        .id
+        .clone();
+    state.memory.skills.push(glass_marble::memory::Skill {
+        id: "trip-skill".into(),
+        name: "Trip planning".into(),
+        when_to_use: "Before leaving town".into(),
+        steps: vec!["Check the weather".into()],
+        owner: "ada".into(),
+        shared_with: vec!["departed-agent".into()],
+        created_at: 1,
+        conversation_id: "chat".into(),
+        thread_id: None,
+        source_entry_id: None,
+        learned_from: None,
+    });
+    let server = server_with(
+        state,
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle(
+        "POST",
+        "/api/knowledge/trip-skill/share-skill",
+        &json!({
+            "agents":["departed-agent",recipient,recipient]
+        })
+        .to_string(),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(server.state().memory.skills[0].shared_with, vec![recipient]);
+}
+
+#[test]
 fn agent_knowledge_is_saved_taught_and_pruned_with_confirmation() {
     if !python3_available() {
         return;

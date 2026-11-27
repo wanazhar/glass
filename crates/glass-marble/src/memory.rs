@@ -414,21 +414,26 @@ impl MemoryState {
         );
         if shared_chat {
             instructions.push_str("You cannot access private memories here. If asked to use one, first ask permission without guessing or disclosing the fact and use {\"action\":\"askToShare\"}.\n");
-            let permitted: Vec<_> = self
+            let (granted, from_thread): (Vec<_>, Vec<_>) = self
                 .facts
                 .iter()
-                .filter(|fact| {
-                    fact.owner == owner
-                        && group_thread.is_some_and(|thread| {
-                            (!fact.explicit && fact.thread_id.as_deref() == Some(thread))
-                                || fact
-                                    .permitted_threads
-                                    .iter()
-                                    .any(|allowed| allowed == thread)
-                        })
+                .filter_map(|fact| {
+                    let thread = group_thread?;
+                    let granted = fact
+                        .permitted_threads
+                        .iter()
+                        .any(|allowed| allowed == thread);
+                    (fact.owner == owner
+                        && (granted
+                            || (!fact.explicit && fact.thread_id.as_deref() == Some(thread))))
+                    .then_some((fact, granted))
                 })
-                .map(|fact| (&fact.kind, &fact.text))
+                .partition(|(_, granted)| *granted);
+            let permitted: Vec<_> = granted
+                .into_iter()
+                .chain(from_thread)
                 .take(12)
+                .map(|(fact, _)| (&fact.kind, &fact.text))
                 .collect();
             if !permitted.is_empty() {
                 instructions.push_str(&format!(
@@ -1275,6 +1280,33 @@ mod tests {
                 .turn_instructions("ada", None, false)
                 .contains("Trip planning")
         );
+    }
+
+    #[test]
+    fn review_granted_memory_is_not_crowded_out_by_thread_facts() {
+        let mut memory = MemoryState::default();
+        for index in 0..12 {
+            memory
+                .remember(
+                    &format!("Thread fact {index}"),
+                    "fact",
+                    "shared-chat",
+                    false,
+                    "ada",
+                )
+                .unwrap();
+            memory.facts.last_mut().unwrap().thread_id = Some("group-one".into());
+        }
+        let granted = memory
+            .remember("Newly cleared trip advice", "fact", "private", true, "ada")
+            .unwrap();
+        memory.ask_consent("ada", "group-one", "task");
+        let consent = memory.consent_requests[0].id.clone();
+        assert!(memory.resolve_consent(&consent, Some(&granted.id)));
+        let instructions = memory.turn_instructions("ada", Some("group-one"), true);
+        assert!(instructions.contains(&granted.text));
+        assert!(instructions.contains("Thread fact 0"));
+        assert!(!instructions.contains("Thread fact 11"));
     }
 
     #[test]

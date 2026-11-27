@@ -1035,7 +1035,8 @@ struct RevealingReply: View {
     @State private var anchorDate = Date.distantPast
     @State private var rate = 400.0
     @State private var lastArrival: Date?
-    @State private var gap = 0.25
+    // Assume a slow, uneven network until the stream shows otherwise, so the first words do not run dry.
+    @State private var gap = 0.9
     @State private var caughtUp = true
     @State private var started = false
 
@@ -1047,7 +1048,19 @@ struct RevealingReply: View {
         .onAppear {
             guard !started else { return }
             started = true
-            anchor = text.utf8.count
+            // A reply that is only just starting reveals its first words too; one already under way stays put.
+            if streaming, let shown = Self.progress[Self.key(text)] {
+                // The row was rebuilt mid-stream (a new id or a lazy reload): carry on from where it was.
+                anchor = min(shown, text.utf8.count)
+                anchorDate = .now
+                arrive(text.utf8.count)
+            } else if streaming, text.utf8.count < Self.freshStart {
+                anchor = 0
+                anchorDate = .now
+                arrive(text.utf8.count)
+            } else {
+                anchor = text.utf8.count
+            }
         }
         .onChange(of: text.utf8.count) { _, total in arrive(total) }
         .onChange(of: streaming) { _, _ in arrive(text.utf8.count) }
@@ -1060,6 +1073,10 @@ struct RevealingReply: View {
         }
     }
 
+    private static let freshStart = 600
+    @MainActor private static var progress: [String: Int] = [:]
+    private static func key(_ text: String) -> String { String(text.prefix(80)) }
+
     private struct TaskKey: Hashable { var anchor: Int; var date: Date; var total: Int }
 
     private func revealed(at date: Date) -> Int {
@@ -1070,18 +1087,19 @@ struct RevealingReply: View {
         let now = Date.now
         let shown = min(revealed(at: now), total)
         if let lastArrival {
-            // Quick to learn a longer pause, slow to forget it, so one quiet spell does not cause the next stall.
+            // Hold the longest recent pause and forget it slowly, so one quiet spell does not cause the next stall.
             let latest = min(max(now.timeIntervalSince(lastArrival), 0.016), 2)
-            gap = latest > gap ? gap * 0.5 + latest * 0.5 : gap * 0.9 + latest * 0.1
+            gap = max(latest, gap * 0.97)
         }
         lastArrival = now
         let backlog = Double(total - shown)
         // Aim to finish the backlog just as the next chunk is due; drain faster once the stream has ended.
-        let horizon = streaming ? min(max(gap * 1.3, 0.25), 1.5) : 0.35
+        let horizon = streaming ? min(max(gap * 1.2, 0.3), 1.5) : 0.35
         rate = max(60, backlog / horizon)
         anchor = shown
         anchorDate = now
         caughtUp = shown >= total
+        if streaming { Self.progress[Self.key(text)] = shown } else { Self.progress[Self.key(text)] = nil }
     }
 
     /// The revealed prefix, ending on a word boundary so words arrive whole.

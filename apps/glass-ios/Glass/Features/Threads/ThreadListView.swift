@@ -41,6 +41,10 @@ private struct ConversationShell: View {
             Attention.visibleThread = id
             if child?.parent?.thread.id != id { child = nil }
         }
+        .task(id: selectedThread?.id) {
+            guard let selectedThread else { return }
+            await threads.conversation(for: selectedThread).watchAgents()
+        }
         #if DEBUG
         .task {
             guard let preview = LensPreview.current else { return }
@@ -164,14 +168,18 @@ private struct ConversationShell: View {
         }
     }
 
+    private var selectedThread: ThreadSummary? {
+        threads.selection.flatMap { threads.thread($0) }
+    }
+
     @ViewBuilder
     private var detail: some View {
-        if let id = threads.selection, let thread = threads.thread(id) {
+        if let thread = selectedThread {
             let conversation = threads.conversation(for: thread)
             ConversationView(conversation: conversation, threads: threads, goBack: toggleSidebar) { agent in
                 openAgent(conversation, agent)
             }
-                .id(id)
+                .id(thread.id)
         } else {
             StartConversationView(threads: threads, menu: toggleSidebar, newChat: newChat)
         }

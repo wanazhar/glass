@@ -61,6 +61,39 @@ final class ScreenshotTourUITests: XCTestCase {
     }
 
     @MainActor
+    func testChildStopUpdatesWhenAnotherClientStopsTheAgent() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["GLASS_CHAT_FIXTURE"] == "1",
+                          "Start scripts/e2e/chat-fixture.py")
+        continueAfterFailure = false
+        try await updateFixtureAgent(at: "/fixture/reset-agents")
+        let app = pairFixture("light")
+        app.buttons["thread.delegation"].tap()
+        let group = app.buttons["agents.group"].firstMatch
+        XCTAssertTrue(group.waitForExistence(timeout: 10))
+        group.tap()
+        let agent = app.buttons["agents.child.delivery"]
+        XCTAssertTrue(agent.waitForExistence(timeout: 5))
+        agent.tap()
+        let stop = app.buttons["agent.stop"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5) && stop.isEnabled)
+        try await updateFixtureAgent(at: "/api/agent/stop")
+        XCTAssertTrue(stop.wait(for: \.isEnabled, toEqual: false, timeout: 8))
+        XCTAssertTrue(app.buttons["agent.parent"].exists, "The child stays open")
+        try await updateFixtureAgent(at: "/fixture/reset-agents")
+    }
+
+    @MainActor
+    private func updateFixtureAgent(at path: String) async throws {
+        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:51998\(path)"))
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data(#"{"id":"delegation","agent":"delivery"}"#.utf8)
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    }
+
+    @MainActor
     func testRoundEightStreamingAndHeader() throws {
         let environment = ProcessInfo.processInfo.environment
         try XCTSkipUnless(environment["GLASS_CHAT_FIXTURE"] == "1", "Start scripts/e2e/chat-fixture.py")

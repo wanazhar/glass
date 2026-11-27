@@ -194,9 +194,6 @@ struct ConversationView: View {
         .task(id: conversation.agent?.status) {
             if conversation.parent != nil { await conversation.watchChild() }
         }
-        .task {
-            if conversation.parent == nil { await conversation.watchAgents() }
-        }
         #if DEBUG
         .onChange(of: conversation.canWrite, initial: true) { _, writable in
             guard writable, let preview = LensPreview.current else { return }

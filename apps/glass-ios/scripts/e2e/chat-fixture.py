@@ -43,7 +43,7 @@ THREADS = [
 for offset, thread in enumerate(THREADS):
     thread["modified"] = time.time() - 60 * offset
 
-AGENTS = [
+INITIAL_AGENTS = [
     {"id": "delivery", "name": "Delivery", "status": "working", "activity": "**Editing alert_router.py**",
      "task": "Trace why urgent alerts sometimes arrive twice."},
     {"id": "tests", "name": "Tests", "status": "idle", "terminal_events": 1,
@@ -51,6 +51,7 @@ AGENTS = [
     {"id": "replay", "name": "Replay", "status": "blocked", "terminal_events": 1,
      "task": "Reproduce the retry path offline.", "result": "The replay fixture is missing."},
 ]
+AGENTS = [agent.copy() for agent in INITIAL_AGENTS]
 AGENT_START = time.time() - 121
 STREAM_REPLY = (
     "The device build and the simulator build both use the same Swift sources, but they target different platforms. "
@@ -68,6 +69,7 @@ DELEGATION = [
 
 
 class Handler(BaseHTTPRequestHandler):
+    agent_revision = 1
     def reply(self, value):
         data = json.dumps(value).encode()
         self.send_response(200)
@@ -176,11 +178,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        if urlsplit(self.path).path in {"/api/agent/stop", "/api/agent/send"}:
+        path = urlsplit(self.path).path
+        if path == "/fixture/reset-agents":
+            AGENTS[:] = [agent.copy() for agent in INITIAL_AGENTS]
+            Handler.agent_revision += 1
+        elif path in {"/api/agent/stop", "/api/agent/send"}:
             agent = next((agent for agent in AGENTS if agent["id"] == data.get("agent")), None)
             if agent:
                 agent.update(status="parked" if self.path.endswith("/stop") else "working",
                              activity="Paused" if self.path.endswith("/stop") else "Retrying assignment")
+                Handler.agent_revision += 1
         self.reply({"session": data.get("id", "")})
 
     def history(self, records):
@@ -191,11 +198,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         try:
-            self.wfile.write(b'data: {"revision":1}\n\n')
+            revision = None
             while True:
+                if revision != Handler.agent_revision:
+                    revision = Handler.agent_revision
+                    self.wfile.write(f'data: {{"revision":{revision}}}\n\n'.encode())
+                else:
+                    self.wfile.write(b": heartbeat\n\n")
                 self.wfile.flush()
                 time.sleep(2)
-                self.wfile.write(b": heartbeat\n\n")
         except (BrokenPipeError, ConnectionResetError):
             pass
 

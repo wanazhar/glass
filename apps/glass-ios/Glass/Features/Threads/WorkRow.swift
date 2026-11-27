@@ -45,7 +45,7 @@ enum ChatRow: Identifiable {
                 seconds = elapsed
             case .tool(_, let name, _, _, false) where name == "display_image":
                 messages.append(entry)
-            case .tool(_, let name, _, _, _) where name == "teammate" || name == "run_subagents":
+            case .tool(_, let name, _, _, _) where name == "teammate" || isSubagentTool(name):
                 flush()
                 result.append(.agents(entry))
                 workPart += 1
@@ -56,6 +56,10 @@ enum ChatRow: Identifiable {
         let delegated = result.last.map { if case .agents = $0 { true } else { false } } ?? false
         flush(activity: timeline.isActive && !(delegated && steps.isEmpty) ? timeline.activity ?? "Working…" : nil)
         return result
+    }
+
+    static func isSubagentTool(_ name: String) -> Bool {
+        name == "subagent" || name == "run_subagents"
     }
 }
 

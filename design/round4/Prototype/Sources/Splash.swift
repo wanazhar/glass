@@ -75,7 +75,6 @@ struct SplashScene: View {
             if showsControls {
                 VStack(alignment: .leading) {
                     HStack {
-                        Eyebrow("GLASS / LENS")
                         Spacer()
                         Button("Skip", action: finish)
                             .font(.subheadline.weight(.semibold))

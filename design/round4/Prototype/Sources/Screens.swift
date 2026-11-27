@@ -19,7 +19,7 @@ struct WorkspacePreview: View {
     let initialScreen: Screen
     @State private var selected: Screen = .active
     @State private var showingDrawer = false
-    @State private var splitSidebar = true
+    @State private var columns = NavigationSplitViewVisibility.all
     @State private var showingModel = false
     @State private var draft = ""
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -29,40 +29,37 @@ struct WorkspacePreview: View {
     private var title: String { split ? "Fix the nil crash in TitleView" : "Glass" }
 
     var body: some View {
-        GeometryReader { geometry in
-            HStack(spacing: 0) {
-                if split && splitSidebar && selected != .settings {
-                    ThreadDrawer(embedded: true, close: { splitSidebar = false }, newChat: newChat,
-                                 openThread: openThread, settings: showSettings)
-                        .frame(width: 275)
-                    Rectangle().fill(p.line).frame(width: 1)
-                }
-                Group {
-                    switch selected {
-                    case .empty:
-                        EmptyChat(title: "Glass", split: split, menu: toggleDrawer, newChat: newChat,
-                                  draft: $draft, chooseModel: { showingModel = true })
-                    case .settings:
-                        SettingsPreview(back: openThread)
-                    case .active, .working, .failed, .drawer:
-                        TranscriptSurface(title: title, mode: selected == .working ? .working : .idle,
-                                          managesSidebar: split && splitSidebar, menu: toggleDrawer, newChat: newChat) {
-                            ConversationSample(screen: selected)
+        Group {
+            if split {
+                NavigationSplitView(columnVisibility: $columns) {
+                    ThreadDrawer(embedded: true, selectedTitle: selected == .active ? title : nil,
+                                 close: openThread, newChat: newChat, openThread: openThread, settings: showSettings)
+                        .navigationTitle("Threads")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .navigationSplitViewColumnWidth(min: 330, ideal: 355, max: 395)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("New chat", systemImage: "square.and.pencil", action: newChat)
+                            }
                         }
-                        .id(selected)
-                    }
+                } detail: {
+                    detail
                 }
-                .frame(maxWidth: .infinity)
-            }
-            .overlay(alignment: .leading) {
-                if showingDrawer && !split {
-                    ZStack(alignment: .leading) {
-                        Color.black.opacity(p.dark ? 0.38 : 0.15)
-                            .ignoresSafeArea()
-                            .onTapGesture(perform: openThread)
-                        ThreadDrawer(close: openThread, newChat: newChat, openThread: openThread, settings: showSettings)
-                            .frame(width: min(geometry.size.width - 53, 350))
-                            .padding(.leading, 5)
+                .navigationSplitViewStyle(.balanced)
+            } else {
+                GeometryReader { geometry in
+                    detail.overlay(alignment: .leading) {
+                        if showingDrawer {
+                            ZStack(alignment: .leading) {
+                                Color.black.opacity(p.dark ? 0.38 : 0.15)
+                                    .ignoresSafeArea()
+                                    .onTapGesture(perform: openThread)
+                                ThreadDrawer(close: openThread, newChat: newChat,
+                                             openThread: openThread, settings: showSettings)
+                                    .frame(width: min(geometry.size.width - 53, 350))
+                                    .padding(.leading, 5)
+                            }
+                        }
                     }
                 }
             }
@@ -81,8 +78,29 @@ struct WorkspacePreview: View {
         }
     }
 
+    private var detail: some View {
+        Group {
+            switch selected {
+            case .empty:
+                EmptyChat(title: "Glass", split: split, menu: toggleDrawer, newChat: newChat,
+                          draft: $draft, chooseModel: { showingModel = true })
+            case .settings:
+                SettingsPreview(back: openThread)
+            case .active, .working, .failed, .drawer:
+                TranscriptSurface(title: title, mode: selected == .working ? .working : .idle,
+                                  nativeNavigation: split, anchor: split ? .bottom : .top,
+                                  menu: toggleDrawer, newChat: newChat) {
+                    ConversationSample(screen: selected, expanded: split)
+                }
+                .id(selected)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(p.paper.ignoresSafeArea())
+    }
+
     private func toggleDrawer() {
-        if split { splitSidebar.toggle() } else { showingDrawer.toggle() }
+        showingDrawer.toggle()
     }
 
     private func openThread() {
@@ -189,6 +207,7 @@ struct ConnectionPreview: View {
 
 private struct ConversationSample: View {
     let screen: Screen
+    var expanded = false
     @State private var showingOutput = false
     @State private var showingDiff = false
     @Environment(\.palette) private var p
@@ -200,6 +219,14 @@ private struct ConversationSample: View {
             UserBubble(message: "Can you fix the nil crash in the title?")
             LiveTrace()
         } else {
+            if expanded && screen == .active {
+                UserBubble(message: "The app crashes when I open a thread from an older export.")
+                reply("Can you share the export that reproduces it?")
+                UserBubble(message: "Yes. The thread named Release notes is the one that crashes.")
+                FileChip(name: "threads-export.json", detail: "12 KB")
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                reply("I reproduced it. That thread has no title in the export.")
+            }
             UserBubble(message: "Can you fix the nil crash in the title?")
             if screen == .failed {
                 reply("The fallback is in place. One test command stopped before it could verify the fix.")
@@ -226,6 +253,11 @@ private struct ConversationSample: View {
                 CodeCard(titleSample: true)
                 reply("A missing title now displays “Untitled.” An existing title stays unchanged.")
                 BenchmarkTable(titleSample: true)
+                if expanded {
+                    UserBubble(message: "Did you check that saved titles still show up?")
+                    reply("Yes. Both title tests passed. The fallback only applies when the stored title is nil.")
+                    FileChip(name: "TitleViewTests.swift", detail: "2 tests passed")
+                }
             }
         }
     }
@@ -307,6 +339,7 @@ private struct ThreadGroup: Identifiable {
 
 private struct ThreadDrawer: View {
     var embedded = false
+    var selectedTitle: String?
     let close: () -> Void
     let newChat: () -> Void
     let openThread: () -> Void
@@ -354,23 +387,25 @@ private struct ThreadDrawer: View {
             .scrollEdgeEffectStyle(.hard, for: [.top, .bottom])
             .safeAreaBar(edge: .top, spacing: 4) {
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Button(action: close) {
-                            Image(systemName: embedded ? "sidebar.leading" : "xmark")
-                                .font(.system(size: 15, weight: .semibold))
-                                .frame(width: 44, height: 44)
+                    if !embedded {
+                        HStack {
+                            Button(action: close) {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .frame(width: 44, height: 44)
+                            }
+                            .accessibilityLabel("Close threads")
+                            Spacer()
+                            Button(action: newChat) {
+                                Image(systemName: "square.and.pencil")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .frame(width: 44, height: 44)
+                            }
+                            .accessibilityLabel("New chat")
                         }
-                        .accessibilityLabel(embedded ? "Hide sidebar" : "Close threads")
-                        Spacer()
-                        Button(action: newChat) {
-                            Image(systemName: "square.and.pencil")
-                                .font(.system(size: 16, weight: .semibold))
-                                .frame(width: 44, height: 44)
-                        }
-                        .accessibilityLabel("New chat")
+                        .buttonStyle(.plain)
+                        Text("Threads").font(.largeTitle.weight(.semibold))
                     }
-                    .buttonStyle(.plain)
-                    Text("Threads").font(.largeTitle.weight(.semibold))
                     HStack(spacing: 8) {
                         Image(systemName: "magnifyingglass").foregroundStyle(p.muted)
                         TextField("Find a thread", text: $search, prompt: Text("Find a thread").foregroundStyle(p.muted))
@@ -429,6 +464,7 @@ private struct ThreadDrawer: View {
             LazyVStack(spacing: 0) {
                 ForEach(section.titles.indices, id: \.self) { index in
                     let isRunning = section.name == "Today" && index == 0
+                    let isSelected = section.titles[index] == selectedTitle
                     if index > 0 { Divider().padding(.leading, 36) }
                     Button(action: openThread) {
                         HStack(spacing: 9) {
@@ -438,23 +474,27 @@ private struct ThreadDrawer: View {
                                 Image(systemName: "bubble.left").foregroundStyle(p.muted).frame(width: 16)
                             }
                             Text(section.titles[index])
-                                .font(.subheadline)
-                                .fixedSize(horizontal: false, vertical: true)
+                                .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                                .lineLimit(embedded ? 1 : nil)
                                 .accessibilityValue(isRunning ? "Running" : "")
                             Spacer(minLength: 6)
-                            Image(systemName: "chevron.right")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(p.muted)
+                            if !embedded {
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(p.muted)
+                            }
                         }
                         .padding(.horizontal, 11)
                         .frame(minHeight: 42)
+                        .background(isSelected ? p.accent.opacity(0.12) : .clear)
                         .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
-            .background(p.panel.opacity(embedded || p.dark ? 0.91 : 0.84), in: .rect(cornerRadius: 13))
-            .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(p.line.opacity(0.65)))
+            .background(embedded ? p.inset.opacity(0.48) : p.panel.opacity(p.dark ? 0.91 : 0.84))
+            .clipShape(.rect(cornerRadius: 13))
         }
     }
 }
@@ -468,13 +508,13 @@ private struct SettingsPreview: View {
             VStack(alignment: .leading, spacing: 23) {
                 Text("Settings").font(.largeTitle.weight(.semibold))
                 host
-                group("PREFERENCES", rows: [
+                group("Preferences", rows: [
                     ("textformat.size", "Appearance", "System"),
                     ("bell", "Notifications", ""),
                     ("antenna.radiowaves.left.and.right", "Background connection", ""),
                     ("mic", "Voice", ""),
                 ])
-                group("WORKSPACE", rows: [
+                group("Workspace", rows: [
                     ("slider.horizontal.3", "New chat defaults", ""),
                     ("stethoscope", "Diagnostics", ""),
                     ("info.circle", "About Glass", ""),
@@ -513,7 +553,7 @@ private struct SettingsPreview: View {
 
     private func group(_ label: String, rows: [(String, String, String)]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Eyebrow(label)
+            Text(label).font(.subheadline.weight(.semibold)).foregroundStyle(p.muted)
             VStack(spacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                     if index > 0 { Divider().padding(.leading, 44) }

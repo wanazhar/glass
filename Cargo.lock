@@ -1526,6 +1526,7 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
 ]

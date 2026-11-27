@@ -205,6 +205,8 @@ final class MarbleEvidenceTests: XCTestCase {
         XCTAssertEqual(engineer.value as? String, "1")
         shot("p3-share-skill")
         back()
+        check(button("Share with 1 agent"))
+        shot("p4-one-agent")
         button("Save").tap()
         check(app.staticTexts["Cobalt project checklist for launch"])
     }
@@ -525,12 +527,29 @@ final class MarbleEvidenceTests: XCTestCase {
 
     func testHostedTablet() throws {
         try start()
-        check(app.staticTexts["Choose a Marble to start a conversation."])
+        check(app.staticTexts["Choose an agent to start a conversation."])
         shot("ipad-home")
         app.staticTexts["Ada"].firstMatch.tap()
         check(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "packing list")).firstMatch)
         XCTAssertTrue(app.staticTexts["Cleo"].firstMatch.isHittable)
         shot("ipad-chat")
+    }
+
+    func testHostedAgentCopy() throws {
+        try start(expectedAgent: "Marble")
+        try XCTSkipUnless(app.frame.width >= 600, "Requires the split-view layout")
+        check(app.staticTexts["Start a chat"])
+        check(app.staticTexts["Choose an agent to start a conversation."])
+        shot("p4-agent-empty")
+        let newAgent = button("New agent")
+        for _ in 0..<4 where !newAgent.isHittable {
+            app.collectionViews.firstMatch.swipeUp()
+        }
+        check(newAgent)
+        shot("p4-new-agent-button")
+        newAgent.tap()
+        check(app.textFields["Name your agent"])
+        shot("p4-new-agent")
     }
 
     func testHostedXL() throws {
@@ -582,20 +601,40 @@ final class MarbleEvidenceTests: XCTestCase {
     func testHostedTurnPresentation() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["MARBLE_TURN_EVIDENCE"] == "1",
                           "Requires the local turn presentation fixture")
-        try start()
-        app.staticTexts["Ada"].firstMatch.tap()
-        let field = app.descendants(matching: .any)["composer.field"].firstMatch
+        let address = try XCTUnwrap(ProcessInfo.processInfo.environment["MARBLE_TURN_EVIDENCE_URL"])
+        try start(address: address, expectedAgent: "Marble")
+        shot("p4-agents-tab")
+        app.staticTexts["Marble"].firstMatch.tap()
+        check(button("chat.compose"))
+        shot("p4-new-chat-button")
+        button("chat.compose").tap()
+        check(app.staticTexts["New chat"])
+        shot("p4-new-chat-picker")
+        button("Private chat").tap()
+        let field = app.textFields["composer.field"]
         check(field)
+        shot("p4-new-chat-empty")
         field.tap()
         field.typeText("Please check the report.")
         button("Send").tap()
         check(app.staticTexts["Checking the report…"])
         shot("p1-working-line")
-        let collapsed = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Used 2 tools")).firstMatch
+        let collapsed = button("Used 2 tools")
         check(collapsed, timeout: 15)
+        collapsed.tap()
+        let listing = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Listed appendix.pdf")).firstMatch
+        let search = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Searched the web")).firstMatch
+        check(listing)
+        check(search)
+        check(app.staticTexts["Running"].firstMatch)
+        shot("p4-tools-running")
         let reply = app.staticTexts["The report is ready to review."]
-        check(reply)
+        check(reply, timeout: 20)
         XCTAssertFalse(app.tabBars.firstMatch.exists)
+        check(listing)
+        check(search)
+        shot("p4-tools-settled")
+        collapsed.tap()
         shot("p1-tools-collapsed")
         collapsed.tap()
         let failed = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Failed")).firstMatch
@@ -610,9 +649,9 @@ final class MarbleEvidenceTests: XCTestCase {
         field.tap()
         field.typeText("Check the report failure.")
         button("Send").tap()
-        XCTAssertFalse(app.staticTexts["Ada couldn’t finish this reply."].exists)
-        check(app.staticTexts["Ada couldn’t finish this reply."], timeout: 15)
-        XCTAssertEqual(app.staticTexts.matching(identifier: "Ada couldn’t finish this reply.").count, 1)
+        XCTAssertFalse(app.staticTexts["Marble couldn’t finish this reply."].exists)
+        check(app.staticTexts["Marble couldn’t finish this reply."], timeout: 20)
+        XCTAssertEqual(app.staticTexts.matching(identifier: "Marble couldn’t finish this reply.").count, 1)
         checkCapsule("Retry")
         let continueButton = button("Continue")
         if continueButton.exists { continueButton.tap() }

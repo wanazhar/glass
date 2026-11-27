@@ -494,6 +494,92 @@ impl Drop for Conversation {
 }
 
 #[cfg(target_os = "macos")]
+struct ScopedCoreConfig(PathBuf);
+
+#[cfg(target_os = "macos")]
+impl Drop for ScopedCoreConfig {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn scoped_core_config(
+    command: &Command,
+    session: &Path,
+    workspace: &Path,
+) -> std::io::Result<Option<ScopedCoreConfig>> {
+    let env = |name: &str| {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .map_or_else(
+                || std::env::var_os(name),
+                |(_, value)| value.map(ToOwned::to_owned),
+            )
+            .filter(|value| !value.is_empty())
+    };
+    let source = env("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .map_or_else(
+            || workspace.join(".glass-core/config"),
+            |path| workspace.join(path).join("glass-core"),
+        );
+    let config = match std::fs::read_to_string(source.join("config.toml")) {
+        Ok(config) => config,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut config = config.parse::<toml_edit::DocumentMut>().map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Invalid Core configuration",
+        )
+    })?;
+    let setting = |name| {
+        config
+            .get(name)
+            .and_then(toml_edit::Item::as_str)
+            .map(|value| value.trim().to_ascii_lowercase())
+    };
+    if setting("sandbox").as_deref() != Some("workspace")
+        || !matches!(
+            setting("permission_profile").as_deref(),
+            None | Some("unrestricted")
+        )
+        || !matches!(setting("sandbox_egress").as_deref(), None | Some("off"))
+    {
+        return Ok(None);
+    }
+    if matches!(setting("sandbox_env").as_deref(), None | Some("")) {
+        config["sandbox_env"] = toml_edit::value("scrub");
+    }
+    config["sandbox"] = toml_edit::value("off");
+    let root = ScopedCoreConfig(session.join(format!(".core-config-{}", crate::next_request_id())));
+    let destination = root.0.join("glass-core");
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        if entry.file_name() != "config.toml" {
+            std::os::unix::fs::symlink(entry.path(), destination.join(entry.file_name()))?;
+        }
+    }
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(destination.join("config.toml"))?
+        .write_all(config.to_string().as_bytes())?;
+    Ok(Some(root))
+}
+
+#[cfg(target_os = "macos")]
 fn sandbox_conversation_runtime(command: Command, session: &Path, workspace: &Path) -> Command {
     let store = session.parent().expect("session storage has a parent");
     let mut sandbox = Command::new("/usr/bin/sandbox-exec");
@@ -735,7 +821,15 @@ impl Conversation {
             let factory = factory.clone();
             let root = root.clone();
             let cwd = cwd.clone();
-            std::sync::Arc::new(move || sandbox_conversation_runtime(factory(), &root, &cwd))
+            let config = scoped_core_config(&factory(), &root, &cwd).map_err(MarbleError::Io)?;
+            std::sync::Arc::new(move || {
+                let mut command = sandbox_conversation_runtime(factory(), &root, &cwd);
+                if let Some(config) = &config {
+                    let ScopedCoreConfig(path) = config;
+                    command.env("XDG_CONFIG_HOME", path);
+                }
+                command
+            })
         };
         let mut command = factory();
         if let Some(zone) = zone {
@@ -2069,6 +2163,128 @@ impl Conversation {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires GLASS_CORE_TEST_BINARY pointing to a built Core"]
+    fn scoped_core_shell_reads_its_workspace_but_not_a_sibling() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let binary =
+            std::env::var_os("GLASS_CORE_TEST_BINARY").expect("set GLASS_CORE_TEST_BINARY");
+        let dir =
+            std::env::temp_dir().join(format!("marble-core-shell-{}", crate::next_request_id()));
+        let session = dir.join("chats/current");
+        let workspace = session.join("workspace");
+        let sibling = dir.join("chats/sibling/workspace");
+        let config = dir.join("config");
+        for path in [&workspace, &sibling, &config.join("glass-core")] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let session = session.canonicalize().unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+        std::fs::write(workspace.join("own.txt"), "own-chat-fixture\n").unwrap();
+        std::fs::write(sibling.join("other.txt"), "sibling-chat-fixture\n").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let source = config.join("glass-core/config.toml");
+        let settings = format!(
+            "sandbox = \"workspace\"\nprovider = \"openai\"\nbase_url = {url:?}\nmodel = \"fixture\"\napi_key_env = \"\"\n"
+        );
+        std::fs::write(&source, &settings).unwrap();
+        let shell = format!(
+            "cat own.txt && cat \"{}\"",
+            sibling.join("other.txt").display()
+        );
+        let fake = std::thread::spawn(move || {
+            for frame in [
+                value!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"shell","type":"function","function":{"name":"bash","arguments":value!({"command":shell}).to_string()}}]},"finish_reason":"tool_calls"}]}),
+                value!({"choices":[{"index":0,"delta":{"content":"Done."},"finish_reason":"stop"}]}),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut reader = BufReader::new(&mut stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                reader.read_exact(&mut vec![0; length]).unwrap();
+                let body = format!("data: {frame}\n\ndata: [DONE]\n\n");
+                write!(stream, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let mut core = Command::new(binary);
+        core.arg("runtime")
+            .env("XDG_CONFIG_HOME", &config)
+            .env("XDG_DATA_HOME", dir.join("data"));
+        let scoped = scoped_core_config(&core, &session, &workspace)
+            .unwrap()
+            .unwrap();
+        let mut command = sandbox_conversation_runtime(core, &session, &workspace);
+        command
+            .current_dir(&workspace)
+            .env("XDG_CONFIG_HOME", &scoped.0);
+        let mut client = RuntimeClient::spawn_command(command).unwrap();
+        let mut output = None;
+        let mut request = |method, params| {
+            let id = client.request(method, params).unwrap();
+            loop {
+                match client
+                    .recv_typed_timeout(Duration::from_secs(10))
+                    .unwrap()
+                    .expect("runtime response")
+                {
+                    Incoming::Response {
+                        id: received,
+                        result,
+                    } if received == id => break result.unwrap(),
+                    Incoming::Event(event) if event.kind == "tool_end" => output = Some(event.data),
+                    Incoming::Tool { .. } => panic!("expected native Core shell execution"),
+                    _ => {}
+                }
+            }
+        };
+        request(
+            "initialize",
+            value!({"protocolVersion":2,"requiredCapabilities":["mixedTools"],"storageDir":session}),
+        );
+        let chat = request(
+            "durable/create",
+            value!({"cwd":workspace,"toolMode":"local"}),
+        );
+        let task = request(
+            "durable/submit",
+            value!({"conversationId":chat["conversationId"],"requestId":"shell","input":{"text":"Check chat isolation"}}),
+        );
+        request("durable/run", value!({"taskId":task["submission"]["id"]}));
+        let output = output.expect("native shell produced a tool result");
+        let text = output["text"].as_str().unwrap();
+        assert_eq!(output["isError"], true);
+        assert!(text.contains("own-chat-fixture"), "{text}");
+        assert!(
+            text.contains("other.txt: Operation not permitted"),
+            "{text}"
+        );
+        assert!(!text.contains("sibling-chat-fixture"), "{text}");
+        assert_eq!(std::fs::read_to_string(source).unwrap(), settings);
+        println!(
+            "Core native shell read its own file; reading other.txt returned Operation not permitted"
+        );
+        fake.join().unwrap();
+        drop(client);
+        drop(scoped);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn scoped_runtime_can_read_its_group_workspace_but_not_another_chat() {

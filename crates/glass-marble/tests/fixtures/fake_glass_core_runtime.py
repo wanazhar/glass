@@ -205,13 +205,13 @@ def run_turn(identifier, task, text, conversation, request):
             return
         event(turn, "reasoning", {"text": "Check the files before replying."})
         event(turn, "text", {"text": "<working>Checking the report…</working>"})
-        for index, command, output, failed in [
-            (0, "ls -l report.pdf", "-rw-r--r-- report.pdf", False),
-            (1, "ls -l appendix.pdf", "No such file: appendix.pdf", True),
+        for index, name, arguments, output, failed, delay in [
+            (0, "bash", {"command": "ls -l appendix.pdf"}, "No such file: appendix.pdf", True, 3),
+            (1, "web_search", {"query": "marble report"}, "Found the report", False, 12),
         ]:
             call = "evidence-" + str(index)
-            event(turn, "tool_start", {"callId": call, "name": "bash", "title": command})
-            time.sleep(3)
+            event(turn, "tool_start", {"callId": call, "name": name, "arguments": arguments})
+            time.sleep(1 if "failure" in text else delay)
             event(turn, "tool_end", {"callId": call, "text": output, "isError": failed})
         if "failure" in text:
             event(turn, "text", {"text": "[Generation failed] Reason: fixture provider unavailable"})

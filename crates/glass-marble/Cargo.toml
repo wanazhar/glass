@@ -23,3 +23,6 @@ rustls-pki-types = "1"
 ring = "0.17"
 base64 = "0.22"
 regex-syntax = { version = "0.8", default-features = false, features = ["std", "unicode-script"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+toml_edit = "0.25.15"

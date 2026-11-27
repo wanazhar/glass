@@ -1994,6 +1994,9 @@ impl MarbleServer {
     }
 
     fn delete_conversation(&self, id: &str) -> Response {
+        if crate::everyone::is_session(id) {
+            return Response::error(409, "thread_owned_conversation");
+        }
         let outcome = {
             let mut guard = self.lock_state();
             let outcome = self.delete_conversation_record(&mut guard, id);

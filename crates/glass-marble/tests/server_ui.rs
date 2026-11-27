@@ -6357,6 +6357,11 @@ fn everyone_agent_workspaces_are_distinct_and_deleted_with_the_thread() {
     assert_ne!(first_root, second_root);
     std::fs::write(first_root.join("workspace").join("private.txt"), "first").unwrap();
     assert!(!second_root.join("workspace").join("private.txt").exists());
+    let backing = first_root.file_name().unwrap().to_str().unwrap();
+    let (status, body) = fixture.post(&format!("/api/conversations/{backing}/delete"), json!({}));
+    assert_eq!(status, 409);
+    assert_eq!(body["error"], "thread_owned_conversation");
+    assert!(first_root.exists());
     assert_eq!(
         fixture
             .post(&format!("/api/threads/{first}/delete"), json!({}))

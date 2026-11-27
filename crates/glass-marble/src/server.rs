@@ -3689,31 +3689,30 @@ impl MarbleServer {
             .filter(|id| !id.is_empty());
         let target = {
             let guard = self.lock_state();
-            let running = |task: &&crate::state::TaskRecord| task.status == "running";
-            if let Some(task_id) = requested_task {
-                guard
-                    .tasks
-                    .iter()
-                    .find(|task| task.id == task_id && task.status == "running")
-                    .map(|task| (task.conversation_id.clone(), task.id.clone()))
-            } else if let Some(conversation_id) = requested_conversation {
-                guard
-                    .tasks
-                    .iter()
-                    .rev()
-                    .find(running)
-                    .filter(|task| task.conversation_id == conversation_id)
-                    .map(|task| (task.conversation_id.clone(), task.id.clone()))
-            } else {
-                guard
-                    .tasks
-                    .iter()
-                    .rev()
-                    .find(running)
-                    .map(|task| (task.conversation_id.clone(), task.id.clone()))
-            }
+            guard
+                .tasks
+                .iter()
+                .rev()
+                .find(|task| {
+                    task.status == "running"
+                        && requested_task.is_none_or(|id| task.id == id)
+                        && requested_conversation.is_none_or(|id| task.conversation_id == id)
+                })
+                .map(|task| {
+                    let lane = guard
+                        .conversations
+                        .iter()
+                        .find(|record| record.id == task.conversation_id)
+                        .map_or(0, |record| record.lane);
+                    (
+                        task.conversation_id.clone(),
+                        task.id.clone(),
+                        (task.owner == "prism").then(|| task.marble_id.clone()),
+                        lane,
+                    )
+                })
         };
-        let Some((conversation_id, task_id)) = target else {
+        let Some((conversation_id, task_id, marble_id, lane)) = target else {
             return Response::json(
                 409,
                 json!({
@@ -3727,16 +3726,14 @@ impl MarbleServer {
             task_id: task_id.clone(),
             text: text.clone(),
         };
-        // Each engine lane drains only its own corrections, so the request goes
-        // to the lane that admitted this conversation.
-        let lane = self
-            .lock_state()
-            .conversations
-            .iter()
-            .find(|record| record.id == conversation_id)
-            .map(|record| record.lane)
-            .unwrap_or(0);
-        if !self.steer.send(lane, request) {
+        let queued = if let Some(marble_id) = marble_id {
+            self.prism
+                .as_ref()
+                .is_some_and(|pool| pool.steer(&marble_id, request))
+        } else {
+            self.steer.send(lane, request)
+        };
+        if !queued {
             return Response::error(503, "turn_worker_unavailable");
         }
         self.events.publish(

@@ -17,6 +17,11 @@ struct MarbleOnboardingView: View {
     var expiredToken = false
     var onConnected: () -> Void = {}
 
+    private var canConnect: Bool {
+        !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !MarbleToken.normalize(token).isEmpty
+    }
+
     var body: some View {
         NavigationStack {
             if !showsForm && !expiredToken {
@@ -38,75 +43,7 @@ struct MarbleOnboardingView: View {
                 .navigationTitle("Marble")
                 .navigationBarTitleDisplayMode(.inline)
             } else {
-            Form {
-                if expiredToken {
-                    Section {
-                        Label("Access token expired", systemImage: "key.slash")
-                            .foregroundStyle(MarbleTheme.problem)
-                        Text("Your host is still saved. Enter a new token to reconnect.")
-                    }
-                    .listRowBackground(MarbleTheme.card)
-                }
-                Section(header: Text("Host")) {
-                    TextField("Host URL", text: $address, prompt: Text(verbatim: "http://100.x.y.z:4783"))
-                        .focused($focusedField, equals: .host)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                }
-                .listRowBackground(MarbleTheme.card)
-
-                Section {
-                    SecureField(
-                        "Access token",
-                        text: $token
-                    )
-                    .focused($focusedField, equals: .token)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                } footer: {
-                    Text("Use your host’s Tailscale URL and the access token from that host.")
-                }
-                .listRowBackground(MarbleTheme.card)
-
-                Section {
-                    if checkTask != nil {
-                        VStack(alignment: .leading, spacing: 12) {
-                            ProgressView("Connecting to your host…")
-                            Text("Checking the address and access token.")
-                                .foregroundStyle(MarbleTheme.muted)
-                            Button("Cancel") {
-                                checkTask?.cancel()
-                                checkTask = nil
-                            }
-                        }
-                    } else {
-                        Button("Connect") {
-                            focusedField = nil
-                            verdict = nil
-                            checkTask = Task { await connect() }
-                        }
-                        .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                  || MarbleToken.normalize(token).isEmpty)
-                    }
-                    if let verdict, !verdict.isReady, checkTask == nil {
-                        Text(verdict.message)
-                            .font(.footnote)
-                            .foregroundStyle(MarbleTheme.problem)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let httpURL = verdict.httpHint {
-                            Button("Use \(httpURL)") {
-                                address = httpURL
-                            }
-                        }
-                    }
-                }
-                .listRowBackground(MarbleTheme.card)
-            }
-            .scrollContentBackground(.hidden)
-            .background(MarbleTheme.paper)
-            .navigationTitle(expiredToken ? "Replace access token" : "Pair your host")
-            .navigationBarTitleDisplayMode(.inline)
+                pairingForm
             }
         }
         .onDisappear { checkTask?.cancel() }
@@ -116,6 +53,106 @@ struct MarbleOnboardingView: View {
             // next paste.
             if let saved = store.endpoint, address.isEmpty {
                 address = saved.baseURL.absoluteString
+            }
+        }
+    }
+
+    private var pairingForm: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Host").font(.headline)
+                    TextField("Host URL", text: $address, prompt: Text(verbatim: "http://100.x.y.z:4783"))
+                        .focused($focusedField, equals: .host)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    pairingError(for: .host)
+                }
+                .padding(.vertical, 6)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Access token").font(.headline)
+                    SecureField("Paste your token", text: $token)
+                        .accessibilityLabel("Access token")
+                        .focused($focusedField, equals: .token)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    pairingError(for: .token)
+                    if expiredToken, verdict == nil, MarbleToken.normalize(token).isEmpty {
+                        Label("Access token expired", systemImage: "key.slash")
+                            .font(.footnote)
+                            .foregroundStyle(MarbleTheme.problem)
+                        Text("Your host is still saved. Enter a new token to reconnect.")
+                            .font(.footnote)
+                            .foregroundStyle(MarbleTheme.muted)
+                    }
+                }
+                .padding(.vertical, 6)
+            } footer: {
+                Text("Use your host’s Tailscale URL and the access token from that host.")
+                    .foregroundStyle(MarbleTheme.muted)
+            }
+            .listRowBackground(MarbleTheme.card)
+            .disabled(checkTask != nil)
+
+            Section {
+                if checkTask != nil {
+                    VStack(spacing: 12) {
+                        ProgressView("Connecting to your host…")
+                        Button("Cancel") {
+                            checkTask?.cancel()
+                            checkTask = nil
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                } else {
+                    Button {
+                        focusedField = nil
+                        verdict = nil
+                        checkTask = Task { await connect() }
+                    } label: {
+                        Text("Connect")
+                            .font(.headline)
+                            .foregroundStyle(canConnect ? MarbleTheme.paper : MarbleTheme.muted)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .disabled(!canConnect)
+                }
+            }
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets())
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(MarbleTheme.paper)
+        .navigationTitle(expiredToken ? "Replace access token" : "Pair your host")
+        .navigationBarTitleDisplayMode(.large)
+        .onChange(of: address) { verdict = nil }
+        .onChange(of: token) {
+            if errorField == .token { verdict = nil }
+        }
+    }
+
+    private var errorField: Field? {
+        switch verdict {
+        case nil, .ready: nil
+        case .badToken, .tokenRequired: .token
+        default: .host
+        }
+    }
+
+    @ViewBuilder
+    private func pairingError(for field: Field) -> some View {
+        if errorField == field, let verdict {
+            Label(verdict.message, systemImage: "exclamationmark.circle")
+                .font(.footnote)
+                .foregroundStyle(MarbleTheme.problem)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier(field == .host ? "pairing.hostError" : "pairing.tokenError")
+            if field == .host, let httpURL = verdict.httpHint {
+                Button("Use \(httpURL)") { address = httpURL }
+                    .buttonStyle(.borderless)
             }
         }
     }

@@ -445,6 +445,7 @@ struct ComposerBar: View {
     var workingPlaceholder: String = "Add to what Marble is doing"
     /// False where the host cannot take a correction mid-turn.
     var canSteer: Bool = true
+    var steerReady: Bool = true
     var onSend: (String) -> Bool
     /// Correct the running turn instead of starting a new one.
     var onSteer: (String) async -> Bool = { _ in false }
@@ -513,7 +514,8 @@ struct ComposerBar: View {
                         .frame(width: 38, height: 38)
                         .contentShape(Rectangle())
                 }
-                .disabled(trimmed.isEmpty || submitting || store.connectionPaused || store.needsToken)
+                .disabled(trimmed.isEmpty || submitting || store.connectionPaused || store.needsToken
+                          || (action == .steer && !steerReady))
                 .accessibilityLabel(action == .steer ? "Steer" : "Send")
             }
             if isWorking {

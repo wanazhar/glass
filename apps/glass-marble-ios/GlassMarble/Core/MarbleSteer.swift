@@ -1,8 +1,6 @@
 import Foundation
 
-/// Mid-turn corrections. The host only steers ordinary chats; a named
-/// Marble's turn runs on its own engine, which takes no corrections, so the
-/// composer offers Stop alone there and says why.
+/// Composer actions for mid-turn corrections.
 enum MarbleSteer {
     enum Action: Equatable {
         /// Nothing is running: the arrow starts a new turn.
@@ -13,7 +11,7 @@ enum MarbleSteer {
         case stopOnly
     }
 
-    static let unsupportedNote = "Corrections aren't supported for Marbles yet — Stop and resend."
+    static let unsupportedNote = "Corrections aren't available for this reply — Stop and resend."
 
     static func action(isWorking: Bool, canSteer: Bool) -> Action {
         guard isWorking else { return .send }

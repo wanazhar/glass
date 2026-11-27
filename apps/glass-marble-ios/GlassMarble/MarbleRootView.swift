@@ -323,7 +323,7 @@ struct MarbleChatView: View {
     /// Send the draft into the running turn, keeping its context.
     private func steer(_ text: String) async -> Bool {
         if dictation.isRecording { dictation.stop() }
-        return await store.steer(text)
+        return await store.steer(text, conversationId: store.selectedConversationId, taskId: store.activeTaskId)
     }
 }
 

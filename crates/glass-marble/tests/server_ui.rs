@@ -3161,6 +3161,99 @@ impl NamedTurnFixture {
 }
 
 #[test]
+fn steering_targets_the_named_engine_mid_reply_without_touching_other_marbles() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_args("named-steer", vec!["--wait-for-steer".into()]);
+    let ben = fixture
+        .state
+        .lock()
+        .unwrap()
+        .prism
+        .add("Ben", "", "hex", 12, "", "")
+        .unwrap()
+        .id
+        .clone();
+    let events = fixture.events.subscribe();
+    let dispatch = |marble_id: &str, prompt: &str| {
+        let (status, body) =
+            fixture.post("/api/turns", json!({"marbleId": marble_id, "text": prompt}));
+        assert_eq!(status, 202, "{body}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let event = events
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("named reply starts streaming");
+            if event.kind == "text" {
+                return event;
+            }
+        }
+    };
+    let ada = dispatch(&fixture.marble_id, "Plan a riverside walk");
+    let ben = dispatch(&ben, "Plan a different walk");
+    assert_ne!(ada.conversation_id, ben.conversation_id);
+
+    let (status, _) = fixture.post(
+        "/api/turns/steer",
+        json!({
+            "conversationId": ben.conversation_id,
+            "taskId": ada.task_id,
+            "text": "Do not send this correction"
+        }),
+    );
+    assert_eq!(status, 409);
+
+    let (status, body) = fixture.post(
+        "/api/turns/steer",
+        json!({
+            "conversationId": ada.conversation_id,
+            "taskId": ada.task_id,
+            "text": "Choose a shaded trail instead."
+        }),
+    );
+    assert_eq!(status, 202, "{body}");
+    let settled = fixture.completed("Plan a riverside walk");
+    assert_eq!(settled.id, ada.task_id);
+    {
+        let state = fixture.state.lock().unwrap();
+        assert!(state.transcript.iter().any(|entry| {
+            entry.task_id == ada.task_id
+                && entry.kind == "assistant"
+                && entry
+                    .text
+                    .contains("With your correction in mind: Choose a shaded trail instead.")
+        }));
+        assert!(
+            state
+                .tasks
+                .iter()
+                .any(|task| task.id == ben.task_id && task.status == "running")
+        );
+    }
+    let (status, _) = fixture.post(
+        "/api/turns/steer",
+        json!({
+            "conversationId": ada.conversation_id,
+            "taskId": ada.task_id,
+            "text": "Do not redirect this to Ben"
+        }),
+    );
+    assert_eq!(status, 409);
+    let (status, body) = fixture.post(
+        "/api/turns/steer",
+        json!({
+            "conversationId": ben.conversation_id,
+            "text": "Choose a shorter trail."
+        }),
+    );
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(fixture.completed("Plan a different walk").id, ben.task_id);
+    fixture.pool.shutdown();
+    let _ = std::fs::remove_dir_all(&fixture.root);
+}
+
+#[test]
 fn client_message_ids_correlate_and_deduplicate_all_chat_send_paths() {
     if !python3_available() {
         return;

@@ -443,6 +443,8 @@ current user instructions.
   shipped behavior.
 - [Marble iOS round 2 pull request record](../design/marble-round1/PR-round2.md) —
   implementation summary, local verification and simulator evidence.
+- [Marble iOS named-chat steering pull request record](../design/marble-round1/PR-steer.md) —
+  host routing, local verification, and simulator evidence for correcting a running reply.
 - [Lifecycle invariant audit pull request record](plan/analysis/state-machine-invariants-issue-draft.md) —
   historical record of reproduced failure paths, fixes, and verification limits.
 - [Delivery plan archive](plan/README.md) — distinguishes active plans from

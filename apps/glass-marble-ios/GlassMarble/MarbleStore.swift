@@ -773,6 +773,11 @@ final class MarbleStore: ObservableObject {
     func openMarbleHistory(_ marble: MarblePrismMarble) async {
         guard !marble.conversationId.isEmpty else { return }
         displayedMarbleConversation = marble.conversationId
+        if streamedReplies[marble.conversationId] == nil,
+           let buffer = live[marble.conversationId],
+           let taskId = buffer.taskId, !buffer.text.isEmpty {
+            presentStreamedReply(buffer.text, in: marble.conversationId, taskId: taskId)
+        }
         await loadMarbleHistory(marble.conversationId, revision: state.revision)
     }
 
@@ -1109,17 +1114,17 @@ final class MarbleStore: ObservableObject {
     /// Returns whether the host accepted the correction, so the composer
     /// keeps the draft when it did not.
     @discardableResult
-    func steer(_ text: String) async -> Bool {
+    func steer(_ text: String, conversationId: String?, taskId: String?) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let client, !trimmed.isEmpty else { return false }
-        guard let taskId = activeTaskId else {
+        guard let taskId else {
             errorMessage = "Nothing is running to correct"
             return false
         }
         do {
             try await client.steer(
                 text: trimmed,
-                conversationId: selectedConversationId,
+                conversationId: conversationId,
                 taskId: taskId
             )
             errorMessage = nil
@@ -2032,6 +2037,15 @@ final class MarbleStore: ObservableObject {
     @Published private var streamedReplies: [String: MarbleEntry] = [:]
     private var streamedTaskIDs: Set<String> = []
 
+    private func presentStreamedReply(_ text: String, in conversationId: String, taskId: String) {
+        streamedTaskIDs.insert(taskId)
+        var preview = MarbleEntry(
+            conversationId: conversationId, kind: "assistant", text: text, taskId: taskId, at: 0
+        )
+        preview.presentationID = "reply-\(taskId)"
+        streamedReplies[conversationId] = preview
+    }
+
     @Published private var liveEntries: [String: [MarbleEntry]] = [:]
     @Published private(set) var automaticRetries: Set<String> = []
     @Published private var groupReplyPreviews: [String: GroupReplyPreview] = [:]
@@ -2264,12 +2278,7 @@ final class MarbleStore: ObservableObject {
                 streamedReplies[event.conversationId] = preview
             } else if event.kind == "text", !event.taskId.isEmpty,
                       forActive || event.conversationId == displayedMarbleConversation {
-                streamedTaskIDs.insert(event.taskId)
-                var preview = MarbleEntry(
-                    conversationId: event.conversationId, kind: "assistant", text: text, taskId: event.taskId, at: 0
-                )
-                preview.presentationID = "reply-\(event.taskId)"
-                streamedReplies[event.conversationId] = preview
+                presentStreamedReply(text, in: event.conversationId, taskId: event.taskId)
             }
             buffers.text = text
         case "reasoning":

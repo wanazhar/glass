@@ -179,7 +179,8 @@ struct ThreadListView: View {
                     .padding(.top, close == nil ? Design.small : Design.padding)
                     .padding(.bottom, Design.small)
                 list(groups, titles: titles)
-                    .contentMargins(.vertical, Design.padding, for: .scrollContent)
+                    .contentMargins(.top, Design.padding, for: .scrollContent)
+                    .contentMargins(.bottom, Self.footerFade, for: .scrollContent)
                     .mask { edgeFade }
                 accountBar
                     .padding(.top, Design.gap)
@@ -286,11 +287,16 @@ struct ThreadListView: View {
     }
 
     /// The list fades out where it meets the header and footer instead of ending on a hard line.
+    private static let footerFade = Design.control
+
     private var edgeFade: some View {
         VStack(spacing: 0) {
             LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: Design.padding)
             Color.black
-            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: Design.padding)
+            // Long and eased, so the last row dissolves instead of being cut through.
+            LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black.opacity(0.55), location: 0.45),
+                                   .init(color: .black.opacity(0.15), location: 0.75), .init(color: .clear, location: 1)],
+                           startPoint: .top, endPoint: .bottom).frame(height: Self.footerFade)
         }
     }
 
@@ -469,9 +475,9 @@ private struct ThreadRow: View {
             if selected {
                 // A brighter pane of the same glass, raised slightly off the panel.
                 Capsule()
-                    .fill(scheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.5))
+                    .fill(scheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06))
                     .glassEffect(reduceTransparency ? .identity : .regular, in: .capsule)
-                    .shadow(color: .black.opacity(scheme == .dark ? 0.24 : 0.06), radius: 6, y: 2)
+                    .shadow(color: .black.opacity(scheme == .dark ? 0.24 : 0.1), radius: 6, y: 2)
             }
         }
     }

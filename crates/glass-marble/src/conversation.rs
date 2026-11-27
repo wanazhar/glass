@@ -597,7 +597,12 @@ fn sandbox_conversation_runtime(command: Command, session: &Path, workspace: &Pa
             "-p",
             r#"(version 1)
 (allow default)
-(deny file-read* file-write*
+(deny file-write*
+    (require-all
+        (require-not (subpath (param "SESSION")))
+        (require-not (subpath (param "WORKSPACE")))
+        (require-not (literal "/dev/null"))))
+(deny file-read*
     (require-all
         (subpath (param "STORE"))
         (require-not (subpath (param "SESSION")))
@@ -616,6 +621,10 @@ fn sandbox_conversation_runtime(command: Command, session: &Path, workspace: &Pa
             }
         }
     }
+    for key in ["TMPDIR", "TMP", "TEMP"] {
+        sandbox.env(key, session.join(".tmp"));
+    }
+    sandbox.env("XDG_DATA_HOME", session.join(".core-data"));
     sandbox
 }
 
@@ -818,6 +827,7 @@ impl Conversation {
         let root = root.canonicalize().map_err(MarbleError::Io)?;
         #[cfg(target_os = "macos")]
         let factory: Arc<dyn Fn() -> Command + Send + Sync> = {
+            std::fs::create_dir_all(root.join(".tmp")).map_err(MarbleError::Io)?;
             let factory = factory.clone();
             let root = root.clone();
             let cwd = cwd.clone();
@@ -2183,6 +2193,7 @@ mod tests {
         }
         let session = session.canonicalize().unwrap();
         let workspace = workspace.canonicalize().unwrap();
+        std::fs::create_dir_all(session.join(".tmp")).unwrap();
         std::fs::write(workspace.join("own.txt"), "own-chat-fixture\n").unwrap();
         std::fs::write(sibling.join("other.txt"), "sibling-chat-fixture\n").unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2193,7 +2204,7 @@ mod tests {
         );
         std::fs::write(&source, &settings).unwrap();
         let shell = format!(
-            "cat own.txt && cat \"{}\"",
+            "mktemp \"$TMPDIR/marble.XXXXXX\" >/dev/null && cat own.txt && cat \"{}\"",
             sibling.join("other.txt").display()
         );
         let fake = std::thread::spawn(move || {
@@ -2333,6 +2344,34 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scoped_runtime_writes_only_inside_its_workspace_and_session() {
+        let dir = std::env::temp_dir().join(format!("marble-write-{}", crate::next_request_id()));
+        let session = dir.join("chats/current");
+        let workspace = dir.join("chats/group/workspace");
+        let sibling = dir.join("chats/sibling");
+        for path in [&session, &workspace, &sibling] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let session = session.canonicalize().unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+        let write = |path: &Path| {
+            let mut shell = Command::new("/bin/sh");
+            shell.args(["-c", r#"printf test > "$1""#, "sh"]).arg(path);
+            sandbox_conversation_runtime(shell, &session, &workspace)
+                .output()
+                .unwrap()
+        };
+        assert!(write(&session.join("file")).status.success());
+        assert!(write(&workspace.join("file")).status.success());
+        assert!(!write(&sibling.join("file")).status.success());
+        let outside = dir.join("outside");
+        let denied = write(&outside);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(!denied.status.success(), "shell wrote outside its chat");
+    }
 
     #[test]
     fn native_tool_ends_keep_the_start_name_and_failure_status() {

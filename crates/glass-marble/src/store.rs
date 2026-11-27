@@ -329,6 +329,32 @@ impl StateStore {
         .flatten()
     }
 
+    pub fn retry_everyone_cleanup(&self, state: &mut ProductState) {
+        if state.pending_everyone_cleanup.is_empty() {
+            return;
+        }
+        let live = crate::live::LiveStore::for_store(self);
+        let before = state.pending_everyone_cleanup.len();
+        state.pending_everyone_cleanup.retain(|id| {
+            let Some(root) = self.conversation_root(id).filter(|_| crate::everyone::is_session(id))
+            else {
+                return false;
+            };
+            let workspace = remove_conversation_root(&root);
+            let result = workspace.and(live.cleanup_conversation(id));
+            if let Err(error) = result {
+                tracing::warn!(%error, conversation = %id, "could not clean up a cleared Everyone session");
+                true
+            } else {
+                false
+            }
+        });
+        if state.pending_everyone_cleanup.len() != before {
+            state.bump();
+            persist(self, state);
+        }
+    }
+
     /// Whether a durable document exists at all.
     pub fn document_exists(&self) -> bool {
         self.path.exists()
@@ -413,6 +439,13 @@ impl StateStore {
             events.publish_replies(state);
         }
         Ok(())
+    }
+}
+
+pub(crate) fn remove_conversation_root(root: &Path) -> std::io::Result<()> {
+    match fs::remove_dir_all(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        outcome => outcome,
     }
 }
 

@@ -265,6 +265,8 @@ pub struct ProductState {
     #[serde(default)]
     pub revision: u64,
     pub conversations: Vec<ConversationRecord>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub(crate) pending_everyone_cleanup: std::collections::BTreeSet<String>,
     pub tasks: Vec<TaskRecord>,
     pub approvals: Vec<PendingApproval>,
     pub transcript: Vec<TranscriptEntry>,

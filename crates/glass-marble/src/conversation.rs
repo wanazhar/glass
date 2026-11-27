@@ -617,6 +617,11 @@ impl Conversation {
             return Ok(None);
         };
         let mut state = product.lock().unwrap_or_else(|error| error.into_inner());
+        if state.pending_everyone_cleanup.contains(id) {
+            return Err(MarbleError::Protocol(
+                "this Everyone session is waiting for workspace cleanup".into(),
+            ));
+        }
         let new = !state.conversations.iter().any(|record| record.id == id);
         let record = state.conversation_mut(id);
         let everyone = crate::everyone::is_session(id);

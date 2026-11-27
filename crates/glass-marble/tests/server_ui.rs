@@ -6398,7 +6398,7 @@ fn clearing_everyone_persists_before_attempting_workspace_cleanup() {
     let store = fixture.store.as_ref().unwrap();
     let mut roots = Vec::new();
     let mut threads = Vec::new();
-    for title in ["Removable", "Blocked"] {
+    for title in ["Removable", "Blocked", "Blocked until startup"] {
         let (status, body) = fixture.post(
             "/api/threads",
             json!({"conversation_id":"everyone","title":title}),
@@ -6427,6 +6427,7 @@ fn clearing_everyone_persists_before_attempting_workspace_cleanup() {
     }
     std::fs::create_dir_all(roots[0].join("workspace")).unwrap();
     std::fs::write(&roots[1], b"not a directory").unwrap();
+    std::fs::write(&roots[2], b"not a directory").unwrap();
     store.save(&fixture.server.state()).unwrap();
 
     let backup = store.path().with_extension("original");
@@ -6435,13 +6436,13 @@ fn clearing_everyone_persists_before_attempting_workspace_cleanup() {
     let (status, body) = fixture.post("/api/everyone/clear", json!({}));
     assert_eq!(status, 503, "{body}");
     assert!(roots[0].is_dir());
-    assert_eq!(fixture.server.state().threads.len(), 2);
+    assert_eq!(fixture.server.state().threads.len(), 3);
     std::fs::remove_dir(store.path()).unwrap();
     std::fs::rename(backup, store.path()).unwrap();
 
     let (status, body) = fixture.post("/api/everyone/clear", json!({}));
     assert_eq!(status, 200, "{body}");
-    assert_eq!(body["cleared"], 2);
+    assert_eq!(body["cleared"], 3);
     assert!(!roots[0].exists());
     assert!(roots[1].is_file());
     let reloaded = store.load().unwrap();
@@ -6459,6 +6460,25 @@ fn clearing_everyone_persists_before_attempting_workspace_cleanup() {
             .handle("GET", &format!("/api/threads/{thread}"), "");
         assert_eq!(status, 404);
     }
+
+    let pending = |state: ProductState| {
+        serde_json::to_value(state).unwrap()["pendingEveryoneCleanup"].clone()
+    };
+    let id = |index: usize| roots[index].file_name().unwrap().to_str().unwrap();
+    let mut expected = [id(1), id(2)];
+    expected.sort_unstable();
+    assert_eq!(pending(reloaded), json!(expected));
+    std::fs::remove_file(&roots[1]).unwrap();
+    std::fs::create_dir_all(roots[1].join("workspace")).unwrap();
+    assert_eq!(fixture.post("/api/everyone/clear", json!({})).0, 200);
+    assert!(!roots[1].exists());
+    let mut restarted = store.load().unwrap();
+    assert_eq!(pending(restarted.clone()), json!([id(2)]));
+    std::fs::remove_file(&roots[2]).unwrap();
+    std::fs::create_dir_all(roots[2].join("workspace")).unwrap();
+    store.retry_everyone_cleanup(&mut restarted);
+    assert!(!roots[2].exists());
+    assert!(pending(store.load().unwrap()).is_null());
 }
 
 #[test]

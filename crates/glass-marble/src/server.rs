@@ -1194,6 +1194,11 @@ impl MarbleServer {
                 .count();
             let mut cleared = guard.clone();
             cleared.thread_events = Default::default();
+            if self.store.is_some() {
+                cleared
+                    .pending_everyone_cleanup
+                    .extend(records.iter().cloned());
+            }
             for id in &records {
                 if cleared.delete_conversation(id).is_err() {
                     return Response::error(409, "conversation_busy");
@@ -1216,14 +1221,9 @@ impl MarbleServer {
                 }
                 events.publish_replies(&cleared);
             }
-            let previous = std::mem::replace(&mut *guard, cleared);
-            for id in &records {
-                if let Err(error) = self.remove_conversation_files(&previous, id) {
-                    tracing::warn!(%error, conversation = %id, "could not clean up a cleared Everyone session");
-                }
-                if let Some(store) = &self.store {
-                    crate::live::LiveStore::for_store(store).remove_conversation(id);
-                }
+            *guard = cleared;
+            if let Some(store) = &self.store {
+                store.retry_everyone_cleanup(&mut guard);
             }
             removed
         };
@@ -2108,11 +2108,8 @@ impl MarbleServer {
             })
             .and_then(|store| store.conversation_root(id))
         {
-            match std::fs::remove_dir_all(root) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(format!("could not remove conversation files: {error}")),
-            }
+            crate::store::remove_conversation_root(&root)
+                .map_err(|error| format!("could not remove conversation files: {error}"))?;
         }
         Ok(())
     }

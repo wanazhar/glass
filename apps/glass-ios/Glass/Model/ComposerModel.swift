@@ -8,6 +8,8 @@ import UIKit
 /// The composer for one conversation: drafts, sending, control, interactions, uploads and commands.
 @MainActor @Observable
 final class ComposerModel {
+    enum InitialAction { case send, model, photos, files, camera, dictate, editor }
+
     enum SendMode: String, CaseIterable, Identifiable {
         /// Applies the message to the running turn.
         case steer
@@ -29,6 +31,21 @@ final class ComposerModel {
     struct Choice: Identifiable, Hashable {
         var id: String
         var label: String
+        var provider: String {
+            let names = [id, label].map { $0.lowercased() }
+            for name in names {
+                if name.hasPrefix("anthropic") || name.hasPrefix("claude")
+                    || name.range(of: #"^(opus|sonnet|haiku)[ -]\d"#, options: .regularExpression) != nil { return "Anthropic" }
+                if name.hasPrefix("openai") || name.hasPrefix("gpt-") || name.range(of: #"^o[134](?:-|$)"#, options: .regularExpression) != nil { return "OpenAI" }
+                if name.hasPrefix("google") || name.hasPrefix("gemini") { return "Google" }
+                if name.hasPrefix("xai") || name.hasPrefix("grok") { return "xAI" }
+                if name.hasPrefix("deepseek") { return "DeepSeek" }
+                if name.hasPrefix("mistral") { return "Mistral" }
+            }
+            return id.split(separator: "/", maxSplits: 1).count == 2
+                ? (id.split(separator: "/").first.map { String($0).capitalized } ?? "Other models")
+                : "Other models"
+        }
     }
 
     enum Picker: String, Identifiable {
@@ -61,6 +78,7 @@ final class ComposerModel {
     /// Commands waiting for the running turn to finish.
     private(set) var queuedCommands: Set<String> = []
     var showingEditor = false
+    var initialAction: InitialAction?
     var showingCommands = false
     /// A transient confirmation, such as "Attached notes.txt to future requests."
     var confirmation: String?
@@ -226,7 +244,7 @@ final class ComposerModel {
     func choose(_ choice: String, for picker: Picker) async throws {
         _ = try await command(picker.rawValue, ["action": picker == .model ? "set" : "use", "args": .string(choice), "confirmed": true])
         if picker == .model { model = choice }
-        confirmation = picker == .model ? "Model set to \(choice)." : "Using profile \(choice)."
+        confirmation = picker == .model ? nil : "Using profile \(choice)."
     }
 
     // MARK: Attachments

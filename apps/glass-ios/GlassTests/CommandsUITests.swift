@@ -29,4 +29,11 @@ import UIKit
             #expect(LocalCommand(rawValue: name) != nil, "\(name)")
         }
     }
+
+    @Test func modelPickerRecognizesProviderAndFamilyNames() {
+        #expect(ComposerModel.Choice(id: "Opus 4.7", label: "Opus 4.7").provider == "Anthropic")
+        #expect(ComposerModel.Choice(id: "openai/gpt-5.4", label: "GPT-5.4").provider == "OpenAI")
+        #expect(ComposerModel.Choice(id: "Gemini 3.1 Pro", label: "Gemini 3.1 Pro").provider == "Google")
+        #expect(ComposerModel.Choice(id: "local/demo", label: "Demo").provider == "Local")
+    }
 }

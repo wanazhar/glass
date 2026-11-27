@@ -12,8 +12,7 @@ struct PairingView: View {
         NavigationStack {
             Form {
                 VStack(alignment: .leading, spacing: Design.gap) {
-                    Image(.appGlyph).resizable().scaledToFit().frame(width: 48, height: 48)
-                        .accessibilityHidden(true)
+                    LensMark().frame(width: 48, height: 48)
                     Text("Connect to your workspace").font(.title2.weight(.semibold))
                     Text("Keep working with the conversations and files already on your host.")
                         .font(.subheadline).foregroundStyle(.secondary)

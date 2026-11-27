@@ -75,6 +75,15 @@ final class RoundThreeUITests: XCTestCase {
     }
 
     @MainActor
+    func testLensSplashCanBeSkippedByTappingTheScene() {
+        let app = launch("light", options: ["-GlassLaunchFrame", "ripple"])
+        let skip = app.buttons["Skip"]
+        XCTAssertTrue(skip.waitForExistence(timeout: 8))
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.46)).tap()
+        XCTAssertTrue(skip.waitForNonExistence(timeout: 5))
+    }
+
+    @MainActor
     func testTranscriptCanScrollAndFollowTheKeyboard() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "Run on an iPhone simulator")
         let app = launch("light")
@@ -83,7 +92,7 @@ final class RoundThreeUITests: XCTestCase {
         let field = app.textViews["composer.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 8))
         let older = app.buttons.matching(identifier: "timeline.work")
-            .containing(NSPredicate(format: "label CONTAINS %@", "1 min")).firstMatch
+            .containing(NSPredicate(format: "label CONTAINS %@", "1m 6s")).firstMatch
         XCTAssertTrue(reveal(older, in: app))
         let latest = app.buttons["conversation.latest"]
         XCTAssertTrue(latest.waitForExistence(timeout: 5))
@@ -162,7 +171,6 @@ final class RoundThreeUITests: XCTestCase {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "Run on an iPhone simulator")
         continueAfterFailure = false
         let app = launch("light", options: ["-GlassDrawerPerformance"])
-        app.buttons["conversation.back"].tap()
         XCTAssertTrue(app.waitForThreadList(timeout: 10))
         let list = app.collectionViews.firstMatch
         measure(metrics: [XCTOSSignpostMetric.scrollingAndDecelerationMetric]) {
@@ -281,7 +289,7 @@ final class RoundThreeUITests: XCTestCase {
         XCTAssertTrue(revealInTranscript(table, in: chat))
         capture(appearance, "table")
         let work = chat.buttons.matching(identifier: "timeline.work")
-        let latest = work.containing(NSPredicate(format: "label CONTAINS %@", "2 min")).firstMatch
+        let latest = work.containing(NSPredicate(format: "label CONTAINS %@", "2m 14s")).firstMatch
         if reveal(latest, in: chat) {
             capture(appearance, "work-collapsed")
             latest.tap()

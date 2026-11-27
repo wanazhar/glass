@@ -42,7 +42,7 @@ struct PrototypeRoot: View {
                 VStack(alignment: .leading, spacing: 20) {
                     Spacer()
                     LensMark(optical: true).frame(width: 82, height: 82)
-                    Text("Glass").font(.system(.largeTitle, design: .rounded, weight: .semibold))
+                    Text("Glass").font(TypeToken.display)
                     Spacer()
                     ActionPill(title: "Replay", icon: "arrow.clockwise") { selection = "splash" }
                 }
@@ -130,7 +130,7 @@ struct PlateTitle: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             if let number { Eyebrow(number) }
-            Text(title).font(.system(.largeTitle, design: .rounded, weight: .semibold))
+            Text(title).font(TypeToken.display)
                 .tracking(-0.9)
             Text(summary).font(.subheadline).foregroundStyle(p.muted)
         }
@@ -161,8 +161,8 @@ struct SystemPlate: View {
             }
             VStack(alignment: .leading, spacing: 7) {
                 Eyebrow("02 / TYPE · BASE SIZE / LINE HEIGHT")
-                Text("Lens").font(.system(.largeTitle, design: .rounded, weight: .semibold))
-                Text("34/41 SF Rounded semibold · display only").font(.caption).foregroundStyle(p.muted)
+                Text("Lens").font(TypeToken.display)
+                Text("34/41 SF Pro semibold · display").font(.caption).foregroundStyle(p.muted)
                 Text("A measured conversation").font(.title3.weight(.semibold))
                 Text("SF: 28/34 · 22/28 · 20/25 headings, semibold\n17/25 body regular · 15/20 mono · 12/16 labels")
                     .font(.caption).foregroundStyle(p.muted).lineSpacing(3)

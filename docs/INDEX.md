@@ -436,7 +436,7 @@ current user instructions.
 
 ## Historical, generated, and evidence records
 
-- [Glass iOS round 4 design proposal](../design/round4/README.md) — identity,
+- [Glass iOS round 4 design proposal](../design/round4/README.md) — Lens identity, SF Pro typography,
   component prototypes, and visual acceptance criteria; not shipped behavior.
 - [Lifecycle invariant audit pull request record](plan/analysis/state-machine-invariants-issue-draft.md) —
   historical record of reproduced failure paths, fixes, and verification limits.

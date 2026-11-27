@@ -44,7 +44,7 @@ struct ComposerTextField: UIViewRepresentable {
         view.placeholder = placeholder
         if context.coordinator.dismissedFor != dismissFor {
             context.coordinator.dismissedFor = dismissFor
-            if dismissFor != nil { view.resignFirstResponder() }
+            if dismissFor != nil { _ = view.resignFirstResponder() }
         }
     }
 
@@ -108,7 +108,7 @@ final class ComposerTextView: UITextView {
 
         placeholderLabel.font = .preferredFont(forTextStyle: .body)
         placeholderLabel.adjustsFontForContentSizeCategory = true
-        placeholderLabel.textColor = .placeholderText
+        placeholderLabel.textColor = UIColor(Design.muted)
         placeholderLabel.isAccessibilityElement = false
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(placeholderLabel)
@@ -156,7 +156,7 @@ final class ComposerTextView: UITextView {
         reportHeight()
     }
 
-    func refreshPlaceholder() { placeholderLabel.isHidden = isFirstResponder || !(text ?? "").isEmpty }
+    func refreshPlaceholder() { placeholderLabel.isHidden = !(text ?? "").isEmpty }
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()

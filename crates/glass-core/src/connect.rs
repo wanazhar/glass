@@ -1365,9 +1365,10 @@ fn agent_control(app: &App, path: &str, body: &[u8]) -> Result<Value, String> {
         return Err("Take control before changing agent work".into());
     }
     match (path, agent) {
-        ("/api/agent/stop", Some(agent)) => {
-            crate::team::client(id, &json!({"action":"interrupt","from":"human","id":agent}))
-        }
+        ("/api/agent/stop", Some(agent)) => crate::team::client(
+            id,
+            &json!({"action":"stop-child","from":"human","id":agent}),
+        ),
         ("/api/agent/stop", None) => {
             bridge.send(&json!({"t":"cancel"}))?;
             Ok(json!({"sent":true}))

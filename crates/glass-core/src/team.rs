@@ -868,7 +868,7 @@ impl Hub {
             .values()
             .filter(|w| w.info.status == "working")
             .count();
-        if action == "interrupt" {
+        if matches!(action, "interrupt" | "stop-child") {
             let descendants: Vec<_> = state
                 .agents
                 .values()
@@ -889,10 +889,14 @@ impl Hub {
             for id in descendants {
                 let w = state.agents.get_mut(&id).unwrap();
                 w.interrupt = true;
-                w.queue.clear();
                 w.info.pending_activation = false;
-                w.info.pending_messages.clear();
-                if w.info.status != "working" {
+                if action == "interrupt" {
+                    w.queue.clear();
+                    w.info.pending_messages.clear();
+                }
+                if w.info.status != "working"
+                    && (action == "interrupt" || w.info.status != "archived")
+                {
                     w.info.status = "parked".into();
                 }
                 self.persist(&w.info)?;
@@ -921,7 +925,7 @@ impl Hub {
                     req,
                 );
             }
-            "interrupt" => {
+            "interrupt" | "stop-child" => {
                 worker.interrupt = true;
                 worker.queue.clear();
                 worker.info.pending_activation = false;
@@ -3041,6 +3045,46 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     static IDS: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn stopping_a_child_pauses_its_descendants_without_discarding_their_mailboxes() {
+        let (g, dir, _) = fixture();
+        let create = |name, from| {
+            let receipt = g
+                .hub
+                .request(&json!({"action":"create","from":from,"name":name,"text":"inspect"}))
+                .unwrap();
+            settled(&g.hub);
+            receipt["id"].as_str().unwrap().to_owned()
+        };
+        let selected = create("selected", "main");
+        let descendant = create("descendant", selected.as_str());
+        let sibling = create("sibling", "main");
+        let queued = (selected.clone(), "Check the final result".into());
+        {
+            let mut state = g.hub.state.lock().unwrap();
+            let w = state.agents.get_mut(&descendant).unwrap();
+            w.queue.push_back(queued.clone());
+            w.info.pending_messages.push(queued.clone());
+            w.info.pending_activation = true;
+        }
+        g.hub
+            .request(&json!({"action":"stop-child","from":"human","id":selected}))
+            .unwrap();
+        {
+            let state = g.hub.state.lock().unwrap();
+            assert!(state.agents[&selected].interrupt);
+            let w = &state.agents[&descendant];
+            assert!(w.interrupt);
+            assert_eq!(w.info.status, "parked");
+            assert!(!w.info.pending_activation);
+            assert_eq!(w.info.pending_messages, [queued.clone()]);
+            assert_eq!(w.queue.front(), Some(&queued));
+            assert!(!state.agents[&sibling].interrupt);
+        }
+        drop(g);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

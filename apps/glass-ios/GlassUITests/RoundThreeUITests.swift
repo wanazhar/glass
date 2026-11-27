@@ -171,7 +171,6 @@ final class RoundThreeUITests: XCTestCase {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "Run on an iPhone simulator")
         continueAfterFailure = false
         let app = launch("light", options: ["-GlassDrawerPerformance"])
-        app.buttons["conversation.back"].tap()
         XCTAssertTrue(app.waitForThreadList(timeout: 10))
         let list = app.collectionViews.firstMatch
         measure(metrics: [XCTOSSignpostMetric.scrollingAndDecelerationMetric]) {

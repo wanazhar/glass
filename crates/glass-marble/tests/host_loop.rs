@@ -63,6 +63,7 @@ fn spawn_conversation(
 
 fn turn(text: &str, conversation_id: Option<String>) -> MarbleTurn {
     MarbleTurn {
+        device_time_zone: None,
         conversation_id,
         request_id: glass_marble::next_request_id(),
         input: to_turn_input(&InboundMessage::new(text)),

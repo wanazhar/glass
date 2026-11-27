@@ -3215,9 +3215,12 @@ fn device_time_zone_reaches_the_agent_shell_and_rejects_paths() {
         vec!["--report-shell-time-zone".into()],
         true,
     );
+    let host_zone = Command::new("date").arg("+%z").output().unwrap();
+    assert!(host_zone.status.success());
+    let host_offset = String::from_utf8(host_zone.stdout).unwrap();
     for (zone, expected) in [
         ("Asia/Kuala_Lumpur", "+0800"),
-        ("../../etc/passwd", "+0800"),
+        ("../../etc/passwd", host_offset.trim()),
         ("Etc/UTC", "+0000"),
     ] {
         let prompt = format!("Report shell time for {zone}");
@@ -3232,6 +3235,45 @@ fn device_time_zone_reaches_the_agent_shell_and_rejects_paths() {
         assert!(fixture.server.state().transcript.iter().any(|row| {
             row.task_id == task.id && row.kind == "assistant" && row.text == expected
         }));
+    }
+}
+
+#[test]
+fn paused_turns_keep_the_sending_devices_time_zone() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_persistence(
+        "queued-device-time-zones",
+        vec!["--report-shell-time-zone".into()],
+        true,
+    );
+    assert_eq!(fixture.post("/api/control/pause", json!({})).0, 200);
+    let turns = [
+        ("First phone shell time", "Asia/Kuala_Lumpur", "+0800"),
+        ("Second phone shell time", "Etc/UTC", "+0000"),
+    ];
+    for (prompt, zone, _) in turns {
+        let head = RequestHead::new("POST", "/api/turns").with_header("x-marble-time-zone", zone);
+        let response = fixture.server.handle_request(
+            &head,
+            &json!({"marbleId": fixture.marble_id, "text": prompt}).to_string(),
+        );
+        assert_eq!(response.status, 202, "{}", response.body);
+        assert_eq!(
+            serde_json::from_str::<Value>(&response.body).unwrap()["paused"],
+            true
+        );
+    }
+    assert_eq!(fixture.post("/api/control/resume", json!({})).0, 200);
+    for (prompt, _, expected) in turns {
+        let task = fixture.completed(prompt);
+        assert!(
+            fixture.server.state().transcript.iter().any(|row| {
+                row.task_id == task.id && row.kind == "assistant" && row.text == expected
+            }),
+            "wrong shell time for {prompt}"
+        );
     }
 }
 

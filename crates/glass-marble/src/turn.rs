@@ -19,6 +19,7 @@ pub(crate) const DEFAULT_TOOL_LIMIT: usize = 8;
 pub struct MarbleTurn {
     /// Durable conversation to submit to; `None` creates a fresh one.
     pub conversation_id: Option<String>,
+    pub device_time_zone: Option<String>,
     /// Unique per turn; the durable request id is scoped to the conversation.
     pub request_id: String,
     pub input: TurnInput,
@@ -182,7 +183,7 @@ pub fn run_turn(
 ) -> Result<MarbleReply, MarbleError> {
     let result = (|| {
         if !conversation.can_scope_runtime() {
-            conversation.sync_time_zone()?;
+            conversation.sync_time_zone(turn.device_time_zone.as_deref())?;
             return run_with_retry(turn, conversation, &mut options);
         }
         let mut turn = turn.clone();
@@ -191,14 +192,14 @@ pub fn run_turn(
             .take()
             .filter(|id| !id.is_empty())
             .unwrap_or_else(|| format!("chat-{}", crate::next_request_id()));
-        let scoped = conversation.scoped_runtime(&id)?;
+        let scoped = conversation.scoped_runtime(&id, turn.device_time_zone.as_deref())?;
         turn.conversation_id = Some(id);
         if let Some(mut scoped) = scoped {
             let result = run_with_retry(&turn, &mut scoped, &mut options);
             conversation.close_scoped_runtime(scoped);
             result
         } else {
-            conversation.sync_time_zone()?;
+            conversation.sync_time_zone(turn.device_time_zone.as_deref())?;
             run_with_retry(&turn, conversation, &mut options)
         }
     })();

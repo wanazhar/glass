@@ -263,8 +263,6 @@ pub struct ClientSend {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProductState {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_time_zone: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub client_sends: Vec<ClientSend>,
     #[serde(default)]

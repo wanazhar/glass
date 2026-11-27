@@ -671,21 +671,9 @@ impl MarbleServer {
         if head.method == "POST" && !head.same_origin() {
             return Response::error(403, "cross_origin_request");
         }
-        if head.method == "POST"
-            && matches!(
-                path,
-                "/api/turns" | "/api/turns/retry" | "/api/everyone" | "/api/prism/dispatch"
-            )
-            && let Some(zone) = head
-                .header("x-marble-time-zone")
-                .filter(|zone| valid_device_time_zone(zone))
-        {
-            let mut state = self.lock_state();
-            if state.device_time_zone.as_deref() != Some(zone) {
-                state.device_time_zone = Some(zone.to_string());
-                crate::store::persist_optional(self.store.as_deref(), &state);
-            }
-        }
+        let device_time_zone = head
+            .header("x-marble-time-zone")
+            .filter(|zone| valid_device_time_zone(zone));
         if head.method == "GET" && path == "/api/state" {
             let lean = head.query_param("lean").as_deref() == Some("1")
                 || head.query_param("transcript").as_deref() == Some("0");
@@ -757,13 +745,13 @@ impl MarbleServer {
             return self.set_model(body);
         }
         if head.method == "POST" && path == "/api/turns" {
-            return self.client_send(path, body);
+            return self.client_send(path, body, device_time_zone);
         }
         if head.method == "POST" && path == "/api/turns/steer" {
             return self.steer_turn(body);
         }
         if head.method == "POST" && path == "/api/turns/retry" {
-            return self.retry_turn(body);
+            return self.retry_turn(body, device_time_zone);
         }
         if head.method == "GET" && path == "/api/control" {
             return Response::json(200, self.control_document());
@@ -808,7 +796,7 @@ impl MarbleServer {
             return self.add_marble(body);
         }
         if head.method == "POST" && path == "/api/everyone" {
-            return self.client_send(path, body);
+            return self.client_send(path, body, device_time_zone);
         }
         if head.method == "POST" && path == "/api/everyone/clear" {
             return self.clear_everyone();
@@ -817,7 +805,7 @@ impl MarbleServer {
             return self.everyone_timeline(head);
         }
         if head.method == "POST" && path == "/api/prism/dispatch" {
-            return self.client_send(path, body);
+            return self.client_send(path, body, device_time_zone);
         }
         if head.method == "POST"
             && let Some(rest) = path.strip_prefix("/api/prism/marbles/")
@@ -1295,11 +1283,11 @@ impl MarbleServer {
         )
     }
 
-    fn client_send(&self, path: &str, body: &str) -> Response {
+    fn client_send(&self, path: &str, body: &str, device_time_zone: Option<&str>) -> Response {
         let send = |client| match path {
-            "/api/everyone" => self.post_everyone(body, client),
-            "/api/prism/dispatch" => self.dispatch_swarm(body, client),
-            _ => self.handle_turn(body, client),
+            "/api/everyone" => self.post_everyone(body, client, device_time_zone),
+            "/api/prism/dispatch" => self.dispatch_swarm(body, client, device_time_zone),
+            _ => self.handle_turn(body, client, device_time_zone),
         };
         let parsed: Value = match serde_json::from_str(body) {
             Ok(value) => value,
@@ -1495,7 +1483,12 @@ impl MarbleServer {
 
     /// `POST /api/everyone` — one line to the shared plane; the marbles it
     /// names answer, or every member when it names nobody.
-    fn post_everyone(&self, body: &str, client: Option<crate::state::ClientMessage>) -> Response {
+    fn post_everyone(
+        &self,
+        body: &str,
+        client: Option<crate::state::ClientMessage>,
+        device_time_zone: Option<&str>,
+    ) -> Response {
         let parsed: Value = match serde_json::from_str(body) {
             Ok(value) => value,
             Err(_) => return Response::error(400, "invalid_json"),
@@ -1568,7 +1561,7 @@ impl MarbleServer {
         let plan = crate::everyone::plan(&self.lock_state(), &text);
         match plan {
             crate::everyone::EveryoneTarget::Named(ids) => {
-                self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id)
+                self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id, device_time_zone)
             }
             crate::everyone::EveryoneTarget::All => {
                 let ids: Vec<String> = {
@@ -1577,7 +1570,7 @@ impl MarbleServer {
                         .chain(guard.prism.marbles.iter().map(|marble| marble.id.clone()))
                         .collect()
                 };
-                self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id)
+                self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id, device_time_zone)
             }
         }
     }
@@ -1589,6 +1582,7 @@ impl MarbleServer {
         ids: Vec<String>,
         thread: Option<&str>,
         entry_id: &str,
+        device_time_zone: Option<&str>,
     ) -> Response {
         if ids.is_empty() {
             let mut guard = self.lock_state();
@@ -1661,6 +1655,7 @@ impl MarbleServer {
             if id == crate::everyone::DEFAULT_SPEAKER {
                 let mut request = TurnRequest::new(Some(conversation.clone()), text.to_string());
                 request.thread_id = thread.map(str::to_string);
+                request.device_time_zone = device_time_zone.map(str::to_owned);
                 let key = format!("queued-{}", request.request_id);
                 let mut state = self.lock_state();
                 crate::everyone::ensure_session(&mut state, &conversation);
@@ -1678,13 +1673,14 @@ impl MarbleServer {
                         .enqueue_marble(id.clone(), Some(conversation), text.to_string());
                 let key = match queued {
                     Ok(entry) => {
-                        state
+                        let queued = state
                             .control
                             .queue
                             .iter_mut()
                             .find(|e| e.id == entry.id)
-                            .unwrap()
-                            .thread_id = thread.map(str::to_string);
+                            .unwrap();
+                        queued.thread_id = thread.map(str::to_string);
+                        queued.device_time_zone = device_time_zone.map(str::to_owned);
                         entry.id
                     }
                     Err(error) => {
@@ -1782,7 +1778,12 @@ impl MarbleServer {
     }
 
     /// `POST /api/prism/dispatch` — hand one prompt to several marbles at once.
-    fn dispatch_swarm(&self, body: &str, client: Option<crate::state::ClientMessage>) -> Response {
+    fn dispatch_swarm(
+        &self,
+        body: &str,
+        client: Option<crate::state::ClientMessage>,
+        device_time_zone: Option<&str>,
+    ) -> Response {
         let Some(pool) = self.prism.as_ref() else {
             return Response::json(
                 503,
@@ -1816,7 +1817,13 @@ impl MarbleServer {
             Ok(id) => id,
             Err(response) => return response,
         };
-        match pool.dispatch_client_in_thread(&text, ids.as_deref(), thread.as_deref(), client) {
+        match pool.dispatch_client_in_thread(
+            &text,
+            ids.as_deref(),
+            thread.as_deref(),
+            client,
+            device_time_zone,
+        ) {
             Ok(dispatch) => {
                 let mut document = dispatch.document();
                 if let Value::Object(map) = &mut document {
@@ -3221,6 +3228,7 @@ impl MarbleServer {
         let mut dispatched = 0usize;
         for entry in queued {
             let mut request = TurnRequest::new(entry.conversation_id, entry.text);
+            request.device_time_zone = entry.device_time_zone;
             request.client_message = entry.client_message;
             request.thread_id = entry.thread_id;
             if let Some(routine_id) = entry.routine_id {
@@ -3267,6 +3275,7 @@ impl MarbleServer {
                 request.conversation_id.as_deref(),
                 &request.text,
                 request.thread_id.as_deref(),
+                request.device_time_zone.as_deref(),
             ) {
                 match outcome {
                     Ok(_) => dispatched += 1,
@@ -3457,7 +3466,12 @@ impl MarbleServer {
         )
     }
 
-    fn handle_turn(&self, body: &str, client: Option<crate::state::ClientMessage>) -> Response {
+    fn handle_turn(
+        &self,
+        body: &str,
+        client: Option<crate::state::ClientMessage>,
+        device_time_zone: Option<&str>,
+    ) -> Response {
         let parsed: Value = match serde_json::from_str(body) {
             Ok(value) => value,
             Err(_) => return Response::error(400, "invalid_json"),
@@ -3538,6 +3552,7 @@ impl MarbleServer {
             marble.map(|marble| marble.id),
             thread,
             client,
+            device_time_zone,
         )
     }
 
@@ -3548,6 +3563,7 @@ impl MarbleServer {
         marble_id: Option<String>,
         thread: Option<String>,
         client: Option<crate::state::ClientMessage>,
+        device_time_zone: Option<&str>,
     ) -> Response {
         let marble_id = marble_id.or_else(|| {
             let state = self.lock_state();
@@ -3573,6 +3589,7 @@ impl MarbleServer {
                         {
                             queued.thread_id = thread.clone();
                             queued.client_message = client.clone();
+                            queued.device_time_zone = device_time_zone.map(str::to_owned);
                         }
                         let position = guard.control.queue.len();
                         guard.bump();
@@ -3612,6 +3629,7 @@ impl MarbleServer {
             let mut response = self.dispatch_swarm(
                 &json!({"text": text, "marbles": [id], "thread_id":thread}).to_string(),
                 client,
+                device_time_zone,
             );
             if response.status == 202
                 && let Ok(Value::Object(mut document)) =
@@ -3631,6 +3649,7 @@ impl MarbleServer {
         let mut request = TurnRequest::new(conversation_id, text);
         request.client_message = client;
         request.thread_id = thread;
+        request.device_time_zone = device_time_zone.map(str::to_owned);
         self.submit_request(request)
     }
 
@@ -3640,6 +3659,7 @@ impl MarbleServer {
         conversation_id: Option<&str>,
         text: &str,
         thread: Option<&str>,
+        device_time_zone: Option<&str>,
     ) -> Option<(
         PrismMarble,
         Result<crate::prism::PrismDispatch, DispatchRefusal>,
@@ -3650,8 +3670,13 @@ impl MarbleServer {
             state.prism.owner_of(id).cloned()
         }?;
         let prism = self.prism.as_ref()?;
-        let outcome =
-            prism.dispatch_in_thread(text, Some(std::slice::from_ref(&marble.id)), thread);
+        let outcome = prism.dispatch_client_in_thread(
+            text,
+            Some(std::slice::from_ref(&marble.id)),
+            thread,
+            None,
+            device_time_zone,
+        );
         Some((marble, outcome))
     }
 
@@ -3794,7 +3819,7 @@ impl MarbleServer {
     /// repeat, and retyping it is a poor way to recover. `taskId` picks one
     /// explicitly; otherwise the newest failed, cancelled, or interrupted turn
     /// is used, optionally scoped to `conversationId`.
-    fn retry_turn(&self, body: &str) -> Response {
+    fn retry_turn(&self, body: &str, device_time_zone: Option<&str>) -> Response {
         let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
         let requested_task = parsed
             .get("taskId")
@@ -3876,8 +3901,14 @@ impl MarbleServer {
         let conversation =
             (!task.conversation_id.starts_with("recovered-")).then_some(task.conversation_id);
         let marble_id = (!task.marble_id.is_empty()).then_some(task.marble_id);
-        let mut response =
-            self.submit_text_for_thread(conversation, task.prompt, marble_id, thread, None);
+        let mut response = self.submit_text_for_thread(
+            conversation,
+            task.prompt,
+            marble_id,
+            thread,
+            None,
+            device_time_zone,
+        );
         if response.status >= 400 {
             self.lock_state()
                 .conversation_mut(&retry_conversation)

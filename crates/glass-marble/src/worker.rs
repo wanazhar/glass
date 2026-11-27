@@ -35,6 +35,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// One message waiting for the durable turn worker.
 #[derive(Debug, Clone)]
 pub struct TurnRequest {
+    pub device_time_zone: Option<String>,
     pub client_message: Option<crate::state::ClientMessage>,
     pub thread_id: Option<String>,
     pub conversation_id: Option<String>,
@@ -1026,6 +1027,7 @@ fn run_command(
     let conversation_id = request.conversation_id.clone();
     let mut turn = MarbleTurn {
         conversation_id: conversation_id.clone(),
+        device_time_zone: request.device_time_zone.clone(),
         request_id: request.request_id.clone(),
         input: crate::normalize::engine_input(
             &lock(state),
@@ -1357,6 +1359,7 @@ impl TurnRequest {
     }
     pub fn new(conversation_id: Option<String>, text: impl Into<String>) -> Self {
         Self {
+            device_time_zone: None,
             client_message: None,
             thread_id: None,
             conversation_id,

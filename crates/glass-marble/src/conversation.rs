@@ -638,7 +638,11 @@ impl Conversation {
         self
     }
 
-    pub(crate) fn scoped_runtime(&mut self, id: &str) -> Result<Option<Self>, MarbleError> {
+    pub(crate) fn scoped_runtime(
+        &mut self,
+        id: &str,
+        zone: Option<&str>,
+    ) -> Result<Option<Self>, MarbleError> {
         let (Some(store), Some(factory), Some(product)) =
             (&self.store, &self.respawn, &self.product)
         else {
@@ -671,9 +675,8 @@ impl Conversation {
         std::fs::create_dir_all(&cwd).map_err(MarbleError::Io)?;
         let cwd = cwd.canonicalize().map_err(MarbleError::Io)?;
         let storage = cwd.parent().expect("workspace has a parent");
-        let zone = self.configured_time_zone();
         let mut command = factory();
-        if let Some(zone) = &zone {
+        if let Some(zone) = zone {
             command.env("TZ", zone);
         }
         let mut scoped = Self::spawn_with_router(
@@ -692,7 +695,7 @@ impl Conversation {
         scoped.tool_limit = self.tool_limit;
         scoped.steering = self.steering.take();
         scoped.respawn = self.respawn.clone();
-        scoped.device_time_zone = zone;
+        scoped.device_time_zone = zone.map(str::to_owned);
         scoped.approval_timeout = self.approval_timeout;
         scoped.instructions = self.instructions.clone();
         scoped.instructions_fn = self.instructions_fn.clone();
@@ -743,20 +746,9 @@ impl Conversation {
         self.text_block_boundaries
     }
 
-    fn configured_time_zone(&self) -> Option<String> {
-        self.product.as_ref().and_then(|state| {
-            state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .device_time_zone
-                .clone()
-        })
-    }
-
-    pub(crate) fn sync_time_zone(&mut self) -> Result<(), MarbleError> {
-        let zone = self.configured_time_zone();
-        if self.respawn.is_some() && zone != self.device_time_zone {
-            let previous = std::mem::replace(&mut self.device_time_zone, zone);
+    pub(crate) fn sync_time_zone(&mut self, zone: Option<&str>) -> Result<(), MarbleError> {
+        if self.respawn.is_some() && zone != self.device_time_zone.as_deref() {
+            let previous = std::mem::replace(&mut self.device_time_zone, zone.map(str::to_owned));
             if let Err(error) = self.restart() {
                 self.device_time_zone = previous;
                 return Err(error);
@@ -1568,7 +1560,8 @@ impl Conversation {
             .as_str()
             .map(str::to_owned)
             .unwrap_or_else(|| request_id.to_string());
-        let scope = ToolScope::new(self.active_conversation.clone(), self.active_task.clone());
+        let mut scope = ToolScope::new(self.active_conversation.clone(), self.active_task.clone());
+        scope.device_time_zone.clone_from(&self.device_time_zone);
         let (approval, reason) = self.decide(&key, call, &scope, cancel);
         let answer = crate::host::answer_tool(
             &mut self.client,

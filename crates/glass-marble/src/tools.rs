@@ -36,6 +36,7 @@ pub fn is_write_tool(name: &str) -> bool {
 pub struct ToolScope {
     pub conversation_id: String,
     pub task_id: String,
+    pub(crate) device_time_zone: Option<String>,
 }
 
 impl ToolScope {
@@ -43,6 +44,7 @@ impl ToolScope {
         Self {
             conversation_id: conversation_id.into(),
             task_id: task_id.into(),
+            device_time_zone: None,
         }
     }
 

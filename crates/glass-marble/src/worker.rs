@@ -1147,7 +1147,7 @@ fn run_command(
         conversation,
         TurnOptions {
             cancel: Some(request.cancel.as_ref()),
-            timeout: timeout.min(crate::DEFAULT_TURN_TIMEOUT),
+            timeout: request.timeout_for_turn(timeout),
             on_accepted: Some(&mut on_accepted),
             live: live_turn.as_mut(),
         },
@@ -1348,6 +1348,13 @@ fn turn_input(state: &Arc<Mutex<ProductState>>, text: &str) -> TurnInput {
 
 /// Convenience constructor for one inbound message.
 impl TurnRequest {
+    fn timeout_for_turn(&self, host_timeout: Duration) -> Duration {
+        if self.routine_id.is_some() {
+            host_timeout
+        } else {
+            host_timeout.min(crate::DEFAULT_TURN_TIMEOUT)
+        }
+    }
     pub fn new(conversation_id: Option<String>, text: impl Into<String>) -> Self {
         Self {
             client_message: None,
@@ -1383,6 +1390,20 @@ impl TurnRequest {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn chat_cap_does_not_shorten_routine_deadlines() {
+        let host_timeout = std::time::Duration::from_secs(300);
+        let chat = super::TurnRequest::new(None, "Do the work".into());
+        assert_eq!(
+            chat.timeout_for_turn(host_timeout),
+            crate::DEFAULT_TURN_TIMEOUT
+        );
+        assert_eq!(
+            chat.counted_routine("routine-1")
+                .timeout_for_turn(host_timeout),
+            host_timeout
+        );
+    }
     use super::*;
 
     fn lane_with(load: usize) -> Option<LaneRuntime> {

@@ -491,25 +491,105 @@ fn run_attempt(
 }
 
 fn remove_working_lines(text: &str, status: &mut Option<String>) -> String {
-    text.split_inclusive('\n')
-        .filter(|line| {
-            let trimmed = line.trim();
-            let Some(tag) = trimmed.strip_prefix("<working>") else {
-                return true;
-            };
-            if let Some(line) = tag.strip_suffix("</working>") {
-                let line = line.trim();
-                if line.ends_with('…')
-                    && (1..=6).contains(&line.split_whitespace().count())
-                    && line.chars().count() <= 100
-                    && !line.contains(['<', '>'])
+    let mut result = String::new();
+    let mut fence = None;
+    let mut inline_end = 0;
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        let trimmed = line.trim();
+        if let Some((marker, width, trailing)) = working_fence(line) {
+            match fence {
+                Some((open, minimum))
+                    if marker == open && width >= minimum && trailing.is_empty() =>
                 {
-                    *status = Some(line.to_owned());
+                    fence = None;
+                    result.push_str(line);
+                    continue;
+                }
+                None if marker != b'`' || !trailing.contains('`') => {
+                    fence = Some((marker, width));
+                    inline_end = 0;
+                }
+                _ => {}
+            }
+        }
+        if fence.is_some() {
+            result.push_str(line);
+            continue;
+        }
+        if start >= inline_end
+            && let Some(tag) = trimmed.strip_prefix("<working>")
+        {
+            if let Some(content) = tag.strip_suffix("</working>") {
+                let content = content.trim();
+                if content.ends_with('…')
+                    && (1..=6).contains(&content.split_whitespace().count())
+                    && content.chars().count() <= 100
+                    && !content.contains(['<', '>'])
+                {
+                    *status = Some(content.to_owned());
                 }
             }
-            false
-        })
-        .collect()
+            continue;
+        }
+        let bytes = text.as_bytes();
+        let mut cursor = start.max(inline_end);
+        while cursor < offset {
+            match bytes[cursor] {
+                b'\\' => cursor += 2,
+                b'`' => {
+                    let width = backtick_run(&bytes[cursor..]);
+                    cursor += width;
+                    if let Some(end) = closing_backticks(text, cursor, width) {
+                        inline_end = end;
+                        cursor = end;
+                    }
+                }
+                _ => cursor += 1,
+            }
+        }
+        result.push_str(line);
+    }
+    result
+}
+
+fn working_fence(line: &str) -> Option<(u8, usize, &str)> {
+    let content = line.trim_start_matches(' ');
+    let marker = *content.as_bytes().first()?;
+    if line.len() - content.len() > 3 || !matches!(marker, b'`' | b'~') {
+        return None;
+    }
+    let width = content.bytes().take_while(|&byte| byte == marker).count();
+    (width >= 3).then(|| (marker, width, content[width..].trim()))
+}
+
+fn backtick_run(bytes: &[u8]) -> usize {
+    bytes.iter().take_while(|&&byte| byte == b'`').count()
+}
+
+fn closing_backticks(text: &str, start: usize, width: usize) -> Option<usize> {
+    let mut offset = start;
+    for (index, line) in text[start..].split_inclusive('\n').enumerate() {
+        if index != 0 && (line.trim().is_empty() || working_fence(line).is_some()) {
+            break;
+        }
+        let mut cursor = 0;
+        while let Some(at) = line.as_bytes()[cursor..]
+            .iter()
+            .position(|&byte| byte == b'`')
+        {
+            cursor += at;
+            let closing = backtick_run(&line.as_bytes()[cursor..]);
+            cursor += closing;
+            if closing == width {
+                return Some(offset + cursor);
+            }
+        }
+        offset += line.len();
+    }
+    None
 }
 
 fn append_reasoning(reasoning: &mut String, boundary: &mut bool, delta: &str) -> String {
@@ -638,6 +718,25 @@ mod tests {
             ""
         );
         assert_eq!(status, None);
+    }
+
+    #[test]
+    fn working_tags_in_markdown_code_are_literal() {
+        let literal = concat!(
+            "````xml\n<working>Fenced example…</working>\n```\n",
+            "<working>Still fenced…</working>\n````\n",
+            "  ~~~xml\r\n<working>Tilde example…</working>\r\n  ~~~~\r\n",
+            "Inline example: ``<working>Inline example…</working>``\n",
+            "Multiline example: ``\n<working>Still inline…</working>\n` then ``\n",
+            "Unmatched opener: `\n",
+        );
+        let mut status = None;
+        let answer = super::remove_working_lines(
+            &format!("{literal}<working>Checking the report…</working>\nPublic answer."),
+            &mut status,
+        );
+        assert_eq!(answer, format!("{literal}Public answer."));
+        assert_eq!(status.as_deref(), Some("Checking the report…"));
     }
 
     #[test]

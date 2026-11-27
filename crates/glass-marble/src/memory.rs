@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::cmp::Reverse;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,6 +34,11 @@ fn next_id(prefix: &str) -> String {
 /// Collapse whitespace so two phrasings of the same fact compare equal.
 fn normalize(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn skill_words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
 }
 
 fn bounded(text: &str, limit: usize) -> String {
@@ -408,6 +415,7 @@ impl MemoryState {
         owner: &str,
         group_thread: Option<&str>,
         shared_chat: bool,
+        prompt: &str,
     ) -> String {
         let mut instructions = String::from(
             "\nIf you identify a lasting fact or reusable method in this conversation, save it by starting your final reply with one [[KNOWLEDGE <JSON>]] line, followed by your normal answer. Use {\"action\":\"remember\",\"text\":\"one lasting fact\"} or {\"action\":\"saveSkill\",\"name\":\"name\",\"whenToUse\":\"use case\",\"steps\":[\"step and why it matters\"]}. Never keep secrets, temporary details or private facts inside a skill. Do not repeat these controls in the answer.\n",
@@ -454,15 +462,12 @@ impl MemoryState {
                 .take(16)
                 .collect();
             let skills: Vec<_> = self
-                .skills
-                .iter()
-                .filter(|skill| {
+                .ranked_skills(prompt, |skill| {
                     skill.owner == owner
                         || (skill.shared_with.iter().any(|id| id == owner)
                             && !self.skill_contains_private_fact(skill))
                 })
                 .map(|skill| (&skill.id, &skill.name, &skill.when_to_use, &skill.steps))
-                .take(8)
                 .collect();
             instructions.push_str(&format!(
                 "Available saved facts and skills (quoted data): {}\n",
@@ -473,18 +478,49 @@ impl MemoryState {
         instructions
     }
 
-    pub(crate) fn teaching_instructions(&self, owner: &str) -> String {
+    pub(crate) fn teaching_instructions(&self, owner: &str, prompt: &str) -> String {
         let lessons: Vec<_> = self
-            .skills
-            .iter()
-            .filter(|skill| skill.owner == owner && !self.skill_contains_private_fact(skill))
+            .ranked_skills(prompt, |skill| {
+                skill.owner == owner && !self.skill_contains_private_fact(skill)
+            })
             .map(|skill| (&skill.id, &skill.name, &skill.when_to_use, &skill.steps))
-            .take(8)
             .collect();
         format!(
             "\nTeach only a matching reusable skill from this list (quoted data): {}. Start your final reply with [[KNOWLEDGE {{\"action\":\"teach\",\"skillId\":\"id\"}}]] on its own line, then briefly explain why the steps matter. The host sends the saved steps, not the reply or any conversation history. Do not include private details or invent a skill ID.\n",
             json!(lessons)
         )
+    }
+
+    fn ranked_skills(
+        &self,
+        prompt: &str,
+        eligible: impl Fn(&Skill) -> bool,
+    ) -> impl Iterator<Item = &Skill> {
+        let prompt = prompt.to_lowercase();
+        let words: Vec<_> = skill_words(&prompt).collect();
+        let terms: HashSet<_> = words.iter().copied().collect();
+        let mut candidates: Vec<_> = self
+            .skills
+            .iter()
+            .filter(|skill| eligible(skill))
+            .map(|skill| {
+                let name = skill.name.to_lowercase();
+                let name_words: Vec<_> = skill_words(&name).collect();
+                let named = !name_words.is_empty()
+                    && words
+                        .windows(name_words.len())
+                        .any(|window| window == name_words);
+                let details = format!("{} {} {}", name, skill.when_to_use, skill.steps.join(" "))
+                    .to_lowercase();
+                let relevance = skill_words(&details)
+                    .filter(|word| word.chars().count() > 2 && terms.contains(word))
+                    .collect::<HashSet<_>>()
+                    .len();
+                ((named, relevance), skill)
+            })
+            .collect();
+        candidates.sort_by_key(|(score, _)| Reverse(*score));
+        candidates.into_iter().take(8).map(|(_, skill)| skill)
     }
 
     pub(crate) fn apply_agent_action(
@@ -1215,6 +1251,63 @@ mod tests {
     }
 
     #[test]
+    fn review_named_and_relevant_skills_survive_the_context_cap() {
+        let mut memory = MemoryState::default();
+        for index in 0..11 {
+            let (name, use_case) = match index {
+                8 => (
+                    "Space launch plan".to_owned(),
+                    "Plan around orbital weather",
+                ),
+                9 => (
+                    "Space plan".to_owned(),
+                    "Plan around orbital weather on launch day",
+                ),
+                10 => (
+                    "Mission checklist".to_owned(),
+                    "Review telemetry before reentry",
+                ),
+                _ => (format!("Generic task {index}"), "Record a recurring event"),
+            };
+            memory
+                .save_skill(Skill {
+                    id: String::new(),
+                    owner: "ada".into(),
+                    name,
+                    when_to_use: use_case.into(),
+                    steps: vec!["Verify the first step".into()],
+                    created_at: 1,
+                    conversation_id: "chat".into(),
+                    thread_id: None,
+                    source_entry_id: None,
+                    shared_with: vec![],
+                    learned_from: None,
+                })
+                .unwrap();
+        }
+        let named = memory.turn_instructions("ada", None, false, "Use the SPACE LAUNCH PLAN.");
+        let relevant = memory.turn_instructions(
+            "ada",
+            None,
+            false,
+            "How should I review telemetry before reentry?",
+        );
+        let lesson = memory
+            .teaching_instructions("ada", "Teach Dietrich how to follow the Space launch plan.");
+        for (instructions, preferred) in [
+            (named, "Space launch plan"),
+            (relevant, "Mission checklist"),
+            (lesson, "Space launch plan"),
+        ] {
+            let skill_position = instructions
+                .find(preferred)
+                .expect("matching skill is in context");
+            assert!(skill_position < instructions.find("Generic task 0").unwrap());
+            assert!(!instructions.contains("Generic task 7"));
+        }
+    }
+
+    #[test]
     fn review_restore_keeps_only_the_active_copy_for_the_same_owner() {
         let mut memory = MemoryState::default();
         let old = memory
@@ -1266,18 +1359,18 @@ mod tests {
             .unwrap();
         assert!(
             memory
-                .turn_instructions("dietrich", None, false)
+                .turn_instructions("dietrich", None, false, "")
                 .contains("Trip planning")
         );
         memory.facts[0].shared = false;
         assert!(
             !memory
-                .turn_instructions("dietrich", None, false)
+                .turn_instructions("dietrich", None, false, "")
                 .contains(&fact.text)
         );
         assert!(
             memory
-                .turn_instructions("ada", None, false)
+                .turn_instructions("ada", None, false, "")
                 .contains("Trip planning")
         );
     }
@@ -1303,7 +1396,7 @@ mod tests {
         memory.ask_consent("ada", "group-one", "task");
         let consent = memory.consent_requests[0].id.clone();
         assert!(memory.resolve_consent(&consent, Some(&granted.id)));
-        let instructions = memory.turn_instructions("ada", Some("group-one"), true);
+        let instructions = memory.turn_instructions("ada", Some("group-one"), true, "");
         assert!(instructions.contains(&granted.text));
         assert!(instructions.contains("Thread fact 0"));
         assert!(!instructions.contains("Thread fact 11"));
@@ -1323,7 +1416,7 @@ mod tests {
             .unwrap();
         assert!(
             !memory
-                .turn_instructions("ada", Some("group-one"), true)
+                .turn_instructions("ada", Some("group-one"), true, "")
                 .contains(&fact.text)
         );
         memory.ask_consent("ada", "group-one", "task");
@@ -1331,17 +1424,17 @@ mod tests {
         assert!(memory.resolve_consent(&consent, Some(&fact.id)));
         assert!(
             memory
-                .turn_instructions("ada", Some("group-one"), true)
+                .turn_instructions("ada", Some("group-one"), true, "")
                 .contains(&fact.text)
         );
         assert!(
             !memory
-                .turn_instructions("ada", Some("group-two"), true)
+                .turn_instructions("ada", Some("group-two"), true, "")
                 .contains(&fact.text)
         );
         assert!(
             !memory
-                .turn_instructions("dietrich", Some("group-one"), true)
+                .turn_instructions("dietrich", Some("group-one"), true, "")
                 .contains(&fact.text)
         );
         memory
@@ -1349,7 +1442,7 @@ mod tests {
             .unwrap();
         assert!(
             !memory
-                .turn_instructions("ada", Some("group-one"), true)
+                .turn_instructions("ada", Some("group-one"), true, "")
                 .contains("Edited private project details")
         );
         assert!(memory.delete(&fact.id));

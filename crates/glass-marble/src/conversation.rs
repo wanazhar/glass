@@ -1173,12 +1173,17 @@ impl Conversation {
                     .teaching_recipient(&self.knowledge_owner, prompt)
                     .is_some();
             if teaching {
-                instructions.push_str(&state.memory.teaching_instructions(&self.knowledge_owner));
+                instructions.push_str(
+                    &state
+                        .memory
+                        .teaching_instructions(&self.knowledge_owner, prompt),
+                );
             } else {
                 instructions.push_str(&state.memory.turn_instructions(
                     &self.knowledge_owner,
                     thread,
                     shared_chat,
+                    prompt,
                 ));
             }
             agent["instructions"] = value!(instructions);

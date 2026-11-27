@@ -262,7 +262,7 @@ mod tests {
             assert!(
                 state
                     .memory
-                    .turn_instructions("marble", None, false)
+                    .turn_instructions("marble", None, false, text)
                     .contains("Shared fact")
             );
             assert!(input.text.contains("withdrawn"));

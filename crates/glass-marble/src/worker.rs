@@ -1617,7 +1617,9 @@ mod tests {
             .memory
             .remember("my name is Azhar", "role", "c1", true, "")
             .unwrap();
-        let instructions = product.memory.turn_instructions("marble", None, false);
+        let instructions = product
+            .memory
+            .turn_instructions("marble", None, false, "hello");
         assert!(instructions.contains("my name is Azhar"));
         let with_memory = turn_input(&Arc::new(Mutex::new(product)), "hello");
         assert!(with_memory.context.is_empty());

@@ -2645,6 +2645,9 @@ impl MarbleServer {
                 {
                     Ok(()) => true,
                     Err("unknown_skill") => false,
+                    Err(crate::memory::SKILL_CONTAINS_PRIVATE_MEMORY) => {
+                        return Response::error(409, crate::memory::SKILL_CONTAINS_PRIVATE_MEMORY);
+                    }
                     Err(reason) => {
                         return Response::json(
                             400,
@@ -2670,7 +2673,7 @@ impl MarbleServer {
                 agents.sort_unstable();
                 agents.dedup();
                 if !agents.is_empty() && state.memory.skill_contains_private_fact(skill) {
-                    return Response::error(409, "skill_contains_private_memory");
+                    return Response::error(409, crate::memory::SKILL_CONTAINS_PRIVATE_MEMORY);
                 }
                 state
                     .memory

@@ -6933,6 +6933,45 @@ fn thread_turns_route_and_propagate_to_every_entry_and_retry_after_reload() {
 }
 
 #[test]
+fn review_shared_skill_edit_rejects_private_memory_without_mutating_it() {
+    let mut state = ProductState::default();
+    let fact = state
+        .memory
+        .remember("Use cobalt maps for trips", "fact", "chat", true, "ada")
+        .unwrap();
+    let skill = glass_marble::memory::Skill {
+        id: "trip-skill".into(),
+        name: "Trip planning".into(),
+        when_to_use: "Before leaving town".into(),
+        steps: vec!["Check the weather".into()],
+        owner: "ada".into(),
+        shared_with: vec!["marble".into()],
+        created_at: 1,
+        conversation_id: "chat".into(),
+        thread_id: None,
+        source_entry_id: None,
+        learned_from: None,
+    };
+    state.memory.skills.push(skill.clone());
+    let server = server_with(
+        state,
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle(
+        "POST",
+        "/api/knowledge/trip-skill/edit-skill",
+        &json!({
+            "name":skill.name,"whenToUse":skill.when_to_use,"steps":[fact.text]
+        })
+        .to_string(),
+    );
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(server.state().memory.skills, vec![skill]);
+}
+
+#[test]
 fn agent_knowledge_is_saved_taught_and_pruned_with_confirmation() {
     if !python3_available() {
         return;

@@ -13,6 +13,7 @@ pub const MEMORY_LIMIT: usize = 200;
 pub const SUGGESTION_LIMIT: usize = 8;
 /// Longest fact Marble accepts from one command.
 pub const MAX_FACT_CHARS: usize = 280;
+pub(crate) const SKILL_CONTAINS_PRIVATE_MEMORY: &str = "skill_contains_private_memory";
 const RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 fn now_millis() -> u64 {
@@ -276,6 +277,9 @@ impl MemoryState {
         {
             return Err("Give the skill a short name, a use case, and one to twelve steps.");
         }
+        if !skill.shared_with.is_empty() && self.skill_contains_private_fact(&skill) {
+            return Err(SKILL_CONTAINS_PRIVATE_MEMORY);
+        }
         if let Some(existing) = self.skills.iter_mut().find(|item| item.id == skill.id) {
             *existing = skill;
         } else {
@@ -438,7 +442,9 @@ impl MemoryState {
                 .skills
                 .iter()
                 .filter(|skill| {
-                    skill.owner == owner || skill.shared_with.iter().any(|id| id == owner)
+                    skill.owner == owner
+                        || (skill.shared_with.iter().any(|id| id == owner)
+                            && !self.skill_contains_private_fact(skill))
                 })
                 .map(|skill| (&skill.id, &skill.name, &skill.when_to_use, &skill.steps))
                 .take(8)
@@ -1191,6 +1197,46 @@ mod tests {
         );
         assert_eq!(detect("run the tests"), None);
         assert_eq!(detect("Remember this: I prefer tabs"), None);
+    }
+
+    #[test]
+    fn review_shared_skill_recall_excludes_newly_private_facts() {
+        let mut memory = MemoryState::default();
+        let fact = memory
+            .remember("Use cobalt maps for trips", "fact", "chat", true, "ada")
+            .unwrap();
+        memory.facts[0].shared = true;
+        memory
+            .save_skill(Skill {
+                id: String::new(),
+                name: "Trip planning".into(),
+                when_to_use: "Before leaving town".into(),
+                steps: vec![fact.text.clone()],
+                owner: "ada".into(),
+                shared_with: vec!["dietrich".into()],
+                created_at: 1,
+                conversation_id: "chat".into(),
+                thread_id: None,
+                source_entry_id: None,
+                learned_from: None,
+            })
+            .unwrap();
+        assert!(
+            memory
+                .turn_instructions("dietrich", None, false)
+                .contains("Trip planning")
+        );
+        memory.facts[0].shared = false;
+        assert!(
+            !memory
+                .turn_instructions("dietrich", None, false)
+                .contains(&fact.text)
+        );
+        assert!(
+            memory
+                .turn_instructions("ada", None, false)
+                .contains("Trip planning")
+        );
     }
 
     #[test]

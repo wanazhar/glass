@@ -1,6 +1,12 @@
 import SwiftUI
 
+extension EnvironmentValues {
+    /// The iPhone Threads panel is open over this screen.
+    @Entry var sidebarOpen = false
+}
+
 struct ChatToolbar<Title: View>: View {
+    @Environment(\.sidebarOpen) private var sidebarOpen
     let menu: () -> Void
     let newChat: () -> Void
     @ViewBuilder let title: () -> Title
@@ -18,6 +24,9 @@ struct ChatToolbar<Title: View>: View {
                 control("square.and.pencil", label: "New chat", action: newChat)
                     .accessibilityIdentifier("conversation.new")
             }
+            .opacity(sidebarOpen ? 0 : 1)
+            .allowsHitTesting(!sidebarOpen)
+            .accessibilityHidden(sidebarOpen)
         }
         .frame(maxWidth: Design.readingWidth)
         .frame(maxWidth: .infinity)

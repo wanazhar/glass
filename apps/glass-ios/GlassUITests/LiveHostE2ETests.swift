@@ -195,7 +195,7 @@ final class LiveHostE2ETests: XCTestCase {
         attach(app, "e2e-new-thread")
         app.buttons["conversation.menu"].tap()
         app.buttons["conversation.close"].tap()
-        XCTAssertTrue(app.staticTexts["threads.count"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.waitForThreadList(timeout: 20))
     }
 
     @MainActor

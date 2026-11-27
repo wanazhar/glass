@@ -9,6 +9,8 @@ enum Design {
     static let corner: CGFloat = 14
     static let panel: CGFloat = 22
     static let largePanel: CGFloat = 28
+    /// The floating Threads panel, close to the iPhone display corners.
+    static let drawerCorner: CGFloat = 30
     static let transcriptClearance: CGFloat = 18
     static let transcriptEnd: CGFloat = transcriptClearance - padding
     static let readingWidth: CGFloat = 760

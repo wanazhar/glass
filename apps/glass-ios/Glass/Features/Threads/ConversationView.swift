@@ -60,7 +60,7 @@ struct ConversationView: View {
             }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(conversation.timeline.isEmpty ? .center : .bottom, for: .alignment)
-            .softTopScrollEdge()
+            .scrollEdgeEffectStyle(.hard, for: .top)
             .scrollDismissesKeyboard(.interactively)
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.visibleRect.maxY >= geometry.contentSize.height - Design.gap
@@ -90,10 +90,15 @@ struct ConversationView: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: Design.gap) {
-                    floatingControls(proxy)
+                    checklistButton
                     bottomBar(onFieldFocus: { resume(proxy) })
+                        .overlay(alignment: .top) { jumpToLatest(proxy) }
                 }
                 .frame(maxWidth: .infinity)
+            }
+            .onChange(of: conversation.firstRequest) { _, request in
+                guard let request else { return }
+                Task { await threads.retitle(conversation.thread.id, from: request) }
             }
         }
         .background(Design.background.ignoresSafeArea())
@@ -277,31 +282,38 @@ struct ConversationView: View {
                          activity: nil, seconds: nil)
     }
 
-    private func floatingControls(_ proxy: ScrollViewProxy) -> some View {
-        HStack(spacing: Design.gap) {
-            if let tasks = Optional(conversation.composer.checklist), !tasks.isEmpty {
-                Button("\(tasks.filter(\.isDone).count) of \(tasks.count)", systemImage: "checklist") { showingChecklist = true }
-                    .font(.caption)
-                    .glassButtonStyle()
-                    .accessibilityIdentifier("conversation.checklist")
-            }
-            if !atBottom {
-                Button { resume(proxy) } label: {
-                    Label("Jump to latest", systemImage: "arrow.down")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Design.ink)
-                        .padding(.horizontal, 15)
-                        .frame(minHeight: Design.control)
-                        .background(Design.surface, in: .capsule)
-                        .overlay(Capsule().strokeBorder(Design.line))
-                        .contentShape(.capsule)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("conversation.latest")
-                .accessibilityHint("Returns to the newest message")
-            }
+    @ViewBuilder
+    private var checklistButton: some View {
+        let tasks = conversation.composer.checklist
+        if !tasks.isEmpty {
+            Button("\(tasks.filter(\.isDone).count) of \(tasks.count)", systemImage: "checklist") { showingChecklist = true }
+                .font(.caption)
+                .glassButtonStyle()
+                .accessibilityIdentifier("conversation.checklist")
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: atBottom)
+    }
+
+    /// Shown only once the reader has scrolled away from the newest message, floating clear of the composer
+    /// so it never changes the transcript's layout.
+    private func jumpToLatest(_ proxy: ScrollViewProxy) -> some View {
+        let shown = !following && !atBottom
+        return Button { resume(proxy) } label: {
+            Label("Jump to latest", systemImage: "arrow.down")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Design.ink)
+                .padding(.horizontal, Design.padding)
+                .frame(height: Design.control)
+                .contentShape(.capsule)
+                .glassEffect(.regular.interactive(), in: .capsule)
+        }
+        .buttonStyle(.plain)
+        .opacity(shown ? 1 : 0)
+        .allowsHitTesting(shown)
+        .accessibilityHidden(!shown)
+        .accessibilityIdentifier("conversation.latest")
+        .accessibilityHint("Returns to the newest message")
+        .alignmentGuide(.top) { $0[.bottom] + Design.padding }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: shown)
     }
 
     private func resume(_ proxy: ScrollViewProxy) {
@@ -321,7 +333,7 @@ struct ConversationView: View {
 
     private var titleButton: some View {
         Button { showingInfo = true } label: {
-            Text(threads.thread(conversation.thread.id)?.lensTitle ?? conversation.title)
+            Text(threads.title(for: conversation.thread.id) ?? conversation.title)
                 .font(Design.headline)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, minHeight: Design.control)
@@ -334,7 +346,7 @@ struct ConversationView: View {
     }
 
     private var threadInfo: some View {
-        ThreadInfoView(conversation: conversation, title: threads.thread(conversation.thread.id)?.lensTitle ?? conversation.title) { action in
+        ThreadInfoView(conversation: conversation, title: threads.title(for: conversation.thread.id) ?? conversation.title) { action in
             showingInfo = false
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(350))

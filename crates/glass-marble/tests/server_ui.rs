@@ -3973,6 +3973,12 @@ fn new_private_chats_with_the_same_agent_keep_separate_history() {
         return;
     }
     let fixture = NamedTurnFixture::with_persistence("private-chats", vec![], true);
+    let (status, body) = fixture.post(
+        "/api/turns",
+        json!({"marbleId": fixture.marble_id, "text": "Original roster chat"}),
+    );
+    assert_eq!(status, 202, "{body}");
+    let original = fixture.completed("Original roster chat").conversation_id;
     let create = || {
         let (status, body) =
             fixture.post("/api/conversations", json!({"marbleId": fixture.marble_id}));
@@ -3996,6 +4002,10 @@ fn new_private_chats_with_the_same_agent_keep_separate_history() {
         assert_eq!(fixture.completed(prompt).conversation_id, *chat);
     }
     let state = fixture.store.as_ref().unwrap().load().unwrap();
+    assert_eq!(
+        state.prism.get(&fixture.marble_id).unwrap().conversation_id,
+        original
+    );
     let prompts = |chat: &str| {
         state
             .transcript

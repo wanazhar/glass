@@ -640,7 +640,7 @@ impl PrismState {
     /// Record which durable task now carries one marble's turn.
     fn note_task(&mut self, id: &str, conversation_id: &str, task_id: &str) {
         if let Some(marble) = self.find_mut(id) {
-            if !crate::everyone::is_session(conversation_id) {
+            if !conversation_id.is_empty() && !crate::everyone::is_session(conversation_id) {
                 marble.conversation_id = conversation_id.to_string();
             }
             marble.task_id = task_id.to_string();

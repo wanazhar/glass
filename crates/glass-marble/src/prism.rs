@@ -23,7 +23,9 @@ use crate::state::{ProductState, TaskRecord, TranscriptEntry};
 use crate::store::{self, StateStore};
 use crate::tools::{ToolOutcome, ToolRouter};
 use crate::worker::{CancelRegistry, now_millis};
-use crate::{ApprovalInbox, Conversation, HostPolicy, MarbleError, TurnOptions, run_turn};
+use crate::{
+    ApprovalInbox, Conversation, HostPolicy, MarbleError, SteerRequest, TurnOptions, run_turn,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -623,7 +625,7 @@ pub struct PrismPool {
     cancels: CancelRegistry,
     approvals: ApprovalInbox,
     timeout: Duration,
-    engines: Mutex<HashMap<String, Arc<Mutex<Conversation>>>>,
+    engines: Mutex<HashMap<String, PrismEngine>>,
     /// Marbles waiting on an ask: marble id → the channels answering that ask.
     ask_waiters: Mutex<HashMap<String, Vec<AskWaiter>>>,
     /// Depth of the turn each task is part of, so asks cannot chain forever.
@@ -632,6 +634,11 @@ pub struct PrismPool {
     pending_depths: Mutex<HashMap<String, u8>>,
     /// How many asks one turn has made, capped so a turn cannot fan out forever.
     ask_counts: Mutex<HashMap<String, usize>>,
+}
+
+struct PrismEngine {
+    conversation: Arc<Mutex<Conversation>>,
+    steer: mpsc::Sender<SteerRequest>,
 }
 
 impl std::fmt::Debug for PrismPool {
@@ -895,7 +902,7 @@ impl PrismPool {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .get(&marble.id)
-            .cloned()
+            .map(|engine| Arc::clone(&engine.conversation))
         {
             return Ok(engine);
         }
@@ -932,7 +939,9 @@ impl PrismPool {
             let state = self.lock_state();
             state.prism.marbles.clone()
         };
+        let (steer, steer_rx) = mpsc::channel();
         let conversation = conversation
+            .with_steering(steer_rx)
             .with_product(Arc::clone(&self.state))
             .with_speaker(&marble.name)
             .with_model({
@@ -959,9 +968,23 @@ impl PrismPool {
         self.engines
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .insert(marble.id.clone(), Arc::clone(&engine));
+            .insert(
+                marble.id.clone(),
+                PrismEngine {
+                    conversation: Arc::clone(&engine),
+                    steer,
+                },
+            );
         tracing::info!(marble = %marble.name, workspace = %root.display(), "started a prism engine");
         Ok(engine)
+    }
+
+    pub(crate) fn steer(&self, marble_id: &str, request: SteerRequest) -> bool {
+        self.engines
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(marble_id)
+            .is_some_and(|engine| engine.steer.send(request).is_ok())
     }
 
     /// Seeds the ask depth for the next dispatch to this marble, then runs it.
@@ -1590,14 +1613,17 @@ impl PrismPool {
             .unwrap_or_else(|error| error.into_inner())
             .remove(id);
         if let Some(engine) = engine {
-            let mut guard = engine.lock().unwrap_or_else(|error| error.into_inner());
+            let mut guard = engine
+                .conversation
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let _ = guard.shutdown();
         }
     }
 
     /// Stop every marble engine, so a host shutdown does not leave orphans.
     pub fn shutdown(&self) {
-        let engines: Vec<(String, Arc<Mutex<Conversation>>)> = {
+        let engines: Vec<_> = {
             let mut map = self
                 .engines
                 .lock()
@@ -1605,7 +1631,10 @@ impl PrismPool {
             map.drain().collect()
         };
         for (id, engine) in engines {
-            let mut guard = engine.lock().unwrap_or_else(|error| error.into_inner());
+            let mut guard = engine
+                .conversation
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             if let Err(error) = guard.shutdown() {
                 tracing::warn!(marble = %id, %error, "could not stop a prism engine");
             }

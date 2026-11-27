@@ -2020,6 +2020,44 @@
       ]
     },
     {
+      "path": "design/marble-round1/PR-steer.md",
+      "class": "historical",
+      "topic": "history",
+      "audience": "proposal-design-or-history",
+      "status": "plan-or-evidence-status-is-recorded-in-page",
+      "recommendation": "ARCHIVE_PUBLIC",
+      "recommendationReason": "Keep historical evidence discoverable in its scoped record area; do not rewrite it as current guidance.",
+      "canonicalSuccessor": null,
+      "consumers": [
+        "docs/INDEX.md"
+      ],
+      "dependencies": [],
+      "topicRoute": "docs/INDEX.md#historical-generated-and-evidence-records",
+      "route": "design/marble-round1/PR-steer.md#marble-ios-steer-a-named-reply-and-polish-pairing",
+      "sections": [
+        {
+          "level": "1",
+          "title": "Marble iOS — steer a named reply and polish pairing",
+          "anchor": "marble-ios-steer-a-named-reply-and-polish-pairing"
+        },
+        {
+          "level": "2",
+          "title": "What changed",
+          "anchor": "what-changed"
+        },
+        {
+          "level": "2",
+          "title": "Local verification",
+          "anchor": "local-verification"
+        },
+        {
+          "level": "2",
+          "title": "Simulator evidence",
+          "anchor": "simulator-evidence"
+        }
+      ]
+    },
+    {
       "path": "design/marble-round1/PR.md",
       "class": "historical",
       "topic": "history",
@@ -2492,6 +2530,7 @@
         "crates/glass-runtime-client/README.md",
         "crates/glass-tui/README.md",
         "design/marble-round1/PR-round2.md",
+        "design/marble-round1/PR-steer.md",
         "design/marble-round1/README.md",
         "design/round4/README.md",
         "docs/BROWSER-CU-AUDIT.md",

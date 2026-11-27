@@ -246,6 +246,7 @@ struct EveryoneView: View {
 /// it's doing — plus the built-in Marble whose chat is the chats list.
 struct MarblesView: View {
     @EnvironmentObject private var store: MarbleStore
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var showsNew = false
     var selection: ChatRoute?
     var onSelect: ((ChatRoute) -> Void)?
@@ -285,6 +286,7 @@ struct MarblesView: View {
             }
         }
         .navigationTitle("Who’s on your mind?")
+        .contentMargins(.bottom, sizeClass == .compact ? 32 : 0, for: .scrollContent)
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
         .sheet(isPresented: $showsNew) {
@@ -537,8 +539,12 @@ struct MarbleChatScreen: View {
                 draft: $draft,
                 isWorking: working,
                 placeholder: "Message \(marble.name)",
-                canSteer: false,
+                workingPlaceholder: "Correct \(marble.name)’s reply",
+                steerReady: active?.isRunning == true,
                 onSend: { store.send($0, to: target, entries: durable) },
+                onSteer: {
+                    await store.steer($0, conversationId: marble.conversationId, taskId: active?.id)
+                },
                 onStop: {
                     Task {
                         if let active, store.isTaskWorking(active) {

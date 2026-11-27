@@ -33,6 +33,7 @@ DIE_ON_RUN = "--die-on-run" in sys.argv
 # abort so the abort acknowledgement is stranded for whatever turn comes next.
 LATE_ABORT_ACK = "--late-abort-ack" in sys.argv
 PARKED_RUN = {}
+WAIT_FOR_STEER = "--wait-for-steer" in sys.argv or os.environ.get("MARBLE_FIXTURE_WAIT_FOR_STEER") == "1"
 
 SESSION_ID = "fixture-session"
 STORAGE_DIR = None
@@ -308,7 +309,7 @@ def main():
                     "protocolVersion": protocol or 1,
                     "runtime": {"name": "glass-core", "version": "0.3.14"},
                     "capabilities": {
-                        "textBlockBoundaries": any(flag in sys.argv for flag in ["--text-blocks", "--everyone-reasoning"]) and "textBlockBoundaries" in params.get("optionalCapabilities", []),
+                        "textBlockBoundaries": (WAIT_FOR_STEER or any(flag in sys.argv for flag in ["--text-blocks", "--everyone-reasoning"])) and "textBlockBoundaries" in params.get("optionalCapabilities", []),
                         "hostTools": True,
                         "localTools": True,
                         "mixedTools": True,
@@ -409,6 +410,12 @@ def main():
                 PARKED_RUN["id"] = identifier
                 continue
             task_id = params.get("taskId") or task_id_for(params.get("conversationId"), params.get("requestId"))
+            if WAIT_FOR_STEER:
+                PARKED_RUN["id"] = identifier
+                event("turn-1", "turn_start", {})
+                event("turn-1", "text_block_start", {"blockId": "answer"})
+                event("turn-1", "text", {"text": "For the walk, I’d start with the trail by the river."})
+                continue
             run_turn(identifier, task_id, INPUT_TEXT.get("value", ""), INPUT_TEXT.get("conversation") or SESSION_ID, params.get("requestId") or "")
         elif method == "durable/abort":
             if PARKED_RUN.get("id"):
@@ -417,6 +424,10 @@ def main():
         elif method == "turn/steer":
             note_steer(message)
             reply(identifier, {"steered": True})
+            if WAIT_FOR_STEER and (running := PARKED_RUN.pop("id", None)):
+                event("turn-1", "text", {"text": " With your correction in mind: " + params["text"]})
+                event("turn-1", "settled", {"reason": "completed"})
+                reply(running, {"sessionId": SESSION_ID, "settled": True})
         elif method == "shutdown":
             reply(identifier, {})
             return

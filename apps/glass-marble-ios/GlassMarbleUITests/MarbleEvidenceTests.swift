@@ -120,6 +120,9 @@ final class MarbleEvidenceTests: XCTestCase {
         connect.tap()
         let host = app.textFields.firstMatch
         check(host)
+        check(app.navigationBars["Pair your host"])
+        check(app.staticTexts["Host"])
+        check(app.staticTexts["Access token"])
         shot("pairing")
         host.tap()
         host.typeText(address)
@@ -131,7 +134,25 @@ final class MarbleEvidenceTests: XCTestCase {
         check(app.staticTexts["Connecting to your host…"])
         shot("connecting")
         check(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "The host rejected that token")).firstMatch)
+        check(app.descendants(matching: .any)["pairing.tokenError"].firstMatch)
+        XCTAssertFalse(app.descendants(matching: .any)["pairing.hostError"].firstMatch.exists)
         shot("error")
+    }
+
+    func testHostedPickerBottom() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["MARBLE_PICKER_INSET_EVIDENCE"] == "1",
+                          "Requires a seeded roster that fills the picker")
+        try start()
+        let newMarble = button("New Marble")
+        let tab = button("Marbles")
+        check(tab)
+        for _ in 0..<5 {
+            app.swipeUp()
+            if newMarble.isHittable, newMarble.frame.maxY < tab.frame.minY { break }
+        }
+        XCTAssertTrue(newMarble.isHittable)
+        XCTAssertLessThan(newMarble.frame.maxY, tab.frame.minY)
+        shot("picker-bottom")
     }
 
     func testHostedTablet() throws {
@@ -206,13 +227,42 @@ final class MarbleEvidenceTests: XCTestCase {
         let stop = button("Stop")
         check(stop)
         check(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "short list of trails")).firstMatch)
-        check(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Stop and resend")).firstMatch)
-        XCTAssertFalse(button("Steer").exists)
+        check(app.textFields.containing(NSPredicate(format: "placeholderValue == %@", "Correct Ada’s reply")).firstMatch)
         if button("Hide keyboard").exists { button("Hide keyboard").tap() }
         shot("named-streaming-stop")
         stop.tap()
         XCTAssertTrue(stop.waitForNonExistence(timeout: 15))
         shot("named-stopped")
+    }
+
+    func testHostedNamedSteer() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["MARBLE_STEER_EVIDENCE"] == "1",
+                          "Requires the local streaming and steering fixture")
+        try start()
+        let marble = app.buttons.containing(.staticText, identifier: "Ada").firstMatch
+        check(marble)
+        marble.tap()
+        let composer = app.descendants(matching: .any)["composer.field"].firstMatch
+        check(composer)
+        composer.tap()
+        composer.typeText("Plan a walk for this afternoon.")
+        button("Send").tap()
+        let stop = button("Stop")
+        let partial = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "trail by the river")).firstMatch
+        check(stop)
+        check(partial)
+        shot("named-reply-streaming")
+        composer.typeText("Choose a shaded trail instead.")
+        let steer = button("Steer")
+        check(steer)
+        XCTAssertTrue(steer.isEnabled)
+        XCTAssertTrue(stop.exists)
+        shot("named-steer-and-stop")
+        steer.tap()
+        check(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@",
+                                                    "With your correction in mind: Choose a shaded trail instead.")).firstMatch)
+        XCTAssertTrue(stop.waitForNonExistence(timeout: 15))
+        shot("named-reply-corrected")
     }
 
     func testEnableReduceMotion() throws {

@@ -858,6 +858,27 @@ final class LiveHostE2ETests: XCTestCase {
         XCTAssertFalse(banner("Alert away").waitForExistence(timeout: 5), "launch doesn't alert for old replies")
     }
 
+    /// A long reply whose chunks arrive in uneven bursts still reveals steadily, then finishes. Record the
+    /// Simulator during this test to see the pacing.
+    @MainActor
+    func testBurstyLongReplyRevealsSteadily() throws {
+        let thread = try call("thread/new?title=Bursty%20reply", method: "POST")
+        let app = try pairedApp()
+        open(app, thread: thread)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        _ = try call("thread/send?id=\(thread)&text=burst%20900", method: "POST")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'word1 '")).firstMatch
+            .waitForExistence(timeout: 30), "the reply starts")
+        // The greeting's own actions scroll out of the lazy list, so look for the end of this reply instead.
+        let streaming = app.descendants(matching: .any)["timeline.streaming"]
+        XCTAssertTrue(waitUntil(120) {
+            !streaming.exists && app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'word900'")).firstMatch.exists
+                && app.buttons["reply.copy"].exists
+        }, "the reply finishes, all of it shows, and copy appears")
+        sleep(1)
+        attach(app, "e2e-bursty-finished")
+    }
+
     /// A short reply streams in, then its copy and share row appears once it finishes.
     @MainActor
     func testFinishedReplyShowsCopyAndShare() throws {
@@ -1298,6 +1319,21 @@ final class LiveHostE2ETests: XCTestCase {
         if back.exists, back.isHittable { back.tap() }
         sleep(2)
         try save("sidebar")
+
+        // Mid-reply: a long answer scrolled so its text sits under the title row.
+        let long = try call("thread/new?title=Long%20answer", method: "POST")
+        open(app, thread: long)
+        XCTAssertTrue(waitForConnection(app, "Live"))
+        let copies = app.buttons.matching(identifier: "reply.copy")
+        let before = copies.count
+        _ = try call("thread/send?id=\(long)&text=lines%2060", method: "POST")
+        XCTAssertTrue(waitUntil(60) { copies.count > before }, "the long reply finishes")
+        let screen = app.descendants(matching: .any)["conversation"].firstMatch
+        screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).press(
+            forDuration: 0.01, thenDragTo: screen.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)),
+            withVelocity: .slow, thenHoldForDuration: 0.5)
+        sleep(1)
+        try save("chat-mid")
     }
 
     @MainActor

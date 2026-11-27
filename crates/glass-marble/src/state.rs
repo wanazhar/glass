@@ -1,7 +1,7 @@
 //! Server-owned product state for the local Glass marble UI.
 
 use crate::MarbleError;
-use crate::control::ControlState;
+use crate::control::{ControlState, QueuedTurn};
 use crate::memory::MemoryState;
 use crate::notify::{DeviceRegistration, NotificationSettings};
 use crate::presence::PresenceState;
@@ -130,6 +130,8 @@ pub(crate) struct DeletedChat {
     tasks: Vec<TaskRecord>,
     transcript: Vec<TranscriptEntry>,
     task_threads: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    held_turns: Vec<QueuedTurn>,
 }
 
 const CHAT_TRASH_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
@@ -412,6 +414,14 @@ impl ProductState {
             .filter(|title| !title.is_empty())
             .cloned()
             .unwrap_or_else(|| "Untitled chat".into());
+        let held_turns = self
+            .control
+            .queue
+            .extract_if(.., |entry| {
+                entry.everyone_round
+                    && thread.is_some_and(|id| entry.thread_id.as_deref() == Some(id))
+            })
+            .collect();
         self.deleted_chats.push(DeletedChat {
             id: id.into(),
             title,
@@ -421,6 +431,7 @@ impl ProductState {
             tasks,
             transcript,
             task_threads,
+            held_turns,
         });
     }
 
@@ -441,6 +452,7 @@ impl ProductState {
             self.conversation_mut(crate::threads::GROUP_CONVERSATION);
         }
         self.threads.extend(item.threads);
+        self.control.queue.extend(item.held_turns);
         self.tasks.extend(item.tasks);
         self.transcript.extend(item.transcript);
         self.transcript.sort_by_key(|entry| entry.at);

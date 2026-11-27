@@ -2380,6 +2380,9 @@ impl MarbleServer {
         drop(state);
         self.events
             .publish(id, "", "conversation", json!({"restored": id}));
+        if let Some(pool) = &self.prism {
+            pool.resume_held_everyone(id);
+        }
         Response::json(200, json!({"ok": true}))
     }
 

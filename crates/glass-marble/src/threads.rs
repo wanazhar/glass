@@ -424,6 +424,13 @@ impl ProductState {
                 entry.thread = None;
             }
         }
+        self.control.queue.retain(|queued| {
+            !queued.everyone_round
+                || queued
+                    .thread_id
+                    .as_ref()
+                    .is_some_and(|id| valid.contains(id))
+        });
         for queued in &mut self.control.queue {
             if queued
                 .thread_id

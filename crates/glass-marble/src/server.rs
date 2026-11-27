@@ -1637,20 +1637,31 @@ impl MarbleServer {
                 client,
                 device_time_zone.map(str::to_owned),
             ) {
-                Ok(()) => {
+                Ok(held) => {
                     self.events.publish(
                         crate::everyone::EVERYONE_CONVERSATION,
                         "",
                         "everyone",
                         json!({"kind":"user","thread_id":thread}),
                     );
-                    Response::json(
-                        202,
-                        json!({
+                    let mut response = json!({
                             "ok":true,"accepted":true,"answering":answering,"busy":[],
                             "conversationId":crate::everyone::EVERYONE_CONVERSATION,
-                        }),
-                    )
+                    });
+                    if let Some(crate::prism::HeldRound { id, position }) = held {
+                        self.events.publish(
+                            "",
+                            "",
+                            "queued",
+                            json!({"queueId":id,"position":position}),
+                        );
+                        response["queued"] = json!(true);
+                        response["queueId"] = json!(id);
+                        response["position"] = json!(position);
+                        response["paused"] = json!(true);
+                        response["answering"] = json!([]);
+                    }
+                    Response::json(202, response)
                 }
                 Err((status, error)) => Response::error(status, error),
             };
@@ -3657,7 +3668,7 @@ impl MarbleServer {
                     .control
                     .take_queue()
                     .into_iter()
-                    .partition(|entry| entry.marble_id.is_some());
+                    .partition(|entry| entry.marble_id.is_some() || entry.everyone_round);
                 guard.control.queue = held;
                 queued
             }

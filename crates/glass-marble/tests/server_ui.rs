@@ -2860,6 +2860,63 @@ fn everyone_pass_retracts_the_announced_pending_reply() {
 }
 
 #[test]
+fn paused_everyone_thread_messages_resume_as_sequential_rounds() {
+    if !python3_available() {
+        return;
+    }
+    let fixture =
+        NamedTurnFixture::with_persistence("everyone-paused", vec!["--group-rounds".into()], true);
+    let (status, body) = fixture.post(
+        "/api/threads",
+        json!({"conversation_id":"everyone","title":"Held rounds"}),
+    );
+    assert_eq!(status, 201, "{body}");
+    let thread = body["thread"]["id"].as_str().unwrap();
+    assert_eq!(fixture.post("/api/control/pause", json!({})).0, 200);
+    let prompts = ["@marble First held round", "@marble Second held round"];
+    for (text, client) in prompts.into_iter().zip(["held-first", "held-second"]) {
+        let (status, body) = fixture.post(
+            "/api/everyone",
+            json!({"threadId":thread,"text":text,"client_message_id":client}),
+        );
+        assert_eq!(status, 202, "{body}");
+        assert_eq!(body["queued"], true, "{body}");
+    }
+    let store = fixture.store.as_ref().unwrap();
+    let paused = store.load().unwrap();
+    assert_eq!(paused.control.queue.len(), 2);
+    assert!(paused.tasks.is_empty());
+    assert_eq!(fixture.post("/api/control/resume", json!({})).0, 200);
+    let first = fixture.completed(prompts[0]);
+    let second = fixture.completed(prompts[1]);
+    let state = fixture.state.lock().unwrap();
+    assert!(state.control.queue.is_empty());
+    let order: Vec<_> = state
+        .transcript
+        .iter()
+        .filter(|entry| {
+            entry.conversation_id == "everyone"
+                && entry.thread_id.as_deref() == Some(thread)
+                && entry.kind == "assistant"
+        })
+        .map(|entry| entry.task_id.as_str())
+        .collect();
+    assert_eq!(order, [&first.id, &second.id]);
+    assert_eq!(
+        state
+            .transcript
+            .iter()
+            .filter(|entry| {
+                entry.conversation_id == "everyone"
+                    && entry.thread_id.as_deref() == Some(thread)
+                    && entry.kind == "user"
+            })
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn group_threads_keep_lead_and_stay_out_of_everyone() {
     let mut state = ProductState::default();
     state.prism.install_template();

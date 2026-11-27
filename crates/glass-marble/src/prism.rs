@@ -927,6 +927,17 @@ enum RoundScope {
     Everyone(String),
 }
 
+enum RoundSource<'a> {
+    New,
+    Retry(Box<TaskRecord>),
+    Held(&'a str),
+}
+
+pub(crate) struct HeldRound {
+    pub id: String,
+    pub position: usize,
+}
+
 impl RoundScope {
     fn thread(&self) -> &str {
         match self {
@@ -1058,7 +1069,14 @@ impl PrismPool {
         client: Option<crate::state::ClientMessage>,
         zone: Option<String>,
     ) -> Result<(), (u16, &'static str)> {
-        self.start_round(RoundScope::Group(thread), text, client, zone, None)
+        self.start_round(
+            RoundScope::Group(thread),
+            text,
+            client,
+            zone,
+            RoundSource::New,
+        )
+        .map(|_| ())
     }
 
     pub(crate) fn start_everyone_round(
@@ -1067,8 +1085,14 @@ impl PrismPool {
         text: String,
         client: Option<crate::state::ClientMessage>,
         zone: Option<String>,
-    ) -> Result<(), (u16, &'static str)> {
-        self.start_round(RoundScope::Everyone(thread), text, client, zone, None)
+    ) -> Result<Option<HeldRound>, (u16, &'static str)> {
+        self.start_round(
+            RoundScope::Everyone(thread),
+            text,
+            client,
+            zone,
+            RoundSource::New,
+        )
     }
 
     pub(crate) fn retry_everyone_round(
@@ -1082,8 +1106,9 @@ impl PrismPool {
             task.prompt.clone(),
             None,
             zone,
-            Some(task),
+            RoundSource::Retry(Box::new(task)),
         )
+        .map(|_| ())
     }
 
     fn start_round(
@@ -1092,8 +1117,8 @@ impl PrismPool {
         text: String,
         client: Option<crate::state::ClientMessage>,
         zone: Option<String>,
-        retry: Option<TaskRecord>,
-    ) -> Result<(), (u16, &'static str)> {
+        source: RoundSource<'_>,
+    ) -> Result<Option<HeldRound>, (u16, &'static str)> {
         let lane = self
             .groups
             .lock()
@@ -1103,18 +1128,47 @@ impl PrismPool {
             .clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let round_id = format!("group-round-{}", crate::next_request_id());
-        let entry_id = client.as_ref().map_or_else(
-            || format!("entry-{}", crate::next_request_id()),
+        let mut entry_id = client.as_ref().map_or_else(
+            || match source {
+                RoundSource::Held(id) => id.to_owned(),
+                _ => format!("entry-{}", crate::next_request_id()),
+            },
             |message| message.entry_id.clone(),
         );
         let mut latest = lane.latest.lock().unwrap_or_else(|e| e.into_inner());
         let snapshot = {
             let mut state = self.lock_state();
-            if state.control.paused {
-                return Err((409, "admission_paused"));
-            }
             scope.record(&state)?;
-            if let Some(task) = &retry
+            if state.control.paused {
+                if !matches!(source, RoundSource::New) || !matches!(scope, RoundScope::Everyone(_))
+                {
+                    return Err((409, "admission_paused"));
+                }
+                let queued = state
+                    .control
+                    .enqueue(Some(scope.conversation().into()), &text)
+                    .map_err(|_| (409, "queue_full"))?;
+                let position = state.control.queue.len();
+                let entry = state.control.queue.last_mut().expect("just queued");
+                entry.everyone_round = true;
+                entry.thread_id = Some(scope.thread().into());
+                entry.client_message = client.clone();
+                entry.device_time_zone = zone.clone();
+                if client.is_none() {
+                    entry_id.clone_from(&queued.id);
+                }
+                crate::everyone::ensure_conversation(&mut state);
+                Self::record_round_message(&mut state, &scope, entry_id, &text, client);
+                state.bump();
+                let snapshot = state.clone();
+                drop(state);
+                self.persist(&snapshot);
+                return Ok(Some(HeldRound {
+                    id: queued.id,
+                    position,
+                }));
+            }
+            if let RoundSource::Retry(task) = &source
                 && task.marble_id != "marble"
                 && !state
                     .prism
@@ -1123,6 +1177,18 @@ impl PrismPool {
             {
                 return Err((409, "agent_not_in_everyone"));
             }
+            if let RoundSource::Held(id) = source {
+                if latest.is_some() {
+                    return Err((409, "round_busy"));
+                }
+                let index = state
+                    .control
+                    .queue
+                    .iter()
+                    .position(|entry| entry.id == id)
+                    .ok_or((404, "unknown_queue_entry"))?;
+                state.control.queue.remove(index);
+            }
             if matches!(scope, RoundScope::Everyone(_)) {
                 crate::everyone::ensure_conversation(&mut state);
             }
@@ -1130,34 +1196,30 @@ impl PrismPool {
                 previous.store(true, Ordering::Relaxed);
             }
             self.cancels.register(&round_id, cancel.clone());
-            state.push_transcript(TranscriptEntry {
-                id: entry_id.clone(),
-                client_message_id: client.map(|message| message.id),
-                conversation_id: scope.conversation().into(),
-                kind: "user".into(),
-                text: text.clone(),
-                thread_id: Some(scope.thread().to_owned()),
-                speaker: crate::everyone::USER_SPEAKER.into(),
-                speaker_name: "You".into(),
-                at: now_millis(),
-                ..Default::default()
-            });
-            state.refresh_thread(scope.thread());
+            if !matches!(source, RoundSource::Held(_))
+                || !state.transcript.iter().any(|entry| entry.id == entry_id)
+            {
+                Self::record_round_message(&mut state, &scope, entry_id.clone(), &text, client);
+            }
             state.bump();
             state.clone()
         };
         self.persist(&snapshot);
         drop(latest);
+        let retry = match source {
+            RoundSource::Retry(task) => Some(task),
+            _ => None,
+        };
         let pool = Arc::clone(self);
         std::thread::spawn(move || {
-            let _running = lane.running.lock().unwrap_or_else(|e| e.into_inner());
+            let running = lane.running.lock().unwrap_or_else(|e| e.into_inner());
             pool.run_group_round(
                 &scope,
                 &entry_id,
                 &text,
                 zone.as_deref(),
                 &cancel,
-                retry.as_ref(),
+                retry.as_deref(),
             );
             pool.cancels.forget(&round_id);
             let mut latest = lane.latest.lock().unwrap_or_else(|e| e.into_inner());
@@ -1167,8 +1229,35 @@ impl PrismPool {
             {
                 *latest = None;
             }
+            drop(latest);
+            drop(running);
+            if matches!(scope, RoundScope::Everyone(_)) {
+                pool.resume_held();
+            }
         });
-        Ok(())
+        Ok(None)
+    }
+
+    fn record_round_message(
+        state: &mut ProductState,
+        scope: &RoundScope,
+        entry_id: String,
+        text: &str,
+        client: Option<crate::state::ClientMessage>,
+    ) {
+        state.push_transcript(TranscriptEntry {
+            id: entry_id,
+            client_message_id: client.map(|message| message.id),
+            conversation_id: scope.conversation().into(),
+            kind: "user".into(),
+            text: text.into(),
+            thread_id: Some(scope.thread().into()),
+            speaker: crate::everyone::USER_SPEAKER.into(),
+            speaker_name: "You".into(),
+            at: now_millis(),
+            ..Default::default()
+        });
+        state.refresh_thread(scope.thread());
     }
 
     fn run_group_round(
@@ -1469,6 +1558,22 @@ impl PrismPool {
         let mut seen = HashSet::new();
         let mut dispatched = 0;
         for entry in queued {
+            if entry.everyone_round {
+                if let Some(thread) = entry.thread_id
+                    && self
+                        .start_round(
+                            RoundScope::Everyone(thread),
+                            entry.text,
+                            entry.client_message,
+                            entry.device_time_zone,
+                            RoundSource::Held(&entry.id),
+                        )
+                        .is_ok()
+                {
+                    dispatched += 1;
+                }
+                continue;
+            }
             let Some(id) = entry.marble_id else { continue };
             if !seen.insert(id.clone()) {
                 continue;

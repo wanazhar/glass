@@ -2672,6 +2672,24 @@ fn group_rounds_handoff_pass_interrupt_and_close_without_leaking_sessions() {
     assert_eq!(post("After close").0, 409);
     assert_eq!(server.handle("POST", "/api/everyone/clear", "{}").0, 200);
     assert_eq!(server.state().thread_entries(thread), entries);
+    assert_eq!(
+        server
+            .handle("POST", "/api/prism/marbles/engineer/remove", "")
+            .0,
+        200
+    );
+    let after = server.state();
+    let saved_thread = after.threads.iter().find(|item| item.id == id).unwrap();
+    assert!(
+        !saved_thread
+            .group
+            .as_ref()
+            .unwrap()
+            .members
+            .iter()
+            .any(|member| member == "engineer")
+    );
+    assert_eq!(after.thread_entries(saved_thread), entries);
 }
 
 #[test]

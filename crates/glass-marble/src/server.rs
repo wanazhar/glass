@@ -1195,6 +1195,9 @@ impl MarbleServer {
                         .filter_map(|thread| thread.group.as_mut())
                     {
                         group.members.retain(|member| member != id);
+                        group
+                            .suggestions
+                            .retain(|suggestion| suggestion.agent_id != id);
                     }
                     let conversations: std::collections::HashSet<String> = guard
                         .tasks
@@ -1202,7 +1205,7 @@ impl MarbleServer {
                         .filter(|task| task.marble_id == id)
                         .map(|task| task.conversation_id.clone())
                         .chain(std::iter::once(conversation.clone()))
-                        .filter(|id| !id.is_empty())
+                        .filter(|id| !id.is_empty() && !crate::everyone::is_group_session(id))
                         .collect();
                     let mut deleted = Vec::new();
                     // Its chat, tasks, and the Everyone lines quoting them go

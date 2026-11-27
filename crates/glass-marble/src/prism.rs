@@ -1641,6 +1641,12 @@ impl PrismPool {
         if state
             .everyone_pending
             .contains_key(&format!("marble:{}", marble.id))
+            || thread.is_some_and(|id| {
+                state.threads.iter().any(|thread| {
+                    thread.id == id
+                        && thread.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                })
+            })
         {
             let id = crate::everyone::session_id(&marble.id, thread);
             crate::everyone::ensure_session(&mut state, &id);

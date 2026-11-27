@@ -4369,6 +4369,12 @@ fn everyone_handoff_reply_emits_the_visible_delegate_entry_once() {
         .find(|t| disk.task_threads.get(&delegate.id) == Some(&t.id))
         .unwrap();
     assert_eq!(thread.conversation_id, "everyone");
+    assert!(
+        delegate
+            .conversation_id
+            .starts_with(&format!("everyone-session-{}__", thread.id))
+    );
+    assert!(disk.prism.get(&ben).unwrap().conversation_id.is_empty());
     let parent = disk
         .transcript
         .iter()

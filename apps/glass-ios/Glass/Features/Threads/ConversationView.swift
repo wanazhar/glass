@@ -441,7 +441,8 @@ struct ConversationView: View {
     }
 
     private var rows: [ChatRow] {
-        ChatRow.make(from: conversation.timeline)
+        let agentCallIDs = Set(conversation.agents.filter { $0.parentID == nil }.compactMap(\.parentCallID))
+        return ChatRow.make(from: conversation.timeline, agentCallIDs: agentCallIDs)
     }
 
     /// Replies followed by the next request, or ending a finished conversation: the last word of each turn.

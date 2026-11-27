@@ -40,8 +40,7 @@ struct AgentGroupView: View {
     }
 
     var body: some View {
-        if case .tool(_, let name, _, let output, let failed) = entry,
-           !agents.isEmpty || ChatRow.isSubagentTool(name) || failed != false {
+        if case .tool(_, _, _, let output, let failed) = entry {
             TimelineView(.periodic(from: .now, by: 1)) { time in
                 VStack(spacing: Design.gap) {
                     Button {

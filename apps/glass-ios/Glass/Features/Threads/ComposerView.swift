@@ -132,7 +132,7 @@ struct ComposerView: View {
         HStack(spacing: 6) {
             Button(action: chooseModel) {
                 HStack(spacing: 5) {
-                    Text(composer.model ?? conversation.thread.model ?? "Model")
+                    Text((composer.model ?? conversation.thread.model).map { ModelName.friendly($0) ?? $0 } ?? "Model")
                         .font(.subheadline.weight(.semibold)).lineLimit(1)
                     Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
                 }

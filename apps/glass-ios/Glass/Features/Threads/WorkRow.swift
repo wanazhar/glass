@@ -506,7 +506,9 @@ struct ActivityDetailView: View {
                 outputSection("Standard error", stderr, tint: Design.failure, preview: preview)
             }
             if preview, savedOutput != nil || command.stdout.count > 2_000 || (command.stderr?.count ?? 0) > 2_000 {
-                Button("Show more", systemImage: "arrow.up.right.square") { showingFullOutput = true }
+                let lines = (command.stdout + "\n" + (command.stderr ?? "")).split(separator: "\n").count
+                Button(savedOutput == nil ? "Show all \(lines) lines" : "Show full output",
+                       systemImage: "arrow.up.right.square") { showingFullOutput = true }
                 .glassButtonStyle()
             }
         }

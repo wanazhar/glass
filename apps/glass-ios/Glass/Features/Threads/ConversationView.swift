@@ -62,7 +62,7 @@ struct ConversationView: View {
             }
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(conversation.timeline.isEmpty ? .center : .bottom, for: .alignment)
-            .scrollEdgeEffectStyle(.hard, for: .top)
+            .scrollEdgeEffectStyle(.soft, for: .top)
             .scrollDismissesKeyboard(.interactively)
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.visibleRect.maxY >= geometry.contentSize.height - Design.gap
@@ -74,7 +74,11 @@ struct ConversationView: View {
             } action: { _, _ in
                 guard following else { return }
                 Task { @MainActor in
-                    if following { proxy.scrollTo(Self.bottom, anchor: .bottom) }
+                    // Glide to each new line instead of snapping, so following a stream reads smoothly.
+                    guard following else { return }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                        proxy.scrollTo(Self.bottom, anchor: .bottom)
+                    }
                 }
             }
             .onScrollPhaseChange { old, phase in
@@ -338,7 +342,8 @@ struct ConversationView: View {
 
     private var titleButton: some View {
         Button { showingInfo = true } label: {
-            Text(threads.title(for: conversation.thread.id) ?? conversation.title)
+            Text(threads.title(for: conversation.thread.id)
+                 ?? conversation.thread.lensTitle(firstRequest: conversation.firstRequest))
                 .font(Design.headline)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, minHeight: Design.control)

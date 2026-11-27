@@ -151,6 +151,8 @@ private struct ConversationShell: View {
     }
 
     private func setDrawer(_ open: Bool) {
+        // The composer hides under the panel, so it must not keep the keyboard (or a hardware Return) either.
+        if open { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
         withAnimation(reduceMotion ? nil : .spring(duration: 0.32, bounce: 0.06)) { drawer = open }
     }
 }

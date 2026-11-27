@@ -10,6 +10,8 @@ Open `Prototype/GlassRound4.xcodeproj` in Xcode 26 or later and run the GlassRou
 
 ## Screen decisions
 
+Use standard SF Pro (the system default design) for display text, headings, and titles. Keep the specified sizes and weights; do not use SF Rounded. Archived evidence predates this typography update.
+
 Each reference cell names what to take → what to leave out. The owner's light and dark sheets set the visual direction; native safe-area bars, SF type, Dynamic Type, and 44 pt controls replace the sheets' approximate geometry. The composer retains + and the model control, and the drawer uses a single card per section.
 
 | Screen | ChatGPT | Amp | T3 Code | OpenCode | Owner direction and self-critique |

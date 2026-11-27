@@ -109,7 +109,7 @@ struct MarkdownView: View, Equatable {
                     next = Text(NativeMath.artwork(image))
                 } else {
                     accessible = Text(verbatim: source)
-                    next = accessible.monospaced()
+                    next = Text(verbatim: InlineMath.render(source)).font(.system(.body, design: .serif))
                 }
             }
             accessibleText = Text("\(accessibleText)\(accessible)")
@@ -442,8 +442,13 @@ private struct BlockView: View {
                 Button { openReferencedFile(path) } label: {
                     Label(label, systemImage: "doc.text")
                         .font(.footnote.weight(.medium))
+                        .foregroundStyle(Design.ink)
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: Design.control)
+                        .background(Design.inset, in: .capsule)
+                        .contentShape(.capsule)
                 }
-                .glassButtonStyle()
+                .buttonStyle(.plain)
                 .accessibilityIdentifier("markdown.file")
             } else {
                 Label(label, systemImage: "doc.text")
@@ -542,7 +547,7 @@ struct DataTable: View, Equatable {
     var markdown = true
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .subheadline) private var mathSize = 15.0
-    @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth = 112.0
+    @ScaledMetric(relativeTo: .subheadline) private var minimumColumnWidth = 120.0
     @ScaledMetric(relativeTo: .subheadline) private var maximumColumnWidth = 260.0
     @State private var viewportWidth = 0.0
 
@@ -569,8 +574,8 @@ struct DataTable: View, Equatable {
             .multilineTextAlignment(alignment)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: alignment == .center ? .center : alignment == .trailing ? .trailing : .leading)
-            .padding(.horizontal, Design.gap)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
             .frame(width: columnWidth)
             .textSelection(.enabled)
             .accessibilityAddTraits(isHeader ? .isHeader : [])
@@ -584,7 +589,7 @@ struct DataTable: View, Equatable {
                         cell(header[column], column: column, isHeader: true)
                     }
                 }
-                .background(Color(.tertiarySystemFill))
+                .background(Design.inset)
                 Divider().gridCellUnsizedAxes(.horizontal)
                 ForEach(rows.indices, id: \.self) { row in
                     GridRow {
@@ -610,9 +615,10 @@ struct DataTable: View, Equatable {
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .defaultScrollAnchor(.leading)
+        .background(Design.surface)
         .clipShape(.rect(cornerRadius: Design.corner))
         .overlay {
-            RoundedRectangle(cornerRadius: Design.corner).strokeBorder(Color(.separator), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: Design.corner).strokeBorder(Design.line)
                 .allowsHitTesting(false)
         }
         .onGeometryChange(for: CGFloat.self, of: \.size.width) { viewportWidth = $0 }
@@ -817,12 +823,13 @@ struct CodeBlock: View {
             HStack {
                 Text(language.isEmpty ? "Code" : language)
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Design.muted)
                 Spacer()
                 if isHTML, let previewHTML {
                     Button("Preview", systemImage: "play.rectangle") { previewHTML(code) }
                         .font(.caption)
                         .labelStyle(.iconOnly)
+                        .frame(minWidth: Design.control, minHeight: Design.control)
                         .accessibilityLabel("Preview page")
                         .accessibilityIdentifier("code.preview")
                 }
@@ -833,39 +840,37 @@ struct CodeBlock: View {
                 }
                 .font(.caption)
                 .labelStyle(.iconOnly)
+                .frame(minWidth: Design.control, minHeight: Design.control)
                 .accessibilityLabel(copied ? "Copied" : "Copy code")
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
-            .padding(.bottom, 4)
-            ScrollView(.horizontal, showsIndicators: false) {
-                Text(highlighted)
-                    .font(.system(.footnote, design: .monospaced))
-                    .fixedSize(horizontal: true, vertical: false)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, Design.corner)
-                    .padding(.bottom, 12)
-                    .padding(.top, 4)
-            }
+            .padding(.horizontal, Design.padding)
+            Divider().overlay(Design.line)
+            Text(highlighted)
+                .font(.system(.footnote, design: .monospaced))
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(Design.padding)
         }
-        .background(Design.surface, in: .rect(cornerRadius: Design.corner))
-        .overlay { RoundedRectangle(cornerRadius: Design.corner).strokeBorder(.quaternary, lineWidth: 0.5) }
+        .background(Design.terminal, in: .rect(cornerRadius: Design.corner))
+        .overlay { RoundedRectangle(cornerRadius: Design.corner).strokeBorder(Design.line) }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("timeline.code")
     }
 
     private var highlighted: AttributedString {
         guard !language.isEmpty, code.utf8.count <= 32_768 else { return AttributedString(code) }
-        let tokens = code.ranges(of: /\/\/[^\n]*|"[^"\n]*"|\b(?:let|var|func|class|struct|enum|import|return|if|else|for|in|while|async|await|try|throw|true|false|nil|const|def|fn|match|pub)\b|\b\d+(?:\.\d+)?\b/)
+        let tokens = code.ranges(of: /\/\/[^\n]*|\/\*[\s\S]*?\*\/|#[^\n]*|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\b(?:let|var|func|class|struct|enum|import|return|if|else|for|in|while|async|await|try|throw|true|false|nil|const|def|fn|match|pub|guard|switch|case|extension)\b|\b\d+(?:\.\d+)?\b|[{}()\[\]=+*?!:<>.,\/-]/)
         var output = AttributedString()
         var start = code.startIndex
         for range in tokens {
             output += AttributedString(code[start..<range.lowerBound])
             let value = code[range]
             var token = AttributedString(value)
-            token.foregroundColor = value.hasPrefix("//") ? .secondary
-                : value.hasPrefix("\"") ? .orange
-                : value.first?.isNumber == true ? .teal : Design.accent
+            token.foregroundColor = value.hasPrefix("//") || value.hasPrefix("/*") || value.hasPrefix("#") ? Design.muted
+                : value.hasPrefix("\"") || value.hasPrefix("'") ? Design.warning
+                : value.first?.isNumber == true ? Design.success
+                : value.first?.isPunctuation == true || value.first?.isSymbol == true ? Design.muted : Design.accent
             output += token
             start = range.upperBound
         }

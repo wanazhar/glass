@@ -21,10 +21,10 @@ private struct ConversationShell: View {
     @Environment(AppModel.self) private var app
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Bindable var threads: ThreadsModel
     @State private var sidebar = NavigationSplitViewVisibility.all
     @State private var drawer = false
-    @State private var starting = false
 
     var body: some View {
         Group {
@@ -33,13 +33,30 @@ private struct ConversationShell: View {
             } else {
                 NavigationSplitView(columnVisibility: $sidebar) {
                     ThreadListView(threads: threads, choose: open, new: newChat, close: nil)
+                        .navigationSplitViewColumnWidth(min: 330, ideal: 355, max: 395)
                 } detail: {
                     detail
-                        .toolbarVisibility(.hidden, for: .navigationBar)
                 }
+                .navigationSplitViewStyle(.balanced)
             }
         }
         .onChange(of: threads.selection, initial: true) { _, id in Attention.visibleThread = id }
+        #if DEBUG
+        .task {
+            guard let preview = LensPreview.current else { return }
+            if preview == .drawer, sizeClass == .compact { drawer = true }
+            if preview == .settings { app.show(nil) }
+            if let selection = preview.threadID {
+                await threads.reload()
+                if threads.thread(selection) != nil { threads.selection = selection }
+            }
+        }
+        .onChange(of: threads.loaded) { _, loaded in
+            guard loaded, let selection = LensPreview.current?.threadID, threads.selection == nil,
+                  threads.thread(selection) != nil else { return }
+            threads.selection = selection
+        }
+        #endif
         .onChange(of: app.selectedTab) { _, tab in
             Attention.visibleThread = tab == .threads ? threads.selection : nil
         }
@@ -78,7 +95,9 @@ private struct ConversationShell: View {
                         ThreadListView(threads: threads, choose: open, new: newChat, close: { setDrawer(false) })
                     }
                     .frame(width: width)
-                    .background(Design.background)
+                    .background(Design.background.opacity(reduceTransparency ? 1 : 0.9),
+                                in: .rect(cornerRadius: 30))
+                    .glassEffect(reduceTransparency ? .identity : .regular, in: .rect(cornerRadius: 30))
                     .transition(.move(edge: .leading))
                     .overlay(alignment: .trailing) {
                         Color.clear.frame(width: 18)
@@ -107,43 +126,7 @@ private struct ConversationShell: View {
             ConversationView(conversation: threads.conversation(for: thread), threads: threads, goBack: toggleSidebar)
                 .id(id)
         } else {
-            ScrollView {
-                NewChatView(workspace: threads.project) { suggestion in
-                    Task {
-                        guard !starting else { return }
-                        starting = true
-                        await threads.newThread()
-                        if let id = threads.selection, let thread = threads.thread(id) {
-                            threads.conversation(for: thread).composer.text = suggestion
-                        }
-                        starting = false
-                    }
-                }
-                .padding(Design.padding)
-            }
-            .defaultScrollAnchor(.center, for: .alignment)
-            .floatingBar(edge: .top) {
-                HStack {
-                    Button(action: toggleSidebar) {
-                        Label("Conversations", systemImage: "sidebar.left")
-                            .labelStyle(.iconOnly)
-                            .frame(minWidth: Design.control, minHeight: Design.control)
-                            .contentShape(Rectangle())
-                    }
-                    .glassButtonStyle()
-                    .accessibilityIdentifier("conversation.back")
-                    Spacer()
-                    Button(action: newChat) {
-                        Label("New Chat", systemImage: "square.and.pencil")
-                            .labelStyle(.iconOnly)
-                            .frame(minWidth: Design.control, minHeight: Design.control)
-                            .contentShape(Rectangle())
-                    }
-                    .glassButtonStyle()
-                    .accessibilityIdentifier("conversation.new")
-                }
-                .padding(.horizontal, Design.padding)
-            }
+            StartConversationView(threads: threads, menu: toggleSidebar, newChat: newChat)
         }
     }
 
@@ -158,11 +141,7 @@ private struct ConversationShell: View {
     }
 
     private func toggleSidebar() {
-        if sizeClass == .compact {
-            setDrawer(!drawer)
-        } else {
-            sidebar = sidebar == .all ? .detailOnly : .all
-        }
+        if sizeClass == .compact { setDrawer(!drawer) }
     }
 
     private func setDrawer(_ open: Bool) {
@@ -180,9 +159,12 @@ struct ThreadListView: View {
     @State private var rename: ThreadSummary?
     @State private var name = ""
     @State private var delete: ThreadSummary?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         let groups = sections
+        ScrollViewReader { proxy in
         List {
             if threads.loaded, threads.threads.isEmpty, threads.error == nil {
                 ContentUnavailableView(threads.query.isEmpty ? "No conversations yet" : "No matching conversations",
@@ -199,7 +181,10 @@ struct ThreadListView: View {
                 Section {
                     ForEach(section.threads) { thread in row(thread) }
                 } header: {
-                    Text(section.label)
+                    Text(section.label).font(.subheadline.weight(.semibold))
+                        .textCase(nil)
+                        .foregroundStyle(Design.ink)
+                        .id(section.label)
                         .accessibilityIdentifier(section.label == groups.first?.label ? "threads.ready" : "threads.section")
                 }
             }
@@ -210,9 +195,35 @@ struct ThreadListView: View {
                     .accessibilityIdentifier("threads.more")
             }
         }
-        .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom, spacing: 0) { accountBar }
-        .searchable(text: $threads.query, isPresented: $searching, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search conversations")
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .scrollEdgeEffectStyle(.hard, for: [.top, .bottom])
+        .safeAreaBar(edge: .top, spacing: 2) {
+            HStack {
+                Text(threads.countLabel).foregroundStyle(Design.muted)
+                Spacer(minLength: 4)
+                Menu {
+                    ForEach(groups, id: \.label) { group in
+                        Button(group.label) {
+                            withAnimation(reduceMotion ? nil : .snappy(duration: 0.24)) {
+                                proxy.scrollTo(group.label, anchor: .top)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Jump to group", systemImage: "chevron.down")
+                        .fontWeight(.semibold)
+                        .frame(minHeight: Design.control)
+                }
+                .tint(Design.accent)
+                .disabled(groups.isEmpty)
+            }
+            .font(.caption)
+            .padding(.horizontal, Design.padding)
+        }
+        .safeAreaBar(edge: .bottom, spacing: 5) { accountBar }
+        }
+        .searchable(text: $threads.query, isPresented: $searching, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a thread")
         .task(id: Filter(query: threads.query, project: threads.project, archived: threads.archived)) {
             if !threads.query.isEmpty {
                 do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
@@ -223,12 +234,12 @@ struct ThreadListView: View {
         .overlay {
             if threads.isLoading && !threads.loaded { ProgressView().allowsHitTesting(false) }
         }
-        .navigationTitle("Conversations")
+        .navigationTitle("Threads")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let close {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close", systemImage: "sidebar.left", action: close)
+                    Button("Close threads", systemImage: "xmark", action: close)
                         .labelStyle(.iconOnly)
                 }
             }
@@ -258,20 +269,19 @@ struct ThreadListView: View {
     private var accountBar: some View {
         HStack(spacing: Design.gap) {
             Button { app.show(nil) } label: {
-                Label {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Settings").font(.subheadline.weight(.semibold))
-                        if let host = app.endpoint?.url.host {
-                            Text(host).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                    }
-                } icon: {
-                    Image(systemName: "person.crop.circle").font(.title2)
+                HStack {
+                    Label("Settings", systemImage: "gearshape")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold))
                 }
                 .frame(maxWidth: .infinity, minHeight: Design.control, alignment: .leading)
-                .contentShape(Rectangle())
+                .padding(.horizontal, 15)
+                .contentShape(.capsule)
             }
             .buttonStyle(.plain)
+            .background(reduceTransparency ? Design.surface : .clear, in: .capsule)
+            .glassEffect(reduceTransparency ? .identity : .regular.interactive(), in: .capsule)
             .accessibilityIdentifier("tab.settings")
             Button("Desktop", systemImage: "display") { app.selectedTab = .desktop }
                 .labelStyle(.iconOnly)
@@ -280,8 +290,6 @@ struct ThreadListView: View {
         }
         .padding(.horizontal, Design.padding)
         .padding(.vertical, Design.gap)
-        .background(Design.background)
-        .overlay(alignment: .top) { Divider() }
     }
 
     private var filters: some View {
@@ -306,10 +314,12 @@ struct ThreadListView: View {
 
     private func row(_ thread: ThreadSummary) -> some View {
         Button { choose(thread.id) } label: {
-            ThreadRow(thread: thread)
+            ThreadRow(thread: thread, compact: close != nil)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .listRowBackground(threads.selection == thread.id ? Design.accent.opacity(0.12) : Design.surface)
+        .accessibilityAddTraits(threads.selection == thread.id ? .isSelected : [])
         .accessibilityIdentifier("thread.\(thread.id)")
         .swipeActions(edge: .leading, allowsFullSwipe: false) { pin(thread) }
         .swipeActions(allowsFullSwipe: false) { remove(thread); archive(thread) }
@@ -384,20 +394,24 @@ struct ThreadListView: View {
 
 private struct ThreadRow: View {
     var thread: ThreadSummary
+    var compact: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.small) {
-            HStack(alignment: .firstTextBaseline, spacing: Design.gap) {
+            HStack(spacing: 9) {
                 if thread.running == true {
-                    Circle().fill(Design.accent).frame(width: 6, height: 6)
+                    ActivityIndicator().tint(Design.accent).frame(width: 16)
                         .accessibilityLabel("Running now")
+                } else {
+                    Image(systemName: "bubble.left").frame(width: 16)
+                        .foregroundStyle(Design.muted).accessibilityHidden(true)
                 }
-                Text(thread.displayTitle).font(Design.body).lineLimit(1)
-                Spacer(minLength: Design.gap)
-                if let date = thread.modifiedDate {
-                    Text(date, format: .relative(presentation: .numeric, unitsStyle: .abbreviated))
-                        .font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1)
+                Text(thread.displayTitle).font(.subheadline).lineLimit(compact ? nil : 1)
+                    .foregroundStyle(Design.ink)
+                Spacer(minLength: 5)
+                if compact {
+                    Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
+                        .foregroundStyle(Design.muted).accessibilityHidden(true)
                 }
             }
         }

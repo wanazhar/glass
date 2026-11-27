@@ -1,3 +1,4 @@
+#if DEBUG
 import Foundation
 import GlassModels
 import GlassTransport
@@ -7,6 +8,7 @@ actor DemoTransport: GlassHTTPTransport {
     private var threads: [ThreadSummary]
     private var subscriptions: [String: Subscription] = [:]
     private var turn: Task<Void, Never>?
+    private let preview: LensPreview?
 
     private struct Subscription {
         var stream: AsyncThrowingStream<Data, any Error>.Continuation
@@ -14,25 +16,34 @@ actor DemoTransport: GlassHTTPTransport {
         var sequence: UInt64 = 1
     }
 
-    init(threadCount: Int = 336) {
+    init(threadCount: Int = 336, preview: LensPreview? = nil) {
+        self.preview = preview
         let subjects = ["Improve incremental sync", "Audit cache eviction", "Review deployment notes",
                         "Make search keyboard-friendly", "Clean up the release checklist", "Specify cursor behavior",
                         "Track intermittent test failures", "Measure export latency", "Update onboarding copy"]
-        let scopes = ["Sync engine", "Project browser", "Settings", "Build tools", "Release", "Desktop"]
         let now = Date.now
         threads = (0..<threadCount).map { index in
             let title = switch index {
-            case 0: "Repair incremental sync"
+            case 0: preview == nil ? "Repair incremental sync" : "Fix the nil crash in TitleView"
             case 1: "Investigate the staging timeout"
             case 3: "Review sync measurements"
             case 999: "Optimize large workspace imports"
-            default: subjects[index % subjects.count] + " · " + scopes[(index / subjects.count) % scopes.count]
+            default: subjects[index % subjects.count]
             }
+            let day: Double = index < 5 ? 0 : index < 9 ? 1 : index < 38 ? 4 : index < 103 ? 18 : Double(index) / 2
+            let age = preview == nil ? (index < 16 ? Double(index * 420) : Double(index * 24_600)) : day * 86_400
             var row = ThreadSummary(session: "harbor-\(index)", title: title, workspace: "/Users/robin/Projects/Harbor",
-                                    modified: now.addingTimeInterval(index < 16 ? Double(-index * 420) : Double(-index * 24_600)).timeIntervalSince1970)
-            row.pinned = index < 3
-            row.model = "Claude Sonnet 4.6"
+                                    modified: now.addingTimeInterval(-age).timeIntervalSince1970)
+            row.pinned = preview == nil ? index < 3 : index == 2 || index == 3
+            row.model = preview == nil ? "Claude Sonnet 4.6" : "Opus 4.7"
+            if preview != nil { row.running = index == 4 }
             return row
+        }
+        if let preview, let id = preview.threadID, id.hasPrefix("lens-") {
+            var row = ThreadSummary(session: id, title: "Fix the nil crash in TitleView", workspace: workspace,
+                                    modified: now.timeIntervalSince1970)
+            row.model = "Opus 4.7"
+            threads.insert(row, at: 0)
         }
     }
 
@@ -44,7 +55,8 @@ actor DemoTransport: GlassHTTPTransport {
         let id = body["id"]?.stringValue ?? param("id") ?? ""
         switch url.path {
         case "/api/status":
-            return try response(url, ["workspace": workspace, "remote": true, "protocolVersion": 1, "capabilities": ["events-resume"]])
+            return try response(url, ["name": "Studio Mac", "workspace": workspace, "remote": true,
+                                      "protocolVersion": 1, "capabilities": ["events-resume"]])
         case "/api/threads":
             let search = param("q") ?? ""
             let archived = param("archived") == "true"
@@ -63,10 +75,16 @@ actor DemoTransport: GlassHTTPTransport {
             return try response(url, ["session": id, "originLabel": "Created in Glass"])
         case "/api/history":
             let records: [[String: any Sendable]] = switch id {
-            case "harbor-0": Self.history
-            case "harbor-1": [["k": "user", "t": "Check why staging stops responding after deployment."]]
+            case "harbor-0": preview == nil ? Self.history : Self.titleHistory(ipad: preview == .ipad, log: preview == .workLog)
+            case "harbor-1": preview == nil
+                ? [["k": "user", "t": "Check why staging stops responding after deployment."]]
+                : Self.titleHistory()
             case "harbor-2": [["k": "assistant", "t": "[Deployment notes](docs/deployment.md)"]]
             case "harbor-3": Self.measurements
+            case "lens-working": Self.workingHistory
+            case "lens-failure": Self.failedHistory
+            case "lens-readonly": Self.titleHistory()
+            case "lens-rich": Self.richHistory
             default: []
             }
             return try response(url, ["before": 0, "records": records.enumerated().map { ["index": $0.offset + 1, "record": $0.element] }])
@@ -119,7 +137,13 @@ actor DemoTransport: GlassHTTPTransport {
         continuation.onTermination = { [weak self] _ in
             Task { await self?.unsubscribe(id, generation: generation) }
         }
-        continuation.yield(try frame(["reset": true, "active": false, "control": ["can_write": true]], sequence: 1))
+        var initial: [String: Any] = ["reset": true, "active": id == "lens-working", "control": ["can_write": id != "lens-readonly"]]
+        if id == "lens-working" {
+            initial["live"] = [
+                ["t": "tool", "call_id": "verify-title", "name": "bash", "command": "swift test --filter TitleViewTests"],
+            ]
+        }
+        continuation.yield(try frame(initial, sequence: 1))
         return (stream, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
                                         headerFields: ["Content-Type": "text/event-stream"])!)
     }
@@ -133,9 +157,11 @@ actor DemoTransport: GlassHTTPTransport {
         case "command":
             guard let request = message["request_id"]?.stringValue else { return }
             let result: [String: Any] = switch message["name"]?.stringValue {
-            case "model": ["models": ["Claude Sonnet 4.6", "Claude Opus 4.7", "GPT-5.4", "Gemini 3.1 Pro"]]
+            case "model": ["models": preview == nil
+                ? ["Claude Sonnet 4.6", "Claude Opus 4.7", "GPT-5.4", "Gemini 3.1 Pro"]
+                : ["Opus 4.7", "Sonnet 4.6", "GPT-5.4", "Gemini 3.1 Pro"]]
             case "usage": ["reported_prompt_total": 18240, "reported_output": 2681, "known_cost_subtotal_usd": 0.08]
-            case "context": ["workspace": workspace, "used": "18,240 tokens"]
+            case "context": ["workspace": workspace, "used": preview == nil ? "18,240 tokens" : "38K / 200K"]
             default: [:]
             }
             try emit([["t": "command_result", "request_id": request, "result": ["body": result]]], to: id)
@@ -256,4 +282,86 @@ actor DemoTransport: GlassHTTPTransport {
         [Coordinator.swift](Sources/Sync/Coordinator.swift)
         """],
     ]
+
+    private static let titlePrompt: [String: any Sendable] = [
+        "k": "user", "t": "Can you fix the nil crash in the title?",
+    ]
+    private static let titleCode = """
+    ```swift
+    // Existing titles stay unchanged.
+    let title = item.title ?? "Untitled"
+    Text(title)
+    ```
+    """
+
+    private static func titleHistory(ipad: Bool = false, log: Bool = false) -> [[String: any Sendable]] {
+        let setup: [[String: any Sendable]] = ipad ? [
+            ["k": "user", "t": "The app crashes when I open a thread from an older export."],
+            ["k": "assistant", "t": "Can you share the export that reproduces it?"],
+            ["k": "user", "t": "The thread named Release notes is the one that crashes."],
+            ["k": "assistant", "t": "I reproduced it. That thread has no title in the export."],
+        ] : []
+        let change: [[String: any Sendable]] = [
+            titlePrompt,
+            ["k": "call", "id": "read-title", "name": "read", "args": #"{"path":"TitleView.swift"}"#],
+            ["k": "tool", "id": "read-title", "name": "read", "t": "TitleView.swift · lines 24–25"],
+            ["k": "reasoning", "t": "Use the fallback only for missing titles so existing text stays intact."],
+            ["k": "tool", "id": "edit-title", "name": "apply_patch", "t": """
+            diff --git a/TitleView.swift b/TitleView.swift
+            --- a/TitleView.swift
+            +++ b/TitleView.swift
+            @@ -24,2 +24,2 @@
+            -let title = item.title!
+            +let title = item.title ?? "Untitled"
+             Text(title)
+            """],
+            ["k": "custom", "c": "display/turn-seconds", "d": "134"],
+        ]
+        let reply: [[String: any Sendable]] = [["k": "assistant", "t": """
+        Use nil coalescing to give the title a safe default.
+
+        \(titleCode)
+
+        A missing title now displays “Untitled.” An existing title stays unchanged.
+        """]]
+        let verification: [[String: any Sendable]] = ipad ? [
+            ["k": "user", "t": "Did you check that saved titles still show up?"],
+            ["k": "assistant", "t": "Yes. Both title tests passed. The fallback only applies when the stored title is nil."],
+        ] : []
+        return setup + change + (log ? [] : reply) + verification
+    }
+
+    private static let workingHistory: [[String: any Sendable]] = [
+        ["k": "user", "t": "Can you help me fix a crash in my iOS app?"],
+        ["k": "assistant", "t": "Yes. Share the relevant code or crash details and I’ll trace what’s failing."],
+        titlePrompt,
+        ["k": "call", "id": "read-title", "name": "read", "args": #"{"path":"TitleView.swift"}"#],
+        ["k": "tool", "id": "read-title", "name": "read", "t": "TitleView.swift · lines 24–25"],
+        ["k": "reasoning", "t": "Check the optional title before running the title tests."],
+    ]
+
+    private static let failedHistory: [[String: any Sendable]] = [
+        titlePrompt,
+        ["k": "assistant", "t": "The fallback is in place. One test command stopped before it could verify the fix."],
+        ["k": "bash", "id": "failed-title-test", "cmd": "swift test --filter TitleViewTests", "code": 1,
+         "out": "stderr:\nerror: blank-title.json: No such file or directory"],
+        ["k": "meta", "t": "stopped: The title tests couldn’t find blank-title.json. Your changes are saved."],
+    ]
+
+    private static let richHistory: [[String: any Sendable]] = [
+        ["k": "user", "t": "Compare the lookup times with and without the cache."],
+        ["k": "assistant", "t": """
+        ## Reading the results
+
+        The speedup is $s = \\frac{t_{cold}}{t_{warm}}$.
+
+        ### Gateway benchmark
+
+        | Scenario | Time | Result |
+        | :--- | ---: | :--- |
+        | Cold start | 128 ms | No cache |
+        | Warm lookup | 32 ms | Cached |
+        """],
+    ]
 }
+#endif

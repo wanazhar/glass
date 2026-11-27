@@ -550,6 +550,7 @@ struct ChartView: View {
                     else { LineMark(x: .value("X", point.x), y: .value("Y", point.y)).foregroundStyle(by: .value("Series", point.series)) }
                 }
         }
+        .chartForegroundStyleScale(range: [Design.accent, Design.muted, Design.success, Design.warning, Design.failure])
         .chartLegend(Set(points.map(\.series)).count > 1 || kind == "pie" ? .visible : .hidden)
         .accessibilityLabel(data["title"]?.text ?? "Chart")
         .accessibilityIdentifier("component.chart.plot")

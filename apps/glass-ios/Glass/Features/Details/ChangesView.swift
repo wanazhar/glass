@@ -71,8 +71,12 @@ struct DiffView: View {
     private var canAct: Bool { conversation.canWrite && expected != nil && !busy }
 
     var body: some View {
-        ScrollView([.vertical, .horizontal]) {
+        let patches = hunks.map { LensPatch($0.lines.joined(separator: "\n")) }
+        ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                PatchCounts(added: patches.reduce(0) { $0 + $1.added },
+                            removed: patches.reduce(0) { $0 + $1.removed })
+                    .padding(Design.padding)
                 if let error {
                     Text(error).font(.footnote).foregroundStyle(.red).padding(12)
                         .accessibilityIdentifier("changes.error")
@@ -87,16 +91,8 @@ struct DiffView: View {
                         .padding()
                 }
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(hunks) { hunk in
-                        ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
-                            Text(line.isEmpty ? " " : line)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(line.hasPrefix("@@") ? .secondary : .primary)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 1)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Self.tint(line))
-                        }
+                    ForEach(Array(hunks.enumerated()), id: \.element.id) { index, hunk in
+                        PatchRows(patch: patches[index])
                         if hunk.changesMode {
                             Text("This file’s permissions changed too. Stage or discard the whole file.")
                                 .font(.footnote)
@@ -121,6 +117,7 @@ struct DiffView: View {
                 .textSelection(.enabled)
             }
         }
+        .background(Design.background)
         .navigationTitle((file.path as NSString).lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("changes.diff")
@@ -172,9 +169,4 @@ struct DiffView: View {
         }
     }
 
-    private static func tint(_ line: String) -> Color {
-        if line.hasPrefix("+") { return .green.opacity(0.15) }
-        if line.hasPrefix("-") { return .red.opacity(0.15) }
-        return .clear
-    }
 }

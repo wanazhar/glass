@@ -1,5 +1,9 @@
 import SwiftUI
 
+enum TypeToken {
+    static let display = Font.system(.largeTitle, weight: .semibold)
+}
+
 struct Palette {
     let dark: Bool
     var paper: Color { Color(hex: dark ? 0x0B1013 : 0xF5F7FA) }

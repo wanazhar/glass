@@ -9,14 +9,14 @@ enum SettingsRoute: String, Hashable, CaseIterable {
 
     var title: String {
         switch self {
-        case .host: "Host"
-        case .defaults: "Defaults for new conversations"
+        case .host: "Machine"
+        case .defaults: "New chat defaults"
         case .appearance: "Appearance"
         case .notifications: "Notifications"
         case .connection: "Background connection"
         case .voice: "Voice"
         case .diagnostics: "Diagnostics"
-        case .about: "About"
+        case .about: "About Glass"
         }
     }
 
@@ -50,36 +50,50 @@ enum SettingsRoute: String, Hashable, CaseIterable {
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @AppStorage(ThemePreference.key) private var theme: ThemePreference = .system
 
     var body: some View {
-        List {
-            Section("Workspace") {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 23) {
                 NavigationLink(value: SettingsRoute.host) {
-                    LabeledContent {
-                        Text(hostState)
-                    } label: {
-                        Label {
-                            Text(model.status?.workspaceName ?? "Host")
-                        } icon: {
-                            Image(systemName: SettingsRoute.host.systemImage)
+                    HStack(spacing: 12) {
+                        Image(systemName: SettingsRoute.host.systemImage)
+                            .font(.title2)
+                            .frame(width: 47, height: 47)
+                            .background(Design.inset, in: .rect(cornerRadius: 11))
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: Design.small) {
+                            Text(machine).font(.headline)
+                            Text(hostState).font(.subheadline)
+                                .foregroundStyle(model.status != nil ? Design.success : Design.warning)
                         }
+                        Spacer(minLength: Design.small)
+                        chevron
                     }
+                    .padding(15)
+                    .background(Design.surface, in: .rect(cornerRadius: 16))
+                    .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Design.line))
+                    .contentShape(.rect(cornerRadius: 16))
                 }
+                .buttonStyle(.plain)
                 .accessibilityIdentifier("settings.host")
-                link(.defaults)
-                link(.diagnostics)
+                group("Preferences", routes: [.appearance, .notifications, .connection, .voice])
+                group("Workspace", routes: [.defaults, .diagnostics, .about])
             }
-            Section("Preferences") {
-                link(.appearance)
-                link(.notifications)
-                link(.connection)
-                link(.voice)
-            }
-            Section("Glass") {
-                link(.about)
-            }
+            .frame(maxWidth: 520)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 15)
+            .frame(maxWidth: .infinity)
         }
+        .foregroundStyle(Design.ink)
+        .background(Design.background.ignoresSafeArea())
+        .scrollEdgeEffectStyle(.hard, for: .top)
         .navigationTitle("Settings")
+    }
+
+    private var machine: String {
+        if let status = model.status, status.name != "Glass", !status.name.isEmpty { return status.name }
+        return model.endpoint?.host ?? "Paired machine"
     }
 
     private var hostState: String {
@@ -90,11 +104,41 @@ struct SettingsView: View {
         }
     }
 
-    private func link(_ route: SettingsRoute) -> some View {
-        NavigationLink(value: route) {
-            Label(route.title, systemImage: route.systemImage)
+    private var chevron: some View {
+        Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+            .foregroundStyle(Design.muted).accessibilityHidden(true)
+    }
+
+    private func group(_ label: String, routes: [SettingsRoute]) -> some View {
+        VStack(alignment: .leading, spacing: Design.gap) {
+            Text(label).font(.subheadline.weight(.semibold))
+                .foregroundStyle(Design.muted).accessibilityAddTraits(.isHeader)
+            VStack(spacing: 0) {
+                ForEach(routes, id: \.self) { route in
+                    if route != routes.first { Divider().padding(.leading, 44) }
+                    NavigationLink(value: route) {
+                        HStack(spacing: 11) {
+                            Image(systemName: route.systemImage).frame(width: 22)
+                                .foregroundStyle(Design.muted).accessibilityHidden(true)
+                            Text(route.title).font(.subheadline)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 5)
+                            if route == .appearance {
+                                Text(theme.title).font(.caption).foregroundStyle(Design.muted)
+                            }
+                            chevron
+                        }
+                        .padding(.horizontal, 13)
+                        .frame(minHeight: 45)
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings.\(route.rawValue)")
+                }
+            }
+            .background(Design.surface, in: .rect(cornerRadius: 13))
+            .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(Design.line))
         }
-        .accessibilityIdentifier("settings.\(route.rawValue)")
     }
 }
 

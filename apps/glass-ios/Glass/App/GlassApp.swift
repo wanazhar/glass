@@ -4,9 +4,11 @@ import SwiftUI
 struct GlassApp: App {
     @State private var model: AppModel = {
         let arguments = ProcessInfo.processInfo.arguments
+        #if DEBUG
         if arguments.contains("-GlassDemo") {
             return .demo(threadCount: arguments.contains("-GlassDrawerPerformance") ? 1_000 : 336)
         }
+        #endif
         let model = AppModel()
         if ProcessInfo.processInfo.arguments.contains("-GlassResetState") { model.resetForTesting() }
         return model
@@ -31,10 +33,14 @@ struct RootView: View {
     @AppStorage(ThemePreference.key) private var theme: ThemePreference = .system
     @State private var showsSplash = !ProcessInfo.processInfo.arguments.contains("-GlassResetState")
         && !ProcessInfo.processInfo.arguments.contains("-GlassSkipSplash")
-    @State private var handingOff = false
     private var demoLaunchFrame: String? {
+        #if DEBUG
         guard ProcessInfo.processInfo.arguments.contains("-GlassDemo") else { return nil }
+        if LensPreview.current == .splash { return "ripple" }
         return UserDefaults.standard.string(forKey: "GlassLaunchFrame")
+        #else
+        return nil
+        #endif
     }
 
     var body: some View {
@@ -45,34 +51,39 @@ struct RootView: View {
                 ThreadsView()
             }
         }
-        .preferredColorScheme(theme.colorScheme)
+        .accessibilityHidden(showsSplash && !reduceMotion)
         .overlay {
-            if showsSplash {
-                LaunchView(sample: demoLaunchFrame == "ripple" ? 0.34 : demoLaunchFrame == nil ? nil : 0,
-                           handingOff: handingOff || demoLaunchFrame == "handoff", skip: finishLaunch)
+            if showsSplash && !reduceMotion {
+                LaunchView(sample: launchSample, skip: finishLaunch)
                     .transition(.opacity)
-                    .zIndex(1)
             }
         }
+        .preferredColorScheme(theme.colorScheme)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.phase == .unpaired)
         .task(id: model.endpoint) {
             if model.phase == .connecting { await model.refresh() }
         }
-        .task {
+        .task(id: reduceMotion) {
+            if reduceMotion {
+                showsSplash = false
+                return
+            }
             guard showsSplash, demoLaunchFrame == nil else { return }
-            try? await Task.sleep(for: .milliseconds(1_180))
+            try? await Task.sleep(for: .seconds(LaunchView.duration))
             if !Task.isCancelled { finishLaunch() }
         }
     }
 
-    private func finishLaunch() {
-        guard !handingOff else { return }
-        withAnimation(.easeOut(duration: 0.2)) { handingOff = true }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(200))
-            withAnimation(reduceMotion ? .easeOut(duration: 0.16) : .spring(duration: 0.28, bounce: 0)) {
-                showsSplash = false
-            }
+    private var launchSample: Double? {
+        switch demoLaunchFrame {
+        case "start": 0
+        case "ripple": 0.23
+        case "handoff": LaunchView.duration
+        default: nil
         }
+    }
+
+    private func finishLaunch() {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { showsSplash = false }
     }
 }

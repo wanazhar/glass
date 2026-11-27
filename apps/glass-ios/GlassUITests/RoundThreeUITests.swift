@@ -75,6 +75,15 @@ final class RoundThreeUITests: XCTestCase {
     }
 
     @MainActor
+    func testLensSplashCanBeSkippedByTappingTheScene() {
+        let app = launch("light", options: ["-GlassLaunchFrame", "ripple"])
+        let skip = app.buttons["Skip"]
+        XCTAssertTrue(skip.waitForExistence(timeout: 8))
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.46)).tap()
+        XCTAssertTrue(skip.waitForNonExistence(timeout: 5))
+    }
+
+    @MainActor
     func testTranscriptCanScrollAndFollowTheKeyboard() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "Run on an iPhone simulator")
         let app = launch("light")

@@ -41,7 +41,7 @@ struct TimelineRow: View {
                     .textSelection(.enabled)
                     .padding(.horizontal, Design.corner)
                     .padding(.vertical, Design.gap)
-                    .background(Design.surface, in: .rect(cornerRadius: Design.panel))
+                    .background(Design.inset, in: .rect(cornerRadius: Design.panel))
                     .contextMenu {
                         CopyButton(text: text)
                         actions(for: [.editInBranch, .branch, .quote])

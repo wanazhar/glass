@@ -29,7 +29,7 @@ final class ThreadsModel {
 
     var countLabel: String {
         let count = total ?? threads.count
-        return count == 1 ? "1 conversation" : "\(count) conversations"
+        return count == 1 ? "1 thread" : "\(count) threads"
     }
 
     func thread(_ id: String) -> ThreadSummary? { knownThreads[id] }
@@ -73,7 +73,7 @@ final class ThreadsModel {
     }
 
     /// `POST /api/new` in the selected project (or the host workspace), then opens it.
-    func newThread() async {
+    func newThread(draft: String? = nil, action: ComposerModel.InitialAction? = nil) async {
         guard let api = app.api else { return }
         do {
             let created = try await api.newThread(workspace: project)
@@ -83,6 +83,11 @@ final class ThreadsModel {
             if !archived, query.isEmpty {
                 threads.insert(summary, at: 0)
                 total = total.map { $0 + 1 }
+            }
+            if draft != nil || action != nil {
+                let composer = conversation(for: summary).composer
+                if let draft { composer.text = draft }
+                composer.initialAction = action
             }
             selection = created.id
         } catch {

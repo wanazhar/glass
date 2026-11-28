@@ -11,6 +11,16 @@ final class MarbleEvidenceTests: XCTestCase {
         add(image)
     }
 
+    /// iPad's floating tab bar exposes its items as cells, not as tab bar buttons.
+    private func tab(_ name: String) -> XCUIElement {
+        let bar = app.tabBars.buttons[name]
+        if bar.exists { return bar }
+        return app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@", name))
+            .allElementsBoundByIndex
+            .first { $0.frame.minY < 80 && $0.isHittable } ?? bar
+    }
+
     private func button(_ label: String) -> XCUIElement {
         app.buttons.matching(NSPredicate(format: "label == %@ OR identifier == %@", label, label)).firstMatch
     }
@@ -91,7 +101,7 @@ final class MarbleEvidenceTests: XCTestCase {
         shot("threads")
         back()
         back()
-        app.tabBars.buttons["Everyone"].tap()
+        tab("Everyone").tap()
         app.staticTexts["Earlier messages"].tap()
         check(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "What should we plan first")).firstMatch)
         shot("everyone")
@@ -179,7 +189,7 @@ final class MarbleEvidenceTests: XCTestCase {
         check(everyoneLink)
         everyoneLink.tap()
         check(app.navigationBars["Everyone"])
-        app.tabBars.buttons["Agents"].tap()
+        tab("Agents").tap()
         let dietrich = app.staticTexts["Dietrich"].firstMatch
         for _ in 0..<4 where !dietrich.isHittable { app.swipeUp() }
         XCTAssertTrue(dietrich.isHittable)
@@ -373,7 +383,7 @@ final class MarbleEvidenceTests: XCTestCase {
 
     func testEveryoneThreads() throws {
         try start(address: "http://127.0.0.1:4785", expectedAgent: "Engineer")
-        app.tabBars.buttons["Everyone"].tap()
+        tab("Everyone").tap()
         let newThread = button("New Everyone thread")
         check(newThread)
         shot("p0-everyone-threads")
@@ -469,7 +479,7 @@ final class MarbleEvidenceTests: XCTestCase {
 
     func testHostedActivityAndSettings() throws {
         try start()
-        app.tabBars.buttons["Settings"].tap()
+        tab("Settings").tap()
         check(button("settings.connection"))
         shot("settings")
         button("settings.activity").tap()
@@ -723,7 +733,7 @@ final class MarbleEvidenceTests: XCTestCase {
             throw XCTSkip("Requires the local turn presentation fixture")
         }
         try start(address: address, expectedAgent: "Marble")
-        app.tabBars.buttons["Everyone"].tap()
+        tab("Everyone").tap()
         app.staticTexts["Earlier messages"].tap()
         let field = app.textFields["composer.field"]
         check(field)
@@ -785,7 +795,7 @@ final class MarbleEvidenceTests: XCTestCase {
             XCTAssertTrue(UIAccessibility.isReduceMotionEnabled)
         }
         try start(address: address, expectedAgent: "Engineer")
-        app.tabBars.buttons["Everyone"].tap()
+        tab("Everyone").tap()
         app.staticTexts["Earlier messages"].tap()
         let field = app.textFields["composer.field"]
         check(field)
@@ -804,7 +814,7 @@ final class MarbleEvidenceTests: XCTestCase {
             throw XCTSkip("Requires the local turn presentation fixture")
         }
         try start(address: address, expectedAgent: "Marble")
-        app.tabBars.buttons["Settings"].tap()
+        tab("Settings").tap()
         let stop = button("settings.stopEverything")
         for _ in 0..<5 where !stop.isHittable { app.swipeUp() }
         XCTAssertTrue(stop.isHittable)
@@ -816,7 +826,7 @@ final class MarbleEvidenceTests: XCTestCase {
         let resume = button("host.resume")
         check(resume)
         shot("p5-settings-paused")
-        app.tabBars.buttons["Everyone"].tap()
+        tab("Everyone").tap()
         check(resume)
         XCTAssertFalse(app.alerts["Couldn’t update threads"].exists)
         shot("p5-everyone-paused")

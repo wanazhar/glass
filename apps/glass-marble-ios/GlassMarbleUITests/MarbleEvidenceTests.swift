@@ -811,7 +811,8 @@ final class MarbleEvidenceTests: XCTestCase {
         stop.tap()
         check(app.staticTexts["This cancels every running turn and pauses the host. New messages wait until you resume."])
         shot("p5-stop-confirmation")
-        app.buttons["Stop everything"].lastMatch.tap()
+        app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != %@",
+                                         "Stop everything", "settings.stopEverything")).firstMatch.tap()
         let resume = button("host.resume")
         check(resume)
         shot("p5-settings-paused")

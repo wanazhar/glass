@@ -555,22 +555,25 @@ fn scoped_core_config(source: &Path, session: &Path) -> std::io::Result<ScopedCo
             "Invalid Core configuration",
         )
     })?;
-    let setting = |name| {
+    let setting = |config: &toml_edit::DocumentMut, name| {
         config
             .get(name)
             .and_then(toml_edit::Item::as_str)
             .map(|value| value.trim().to_ascii_lowercase())
     };
-    if setting("sandbox").as_deref() == Some("workspace")
+    if setting(&config, "sandbox").as_deref() == Some("workspace")
         && matches!(
-            setting("permission_profile").as_deref(),
+            setting(&config, "permission_profile").as_deref(),
             None | Some("unrestricted")
         )
-        && matches!(setting("sandbox_egress").as_deref(), None | Some("off"))
+        && matches!(
+            setting(&config, "sandbox_egress").as_deref(),
+            None | Some("off")
+        )
     {
         config["sandbox"] = toml_edit::value("off");
     }
-    if matches!(setting("sandbox_env").as_deref(), None | Some("")) {
+    if matches!(setting(&config, "sandbox_env").as_deref(), None | Some("")) {
         config["sandbox_env"] = toml_edit::value("scrub");
     }
     let root = ScopedCoreConfig(session.join(format!(".core-config-{}", crate::next_request_id())));
@@ -708,6 +711,7 @@ fn sandbox_conversation_runtime(
 (deny file-read*)
 (allow file-read-metadata)
 (allow file-read*
+    (literal "/")
     (subpath (param "SESSION"))
     (subpath (param "WORKSPACE"))
     (literal (param "EXECUTABLE"))
@@ -2434,7 +2438,10 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("sibling-chat-fixture"), "{text}");
-        assert_eq!(std::fs::read_to_string(source).unwrap(), settings);
+        assert_eq!(
+            std::fs::read_to_string(source.join("config.toml")).unwrap(),
+            settings
+        );
         println!(
             "Core native shell read its own file; reading other.txt returned Operation not permitted"
         );

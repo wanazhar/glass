@@ -789,7 +789,8 @@ struct MarbleInfoView: View {
                 if !marble.isDefault {
                     Section("Identity") {
                         TextField("First name", text: $name).frame(minHeight: 44)
-                        TextField("Role", text: $role).frame(minHeight: 44)
+                        TextField("Role", text: $role, axis: .vertical)
+                            .frame(minHeight: 44)
                     }
                     if MarbleAvatarChoices.builtIns[marble.id] == nil {
                         Section("Avatar") {
@@ -829,6 +830,8 @@ struct MarbleInfoView: View {
         .background(MarbleTheme.paper)
         .navigationTitle("Profile")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(MarbleTheme.paper, for: .navigationBar)
+        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
         .onAppear {
             guard !personaLoaded, let marble else { return }
             personaLoaded = true

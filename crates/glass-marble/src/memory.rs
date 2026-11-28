@@ -51,10 +51,10 @@ fn privacy_fold(text: &str) -> String {
             continue;
         }
         previous_i = matches!(ch, 'i' | 'I' | 'İ');
-        if ch == 'İ' {
-            folded.push('i');
-        } else {
-            folded.extend(ch.to_lowercase());
+        match ch {
+            'İ' => folded.push('i'),
+            'Σ' | 'ς' => folded.push('σ'),
+            _ => folded.extend(ch.to_lowercase()),
         }
     }
     folded
@@ -1515,6 +1515,18 @@ mod tests {
                     .contains(name),
                 "skill still visible after making {fact:?} private"
             );
+        }
+    }
+
+    #[test]
+    fn shared_skill_privacy_matches_greek_sigma_variants() {
+        for (fact, lesson) in [
+            ("ΝΟΣ", "Το νος είναι ιδιωτικό"),
+            ("νος", "Το νοσ είναι ιδιωτικό"),
+            ("νοσ", "Το νος είναι ιδιωτικό"),
+        ] {
+            let lesson = privacy_fold(lesson);
+            assert!(private_fact_matches(&lesson, &salient_words(&lesson), fact));
         }
     }
 

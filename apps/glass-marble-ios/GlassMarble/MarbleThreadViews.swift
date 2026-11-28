@@ -3,17 +3,26 @@ import SwiftUI
 struct EveryoneView: View {
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
-    @State private var threads: [MarbleThread] = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var naming = false
     @State private var title = ""
     @State private var deleting: MarbleThread?
     @State private var failed = false
     @State private var archived = false
 
+    private var threads: [MarbleThread] { store.everyoneThreadList ?? [] }
+
+    private struct RefreshKey: Equatable {
+        let updates: [String: MarbleThread]
+        let revision: UInt64
+    }
+
     var body: some View {
         List {
             let active = threads.filter { !$0.archived }
-            if active.isEmpty {
+            if store.everyoneThreadList == nil && !failed {
+                MarbleListSkeleton()
+            } else if active.isEmpty {
                 ContentUnavailableView("No threads yet", systemImage: "bubble.left.and.bubble.right",
                                        description: Text("Start a thread to talk with Everyone."))
             }
@@ -48,6 +57,7 @@ struct EveryoneView: View {
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
         .navigationTitle("Everyone")
+        .animation(reduceMotion ? nil : .default, value: threads)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -59,6 +69,7 @@ struct EveryoneView: View {
                 }
                 .accessibilityLabel("New Everyone thread")
             }
+            ToolbarItem(placement: .topBarLeading) { MarbleNavConnection() }
         }
         .alert("New Everyone thread", isPresented: $naming) {
             TextField("Thread title", text: $title)
@@ -88,7 +99,7 @@ struct EveryoneView: View {
             .background(MarbleTheme.paper)
             .navigationTitle("Archived")
         }
-        .task(id: store.threadUpdates) { await load() }
+        .task(id: RefreshKey(updates: store.threadUpdates, revision: store.threadHostRevision)) { await load() }
         .refreshable { await load() }
     }
 
@@ -104,8 +115,7 @@ struct EveryoneView: View {
 
     private func load() async {
         do {
-            threads = try await store.threads(in: everyoneConversationId)
-                .sorted { $0.summary.lastActivityAt > $1.summary.lastActivityAt }
+            try await store.refreshEveryoneThreads()
         } catch is CancellationError {
         } catch {
             failed = true
@@ -401,10 +411,11 @@ private struct MarbleThreadView: View {
         let target = target(for: page)
         let conversationId = page.thread.conversationId
         let presentation = store.outgoingPresentation(page.entries, to: target, conversationId: conversationId)
+        let reserved = Set(presentation.entries.filter { $0.kind == "pending" }.map(\.speaker))
         return MarbleJumpTimeline(
             entries: store.withLiveToolRows(presentation.entries, conversationId: conversationId, threadId: id),
             jump: jump, parentId: page.thread.parentEntryId, outgoing: store.lastOutgoing(to: target),
-            workingNames: presentation.responders.map { id in
+            workingNames: presentation.responders.filter { !reserved.contains($0) }.map { id in
                 store.prism.marbles.first { $0.id == id }?.name ?? page.thread.participants.first ?? "Marble"
             },
             loadOlder: { await store.loadOlderThread(id, beforePrepend: $0) }
@@ -524,7 +535,9 @@ private struct MarbleJumpTimeline: View {
                     ForEach(transcript.standalone, id: \.rowID) { entry in
                         VStack(alignment: .leading, spacing: 10) {
                             MarbleEntryView(entry: entry, speaker: store.speakerStyle(for: entry),
-                                            reasoning: transcript.attached[entry.id], allowsThreads: parentId == nil)
+                                            reasoning: transcript.attached[entry.id], toolRows: transcript.tools[entry.id] ?? [],
+                                            timestamp: transcript.timestamps[entry.id],
+                                            allowsThreads: parentId == nil)
                             if entry.id == parentId && entries.count > 1 { Divider() }
                         }
                         .padding(.vertical, 3)

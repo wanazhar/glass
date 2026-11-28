@@ -281,6 +281,7 @@ fn one_shot(cli: &Cli, cwd: &Path, data_dir: &Path, message: &str) -> Result<(),
     )?
     .with_model(cli.model.clone());
     let turn = MarbleTurn {
+        device_time_zone: None,
         conversation_id: cli.conversation.clone(),
         request_id: glass_marble::next_request_id(),
         input: to_turn_input(&InboundMessage::new(message)),

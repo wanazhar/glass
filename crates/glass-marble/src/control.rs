@@ -216,6 +216,8 @@ pub struct ControlEntry {
 #[serde(rename_all = "camelCase")]
 pub struct QueuedTurn {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_time_zone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_message: Option<crate::state::ClientMessage>,
     #[serde(default)]
     pub thread_id: Option<String>,
@@ -479,6 +481,7 @@ impl ControlState {
             ));
         }
         let entry = QueuedTurn {
+            device_time_zone: None,
             client_message: None,
             thread_id: None,
             id: next_id("queued"),

@@ -69,37 +69,3 @@ struct PocketPair: View {
         .accessibilityHidden(true)
     }
 }
-
-struct MarbleSplash: View {
-    var finish: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var settled = false
-
-    var body: some View {
-        ZStack(alignment: .topTrailing) {
-            MarbleTheme.paper.ignoresSafeArea()
-            VStack(spacing: 8) {
-                PocketPair(settled: reduceMotion || settled)
-                    .frame(width: 110, height: 110)
-                Text("Marble").font(.largeTitle.weight(.semibold))
-                Text("Good company, on your terms.")
-                    .foregroundStyle(MarbleTheme.muted)
-            }
-            .multilineTextAlignment(.center)
-            .padding(24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Button("Skip", action: finish)
-                .buttonStyle(.glass)
-                .frame(minWidth: 44, minHeight: 44)
-                .padding(.horizontal, 20)
-        }
-        .task {
-            do {
-                try await Task.sleep(for: .milliseconds(80))
-                if !reduceMotion { withAnimation(.easeOut(duration: 0.62)) { settled = true } }
-                try await Task.sleep(for: .milliseconds(reduceMotion ? 120 : 1470))
-                finish()
-            } catch {}
-        }
-    }
-}

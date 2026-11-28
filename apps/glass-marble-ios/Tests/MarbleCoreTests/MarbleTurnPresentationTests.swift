@@ -3,6 +3,19 @@ import XCTest
 @testable import MarbleCore
 
 final class MarbleTurnPresentationTests: XCTestCase {
+    func testRevealPreservesOriginalValidatedTextAndBoundsFrameCount() {
+        let text = "  A 👩🏽‍💻 reply.\n\n- Next item"
+        XCTAssertEqual(MarbleReplyReveal.frames(for: text), [
+            "  A ", "  A 👩🏽‍💻 ", "  A 👩🏽‍💻 reply.\n\n",
+            "  A 👩🏽‍💻 reply.\n\n- ", "  A 👩🏽‍💻 reply.\n\n- Next ", text,
+        ])
+        let long = String(repeating: "word ", count: 131)
+        let frames = MarbleReplyReveal.frames(for: long)
+        XCTAssertLessThanOrEqual(frames.count, MarbleReplyReveal.maximumFrames)
+        XCTAssertEqual(frames.last, long)
+        XCTAssertEqual(MarbleReplyReveal.frames(for: "Okay."), ["Okay."])
+    }
+
     func testStoppedPartialReplyKeepsItsTextAndOffersRetry() throws {
         let task = MarbleTask(id: "turn", conversationId: "chat", status: "cancelled",
                               owner: "user", prompt: "Do the work", at: 1)
@@ -163,6 +176,41 @@ final class MarbleTurnPresentationTests: XCTestCase {
         MarbleToolActivity.apply(end, to: &calls)
         XCTAssertEqual(calls.first?.status, .failed)
         XCTAssertNil(calls.first?.query)
+    }
+
+    func testToolDetailsStayWithTheReplyAndTheLabelDoesNotChange() throws {
+        var calls: [MarbleToolActivity] = []
+        let start = try toolEvent("tool_start", data: #"{"callId":"shell","name":"bash","title":"printf hello"}"#)
+        MarbleToolActivity.apply(start, to: &calls)
+        let label = calls.first?.title
+        let end = try toolEvent("tool_end", data: #"{"callId":"shell","text":"hello","isError":true}"#)
+        MarbleToolActivity.apply(end, to: &calls)
+        let tool = try XCTUnwrap(calls.first)
+        XCTAssertEqual(label, "Ran a command")
+        XCTAssertEqual(tool.title, label)
+        XCTAssertEqual(tool.details?.command, "printf hello")
+        XCTAssertEqual(tool.details?.output, "hello")
+        XCTAssertEqual(tool.status, .failed)
+        var row = MarbleEntry(conversationId: "chat", kind: "tool", text: tool.transcriptText, taskId: "turn", at: 1)
+        row.toolDetails = tool.details
+        let reply = MarbleEntry(conversationId: "chat", kind: "assistant", text: "Reply", taskId: "turn", at: 2)
+        let later = MarbleEntry(conversationId: "chat", kind: "user", text: "Next", taskId: "next", at: 3)
+        let timeline = MarbleReasoningAssociation([reply, later, row])
+        XCTAssertEqual(timeline.standalone, [reply, later])
+        XCTAssertEqual(timeline.tools[reply.id], [row])
+    }
+
+    func testTimeLabelsSeparateDaysAndGapsOverFiveMinutes() {
+        let base = UInt64(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1000)
+        let rows = [1_000, 301_000, 602_000, 172_800_000].map { offset in
+            MarbleEntry(conversationId: "chat", kind: "user", text: String(offset),
+                        taskId: String(offset), at: base + UInt64(offset))
+        }
+        let labels = MarbleReasoningAssociation(rows).timestamps
+        XCTAssertNotNil(labels[rows[0].id])
+        XCTAssertNil(labels[rows[1].id])
+        XCTAssertNotNil(labels[rows[2].id])
+        XCTAssertNotNil(labels[rows[3].id])
     }
 
     func testNamelessEndUpdatesMatchingCallAndKeepsEveryoneAttribution() throws {

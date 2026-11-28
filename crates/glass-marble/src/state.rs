@@ -210,6 +210,16 @@ pub struct TranscriptEntry {
     pub handoff: Option<HandoffEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<crate::failure::FailureInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_details: Option<ToolDetails>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDetails {
+    pub command: String,
+    pub output: String,
+    pub elapsed_ms: Option<u64>,
 }
 
 /// One marble-to-marble handoff, kept on the transcript row that tells it.

@@ -55,6 +55,7 @@ fn session_instructions(cwd: &Path) -> String {
     instructions.push_str(CONVERSATIONAL_GUIDANCE);
     instructions.push('\n');
     instructions.push_str(REPLY_PRIVACY_GUIDANCE);
+    instructions.push_str("\nBefore a tool starts a new step, you may emit a separate line like <working>Reading the report…</working>. Use your own words, at most six, end with …, and only describe the step about to start. Never put a working line in the final reply.");
     if let Some(briefing) = crate::crates::CrateMap::load(cwd).briefing() {
         instructions.push('\n');
         instructions.push_str(&briefing);
@@ -132,6 +133,7 @@ fn strip_self_mention<'a>(text: &'a str, name: &str) -> &'a str {
 #[derive(Default)]
 struct ToolRows {
     rows: Vec<(String, String, String)>,
+    details: HashMap<String, (Instant, crate::state::ToolDetails)>,
 }
 
 impl ToolRows {
@@ -162,6 +164,30 @@ impl ToolRows {
         let id = data["callId"].as_str().unwrap_or_default();
         if id.is_empty() {
             return false;
+        }
+        if event.kind == "tool_start" {
+            self.details.entry(id.to_string()).or_insert_with(|| {
+                let command = data["arguments"]["command"]
+                    .as_str()
+                    .or_else(|| data["title"].as_str())
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        data["arguments"]
+                            .as_object()
+                            .map(|args| value!(args).to_string())
+                    })
+                    .unwrap_or_default();
+                (
+                    Instant::now(),
+                    crate::state::ToolDetails {
+                        command,
+                        ..Default::default()
+                    },
+                )
+            });
+        } else if let Some((start, detail)) = self.details.get_mut(id) {
+            detail.elapsed_ms = Some(start.elapsed().as_millis() as u64);
+            detail.output = data["text"].as_str().unwrap_or_default().into();
         }
         let existing = self.rows.iter().position(|row| row.0 == id);
         let status = if event.kind == "tool_start" {
@@ -433,6 +459,7 @@ pub struct Conversation {
     respawn: Option<Arc<dyn Fn() -> Command + Send + Sync>>,
     /// Where the engine keeps its durable session journal.
     storage_dir: PathBuf,
+    device_time_zone: Option<String>,
     /// Set when the engine stopped answering; the next turn restarts it first.
     transport_failed: bool,
     stopped: bool,
@@ -538,6 +565,7 @@ impl Conversation {
             steering: None,
             respawn: None,
             storage_dir: storage_dir.to_path_buf(),
+            device_time_zone: None,
             transport_failed: false,
             stopped: false,
             restarts: 0,
@@ -610,7 +638,11 @@ impl Conversation {
         self
     }
 
-    pub(crate) fn scoped_runtime(&mut self, id: &str) -> Result<Option<Self>, MarbleError> {
+    pub(crate) fn scoped_runtime(
+        &mut self,
+        id: &str,
+        zone: Option<&str>,
+    ) -> Result<Option<Self>, MarbleError> {
         let (Some(store), Some(factory), Some(product)) =
             (&self.store, &self.respawn, &self.product)
         else {
@@ -643,8 +675,12 @@ impl Conversation {
         std::fs::create_dir_all(&cwd).map_err(MarbleError::Io)?;
         let cwd = cwd.canonicalize().map_err(MarbleError::Io)?;
         let storage = cwd.parent().expect("workspace has a parent");
+        let mut command = factory();
+        if let Some(zone) = zone {
+            command.env("TZ", zone);
+        }
         let mut scoped = Self::spawn_with_router(
-            factory(),
+            command,
             &cwd,
             storage,
             self.host,
@@ -659,6 +695,7 @@ impl Conversation {
         scoped.tool_limit = self.tool_limit;
         scoped.steering = self.steering.take();
         scoped.respawn = self.respawn.clone();
+        scoped.device_time_zone = zone.map(str::to_owned);
         scoped.approval_timeout = self.approval_timeout;
         scoped.instructions = self.instructions.clone();
         scoped.instructions_fn = self.instructions_fn.clone();
@@ -709,6 +746,17 @@ impl Conversation {
         self.text_block_boundaries
     }
 
+    pub(crate) fn sync_time_zone(&mut self, zone: Option<&str>) -> Result<(), MarbleError> {
+        if self.respawn.is_some() && zone != self.device_time_zone.as_deref() {
+            let previous = std::mem::replace(&mut self.device_time_zone, zone.map(str::to_owned));
+            if let Err(error) = self.restart() {
+                self.device_time_zone = previous;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     /// Spawn a fresh engine, negotiate capabilities, and adopt it.
     pub fn restart(&mut self) -> Result<(), MarbleError> {
         let Some(factory) = self.respawn.as_ref() else {
@@ -718,6 +766,9 @@ impl Conversation {
         };
         let mut command = factory();
         command.current_dir(&self.cwd);
+        if let Some(zone) = &self.device_time_zone {
+            command.env("TZ", zone);
+        }
         let mut client = RuntimeClient::spawn_command(command).map_err(MarbleError::Io)?;
         let init_id = client
             .request("initialize", value!({"protocolVersion":2,"requiredCapabilities":["mixedTools"],"optionalCapabilities":["textBlockBoundaries"],"storageDir":self.storage_dir}))
@@ -1380,6 +1431,7 @@ impl Conversation {
             .transcript
             .retain(|entry| !existing.iter().any(|previous| previous.id == entry.id));
         for (call, text, _) in &tools.rows {
+            let tool_details = tools.details.get(call).map(|(_, detail)| detail.clone());
             let id = format!("entry-tool-{}-{call}", self.active_task);
             let previous = existing
                 .iter()
@@ -1392,6 +1444,7 @@ impl Conversation {
                 task_id: self.active_task.clone(),
                 kind: "tool".into(),
                 text: text.clone(),
+                tool_details: tool_details.clone(),
                 at: if previous.at == 0 {
                     crate::worker::now_millis()
                 } else {
@@ -1417,6 +1470,7 @@ impl Conversation {
                     task_id: self.active_task.clone(),
                     kind: "tool".into(),
                     text: text.clone(),
+                    tool_details,
                     at: if previous.at == 0 {
                         crate::worker::now_millis()
                     } else {
@@ -1506,7 +1560,8 @@ impl Conversation {
             .as_str()
             .map(str::to_owned)
             .unwrap_or_else(|| request_id.to_string());
-        let scope = ToolScope::new(self.active_conversation.clone(), self.active_task.clone());
+        let mut scope = ToolScope::new(self.active_conversation.clone(), self.active_task.clone());
+        scope.device_time_zone.clone_from(&self.device_time_zone);
         let (approval, reason) = self.decide(&key, call, &scope, cancel);
         let answer = crate::host::answer_tool(
             &mut self.client,

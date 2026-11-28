@@ -733,7 +733,7 @@ impl PrismPool {
         text: &str,
         requested: Option<&[String]>,
     ) -> Result<PrismDispatch, DispatchRefusal> {
-        self.dispatch_inner(text, requested, None, None, None)
+        self.dispatch_inner(text, requested, None, None, None, None)
     }
 
     pub fn dispatch_in_thread(
@@ -742,7 +742,7 @@ impl PrismPool {
         requested: Option<&[String]>,
         thread: Option<&str>,
     ) -> Result<PrismDispatch, DispatchRefusal> {
-        self.dispatch_inner(text, requested, None, thread, None)
+        self.dispatch_inner(text, requested, None, thread, None, None)
     }
 
     pub(crate) fn dispatch_client_in_thread(
@@ -751,8 +751,9 @@ impl PrismPool {
         requested: Option<&[String]>,
         thread: Option<&str>,
         client: Option<crate::state::ClientMessage>,
+        device_time_zone: Option<&str>,
     ) -> Result<PrismDispatch, DispatchRefusal> {
-        self.dispatch_inner(text, requested, None, thread, client)
+        self.dispatch_inner(text, requested, None, thread, client, device_time_zone)
     }
 
     pub fn resume_held(self: &Arc<Self>) -> usize {
@@ -770,6 +771,7 @@ impl PrismPool {
                 Some(&entry.id),
                 entry.thread_id.as_deref(),
                 entry.client_message.clone(),
+                entry.device_time_zone.as_deref(),
             ) {
                 Ok(_) => dispatched += 1,
                 Err(error)
@@ -807,6 +809,7 @@ impl PrismPool {
         queue_id: Option<&str>,
         thread_id: Option<&str>,
         client: Option<crate::state::ClientMessage>,
+        device_time_zone: Option<&str>,
     ) -> Result<PrismDispatch, DispatchRefusal> {
         let targets = {
             let state = self.lock_state();
@@ -898,9 +901,19 @@ impl PrismPool {
                 identity.entry_id = format!("{}-{}", identity.entry_id, marble.id);
             }
             let turn_identity = identity.clone();
+            let device_time_zone = device_time_zone.map(str::to_owned);
             let spawned = std::thread::Builder::new()
                 .name(format!("glass-marble-prism-{marble_id}"))
-                .spawn(move || pool.run_marble(&target, root, &prompt, thread, turn_identity));
+                .spawn(move || {
+                    pool.run_marble(
+                        &target,
+                        root,
+                        &prompt,
+                        thread,
+                        turn_identity,
+                        device_time_zone,
+                    )
+                });
             if let Err(error) = spawned {
                 tracing::error!(%error, marble = %marble_name, "could not start a prism turn");
                 self.fail_before_acceptance(
@@ -1030,6 +1043,7 @@ impl PrismPool {
         text: &str,
         depth: u8,
         thread_id: Option<String>,
+        device_time_zone: Option<String>,
     ) {
         if depth > 0 {
             self.pending_depths
@@ -1037,7 +1051,7 @@ impl PrismPool {
                 .unwrap_or_else(|error| error.into_inner())
                 .insert(marble.id.clone(), depth);
         }
-        self.run_marble(marble, root, text, thread_id, None);
+        self.run_marble(marble, root, text, thread_id, None, device_time_zone);
     }
 
     /// Runs an ask from the marble that owns `scope`.
@@ -1177,9 +1191,19 @@ impl PrismPool {
         let prompt = format!("{asker_name} asks: {instruction}");
         let root = self.workspace_root(&target).unwrap_or_default();
         let pool = Arc::clone(self);
+        let device_time_zone = scope.device_time_zone.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("glass-marble-ask-{}", target.id))
-            .spawn(move || pool.run_marble_at_depth(&target, root, &prompt, depth + 1, thread));
+            .spawn(move || {
+                pool.run_marble_at_depth(
+                    &target,
+                    root,
+                    &prompt,
+                    depth + 1,
+                    thread,
+                    device_time_zone,
+                )
+            });
         if let Err(error) = spawned {
             return fail(
                 self,
@@ -1271,6 +1295,7 @@ impl PrismPool {
         text: &str,
         thread_id: Option<String>,
         client: Option<crate::state::ClientMessage>,
+        device_time_zone: Option<String>,
     ) {
         let engine = match self.engine(marble, &root) {
             Ok(engine) => engine,
@@ -1310,6 +1335,7 @@ impl PrismPool {
             input.text = format!("{context}\n\n{}", input.text);
         }
         let turn = crate::MarbleTurn {
+            device_time_zone,
             conversation_id: (!conversation_id.is_empty()).then_some(conversation_id),
             request_id,
             input,

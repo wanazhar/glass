@@ -256,6 +256,46 @@ final class MarbleEvidenceTests: XCTestCase {
         shot("replace-token")
     }
 
+    func testHostedTurnPresentation() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["MARBLE_TURN_EVIDENCE"] == "1",
+                          "Requires the local turn presentation fixture")
+        try start()
+        app.staticTexts["Ada"].firstMatch.tap()
+        let field = app.descendants(matching: .any)["composer.field"].firstMatch
+        check(field)
+        field.tap()
+        field.typeText("Please check the report.")
+        button("Send").tap()
+        check(app.staticTexts["Checking the report…"])
+        shot("p1-working-line")
+        let collapsed = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Used 2 tools")).firstMatch
+        check(collapsed, timeout: 15)
+        let reply = app.staticTexts["The report is ready to review."]
+        check(reply)
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
+        shot("p1-tools-collapsed")
+        collapsed.tap()
+        let failed = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Failed")).firstMatch
+        check(failed)
+        XCTAssertTrue(app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Done")).firstMatch.exists)
+        shot("p1-tools-expanded")
+        failed.tap()
+        check(app.staticTexts["ls -l appendix.pdf"])
+        check(app.staticTexts["No such file: appendix.pdf"])
+        shot("p1-tool-detail")
+        button("Done").tap()
+        field.tap()
+        field.typeText("Check the report failure.")
+        button("Send").tap()
+        XCTAssertFalse(app.staticTexts["Ada couldn’t finish this reply."].exists)
+        check(app.staticTexts["Ada couldn’t finish this reply."], timeout: 15)
+        XCTAssertEqual(app.staticTexts.matching(identifier: "Ada couldn’t finish this reply.").count, 1)
+        check(button("Retry"))
+        let continueButton = button("Continue")
+        if continueButton.exists { continueButton.tap() }
+        shot("p1-named-failure")
+    }
+
     func testHostedNamedStop() throws {
         guard let address = ProcessInfo.processInfo.environment["MARBLE_STREAM_EVIDENCE_URL"] else {
             throw XCTSkip("Requires the local streaming fixture")

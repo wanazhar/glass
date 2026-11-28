@@ -69,7 +69,7 @@ extension View {
     }
 
     func marbleChatScrollEdges() -> some View {
-        scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+        scrollEdgeEffectStyle(.soft, for: .top)
     }
 
     func marbleToolbarTitle() -> some View {
@@ -212,8 +212,9 @@ struct MarbleWorkingDots: View {
 struct MarbleThinkingBubble: View {
     var name: String = "Marble"
     var retrying = false
+    var status: String? = nil
 
-    private var title: String { retrying ? "\(name) is retrying" : "\(name) is working" }
+    private var title: String { retrying ? "\(name) is retrying…" : status ?? "\(name) is working…" }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -231,5 +232,6 @@ struct MarbleThinkingBubble: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
+        .accessibilityIdentifier("\(name) is working")
     }
 }

@@ -34,13 +34,17 @@ final class MarbleClient: @unchecked Sendable {
         body: Data? = nil,
         acceptsEventStream: Bool = false
     ) throws -> URLRequest {
-        try endpoint.request(
+        var request = try endpoint.request(
             path: path,
             query: query,
             method: method,
             body: body,
             acceptsEventStream: acceptsEventStream
         )
+        if method == "POST" && ["/api/turns", "/api/turns/retry", "/api/everyone", "/api/prism/dispatch"].contains(path) {
+            request.setValue(TimeZone.autoupdatingCurrent.identifier, forHTTPHeaderField: "X-Marble-Time-Zone")
+        }
+        return request
     }
 
     private func makeRequest(

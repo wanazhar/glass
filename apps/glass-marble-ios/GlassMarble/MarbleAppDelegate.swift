@@ -75,7 +75,6 @@ final class MarbleAppDelegate: UIResponder, UIApplicationDelegate, UNUserNotific
 
 final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
-    private static var hasPresentedSplash = false
     #if DEBUG
     private let store: MarbleStore = {
         ProcessInfo.processInfo.arguments.contains("-MarbleUITestFixture")
@@ -119,10 +118,7 @@ final class MarbleSceneDelegate: UIResponder, UIWindowSceneDelegate {
            let id = marbleConversationId(from: response.notification.request.content.userInfo) {
             navigation.queuePendingOpen(id)
         }
-        let showsSplash = !Self.hasPresentedSplash && connectionOptions.notificationResponse == nil
-            && !ProcessInfo.processInfo.arguments.contains("-MarbleUITestFixture")
-        Self.hasPresentedSplash = true
-        let root = MarbleRootView(showsSplash: showsSplash)
+        let root = MarbleRootView()
             .environmentObject(store)
             .environmentObject(navigation)
         let controller = UIHostingController(rootView: root)

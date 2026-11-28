@@ -19,6 +19,7 @@ pub(crate) const DEFAULT_TOOL_LIMIT: usize = 8;
 pub struct MarbleTurn {
     /// Durable conversation to submit to; `None` creates a fresh one.
     pub conversation_id: Option<String>,
+    pub device_time_zone: Option<String>,
     /// Unique per turn; the durable request id is scoped to the conversation.
     pub request_id: String,
     pub input: TurnInput,
@@ -182,6 +183,7 @@ pub fn run_turn(
 ) -> Result<MarbleReply, MarbleError> {
     let result = (|| {
         if !conversation.can_scope_runtime() {
+            conversation.sync_time_zone(turn.device_time_zone.as_deref())?;
             return run_with_retry(turn, conversation, &mut options);
         }
         let mut turn = turn.clone();
@@ -190,13 +192,14 @@ pub fn run_turn(
             .take()
             .filter(|id| !id.is_empty())
             .unwrap_or_else(|| format!("chat-{}", crate::next_request_id()));
-        let scoped = conversation.scoped_runtime(&id)?;
+        let scoped = conversation.scoped_runtime(&id, turn.device_time_zone.as_deref())?;
         turn.conversation_id = Some(id);
         if let Some(mut scoped) = scoped {
             let result = run_with_retry(&turn, &mut scoped, &mut options);
             conversation.close_scoped_runtime(scoped);
             result
         } else {
+            conversation.sync_time_zone(turn.device_time_zone.as_deref())?;
             run_with_retry(&turn, conversation, &mut options)
         }
     })();
@@ -324,6 +327,7 @@ fn run_attempt(
     let mut reasoning = String::new();
     let mut reasoning_boundary = false;
     let mut splitter = ThinkSplitter::default();
+    let mut working_line = None;
     let mut usage: Option<Value> = None;
     let events = conversation.events().clone();
     let text_block_boundaries = conversation.streams_text_blocks();
@@ -392,6 +396,17 @@ fn run_attempt(
                     }
                     let (visible, thought) = splitter.flush();
                     text.push_str(&visible);
+                    text = remove_working_lines(&text, &mut working_line);
+                    if event.kind == "tool_start"
+                        && let Some(line) = working_line.take()
+                    {
+                        events.publish(
+                            &conversation_id,
+                            &task_id,
+                            "working",
+                            serde_json::json!({"text": line}),
+                        );
+                    }
                     publish_reasoning(&append_reasoning(
                         &mut reasoning,
                         &mut reasoning_boundary,
@@ -428,6 +443,7 @@ fn run_attempt(
         &thought,
     ));
     text.push_str(&visible);
+    text = remove_working_lines(&text, &mut working_line);
     if let Some((plan, answer)) = split_plan_preamble(&text) {
         publish_reasoning(&append_reasoning(&mut reasoning, &mut true, plan));
         text = answer.to_string();
@@ -473,6 +489,149 @@ fn run_attempt(
         }),
     );
     Ok(reply)
+}
+
+fn remove_working_lines(text: &str, status: &mut Option<String>) -> String {
+    let mut result = String::new();
+    let mut fence: Option<(u8, usize, usize)> = None;
+    let mut inline_end = 0;
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        if fence.is_some_and(|(_, _, list_indent)| indent < list_indent && !trimmed.is_empty()) {
+            fence = None;
+        }
+        let list_indent = fence.map_or(0, |(_, _, indent)| indent);
+        if let Some((marker, width, trailing, container)) =
+            working_fence(line, list_indent, fence.is_none())
+        {
+            match fence {
+                Some((open, minimum, _))
+                    if marker == open && width >= minimum && trailing.is_empty() =>
+                {
+                    fence = None;
+                    result.push_str(line);
+                    continue;
+                }
+                None if marker != b'`' || !trailing.contains('`') => {
+                    fence = Some((marker, width, container));
+                    inline_end = 0;
+                }
+                _ => {}
+            }
+        }
+        if fence.is_some() {
+            result.push_str(line);
+            continue;
+        }
+        if start >= inline_end
+            && let Some(tag) = trimmed.strip_prefix("<working>")
+        {
+            if let Some(content) = tag.strip_suffix("</working>") {
+                let content = content.trim();
+                if content.ends_with('…')
+                    && (1..=6).contains(&content.split_whitespace().count())
+                    && content.chars().count() <= 100
+                    && !content.contains(['<', '>'])
+                {
+                    *status = Some(content.to_owned());
+                }
+            }
+            continue;
+        }
+        let bytes = text.as_bytes();
+        let mut cursor = start.max(inline_end);
+        while cursor < offset {
+            match bytes[cursor] {
+                b'\\' => cursor += 2,
+                b'`' => {
+                    let width = backtick_run(&bytes[cursor..]);
+                    cursor += width;
+                    if let Some(end) = closing_backticks(text, cursor, width) {
+                        inline_end = end;
+                        cursor = end;
+                    }
+                }
+                _ => cursor += 1,
+            }
+        }
+        result.push_str(line);
+    }
+    result
+}
+
+fn working_fence(
+    line: &str,
+    mut container: usize,
+    allow_list: bool,
+) -> Option<(u8, usize, &str, usize)> {
+    let mut content = line.get(container..)?;
+    loop {
+        let unindented = content.trim_start_matches(' ');
+        let indent = content.len() - unindented.len();
+        if indent > 3 {
+            return None;
+        }
+        content = unindented;
+        if !allow_list {
+            break;
+        }
+        let bytes = content.as_bytes();
+        let digits = bytes
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        let marker = match (digits, bytes.get(digits)) {
+            (0, Some(b'-' | b'+' | b'*')) => 1,
+            (1..=9, Some(b'.' | b')')) => digits + 1,
+            _ => break,
+        };
+        let padding = bytes[marker..]
+            .iter()
+            .take_while(|&&byte| byte == b' ')
+            .count();
+        if !(1..=4).contains(&padding) {
+            break;
+        }
+        container += indent + marker + padding;
+        content = &content[marker + padding..];
+    }
+    let marker = *content.as_bytes().first()?;
+    if !matches!(marker, b'`' | b'~') {
+        return None;
+    }
+    let width = content.bytes().take_while(|&byte| byte == marker).count();
+    (width >= 3).then(|| (marker, width, content[width..].trim(), container))
+}
+
+fn backtick_run(bytes: &[u8]) -> usize {
+    bytes.iter().take_while(|&&byte| byte == b'`').count()
+}
+
+fn closing_backticks(text: &str, start: usize, width: usize) -> Option<usize> {
+    let mut offset = start;
+    for (index, line) in text[start..].split_inclusive('\n').enumerate() {
+        if index != 0 && (line.trim().is_empty() || working_fence(line, 0, true).is_some()) {
+            break;
+        }
+        let mut cursor = 0;
+        while let Some(at) = line.as_bytes()[cursor..]
+            .iter()
+            .position(|&byte| byte == b'`')
+        {
+            cursor += at;
+            let closing = backtick_run(&line.as_bytes()[cursor..]);
+            cursor += closing;
+            if closing == width {
+                return Some(offset + cursor);
+            }
+        }
+        offset += line.len();
+    }
+    None
 }
 
 fn append_reasoning(reasoning: &mut String, boundary: &mut bool, delta: &str) -> String {
@@ -581,6 +740,62 @@ mod tests {
         let plan = "The user is asking about a leak. I need to respond. I should apologize. I'll output only the final answer.";
         let text = format!("{plan}My bad.");
         assert_eq!(super::split_plan_preamble(&text), Some((plan, "My bad.")));
+    }
+
+    #[test]
+    fn working_lines_are_metadata_not_reply_text() {
+        let mut status = None;
+        let answer = super::remove_working_lines(
+            "<working>Reading the report…</working>\nPublic answer.",
+            &mut status,
+        );
+        assert_eq!(answer, "Public answer.");
+        assert_eq!(status.as_deref(), Some("Reading the report…"));
+        status = None;
+        assert_eq!(
+            super::remove_working_lines(
+                "<working>One two three four five six seven…</working>\n",
+                &mut status,
+            ),
+            ""
+        );
+        assert_eq!(status, None);
+    }
+
+    #[test]
+    fn working_tags_in_markdown_code_are_literal() {
+        let literal = concat!(
+            "````xml\n<working>Fenced example…</working>\n```\n",
+            "<working>Still fenced…</working>\n````\n",
+            "  ~~~xml\r\n<working>Tilde example…</working>\r\n  ~~~~\r\n",
+            "Inline example: ``<working>Inline example…</working>``\n",
+            "Multiline example: ``\n<working>Still inline…</working>\n` then ``\n",
+            "Unmatched opener: `\n",
+        );
+        let mut status = None;
+        let answer = super::remove_working_lines(
+            &format!("{literal}<working>Checking the report…</working>\nPublic answer."),
+            &mut status,
+        );
+        assert_eq!(answer, format!("{literal}Public answer."));
+        assert_eq!(status.as_deref(), Some("Checking the report…"));
+    }
+
+    #[test]
+    fn working_lines_after_list_fences_are_metadata() {
+        for literal in [
+            "- ```xml\n  <working>Bullet example…</working>\n  ```\n",
+            "1. ```xml\n   <working>Numbered example…</working>\n   ```\n",
+            "  12) ~~~xml\n      <working>Indented example…</working>\n      ~~~\n",
+        ] {
+            let mut status = None;
+            let answer = super::remove_working_lines(
+                &format!("{literal}<working>Checking the report…</working>\nPublic answer."),
+                &mut status,
+            );
+            assert_eq!(answer, format!("{literal}Public answer."));
+            assert_eq!(status.as_deref(), Some("Checking the report…"));
+        }
     }
 
     #[test]

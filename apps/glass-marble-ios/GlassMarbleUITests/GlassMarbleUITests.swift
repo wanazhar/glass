@@ -293,23 +293,55 @@ final class GlassMarbleUITests: XCTestCase {
         let field = app.textFields.element(boundBy: 0)
         field.tap()
         field.typeText("A draft message for the composer shot")
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
         shot("11-composer-draft-keyboard")
         // Scroll away: streaming must not yank, jump button returns.
         let transcript = app.scrollViews.containing(.staticText, identifier: "Fixture message 299").firstMatch
         let latest = app.staticTexts["Fixture message 299"]
         let jump = app.buttons["Jump to latest"]
         XCTAssertTrue(transcript.exists)
-        let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
-        let end = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.50))
-        for _ in 0..<3 where !jump.exists {
+        let dismissalStart = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+        let dismissalEnd = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92))
+        dismissalStart.press(forDuration: 0.05, thenDragTo: dismissalEnd)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        shot("p1-keyboard-dismissed")
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.66))
+        for _ in 0..<3 where !jump.exists || latest.isHittable {
             start.press(forDuration: 0.05, thenDragTo: end)
         }
         XCTAssertTrue(jump.waitForExistence(timeout: 5))
         sleep(3)
         XCTAssertTrue(jump.isHittable)
         XCTAssertFalse(latest.isHittable)
+        shot("p1-jump-visible")
+        for _ in 0..<10 where !latest.isHittable {
+            end.press(forDuration: 0.05, thenDragTo: start)
+        }
+        assertHittable("Fixture message 299")
+        XCTAssertTrue(jump.waitForNonExistence(timeout: 5))
+        shot("p1-jump-hidden-at-bottom")
+        for _ in 0..<3 where !jump.exists {
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
         jump.tap()
         assertHittable("Fixture message 299")
         XCTAssertFalse(jump.exists)
+    }
+
+    func testTranscriptDayGapAndExactTime() {
+        openDefaultChats()
+        app.staticTexts["Fixture conversation 2"].tap()
+        assertHittable("Fixture message 2")
+        let day = Calendar.current.startOfDay(for: Date())
+        let lastMessageTime = day.addingTimeInterval(40_440)
+        assertHittable(day.formatted(date: .abbreviated, time: .omitted))
+        assertHittable(lastMessageTime.formatted(date: .omitted, time: .shortened))
+        shot("p1-day-separator-and-time-gap")
+        app.staticTexts["Fixture message 2"].press(forDuration: 1)
+        let exactTime = app.buttons[lastMessageTime.formatted(date: .abbreviated, time: .standard)]
+        XCTAssertTrue(exactTime.waitForExistence(timeout: 5))
+        shot("p1-long-press-exact-time")
     }
 }

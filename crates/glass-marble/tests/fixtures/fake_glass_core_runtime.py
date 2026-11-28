@@ -203,6 +203,8 @@ def run_turn(identifier, task, text, conversation, request):
         if "Show the Live Activity" in text:
             delay = float(os.environ.get("MARBLE_FIXTURE_LIVE_ACTIVITY_STEP_SECONDS", "8"))
             event(turn, "reasoning", {"text": "Plan the check."})
+            event(turn, "text", {"text": "<work"})
+            event(turn, "text", {"text": "ing>Checking the function…</working>\n"})
             time.sleep(delay)
             event(turn, "tool_start", {"callId": "activity-check", "name": "bash"})
             time.sleep(delay)

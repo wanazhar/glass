@@ -366,7 +366,8 @@ fn run_attempt(
                         // Providers may inline `<think>` blocks inside ordinary text
                         // deltas; split them out so reasoning never lands in replies.
                         let (visible, thought) = splitter.feed(delta);
-                        if !announced_replying && !visible.trim().is_empty() {
+                        text.push_str(&visible);
+                        if !announced_replying && has_visible_reply_text(&text) {
                             events.publish(
                                 &conversation_id,
                                 &task_id,
@@ -380,7 +381,6 @@ fn run_attempt(
                             &mut reasoning_boundary,
                             &thought,
                         ));
-                        text.push_str(&visible);
                         if let Some(turn) = live.as_deref_mut() {
                             turn.progress("", &reasoning);
                         }
@@ -518,6 +518,18 @@ fn run_attempt(
         }),
     );
     Ok(reply)
+}
+
+fn has_visible_reply_text(text: &str) -> bool {
+    const WORKING_TAG: &str = "<working>";
+    let trimmed = text.trim();
+    if WORKING_TAG.starts_with(trimmed) {
+        return false;
+    }
+    if trimmed.starts_with(WORKING_TAG) {
+        return !WORKING_TAG.starts_with(remove_working_lines(text, &mut None).trim());
+    }
+    true
 }
 
 fn remove_working_lines(text: &str, status: &mut Option<String>) -> String {
@@ -789,6 +801,26 @@ mod tests {
             ""
         );
         assert_eq!(status, None);
+    }
+
+    #[test]
+    fn replying_waits_until_visible_text_follows_working_metadata() {
+        use super::has_visible_reply_text;
+
+        for thinking in [
+            " \n",
+            "<work",
+            "<working>Checking",
+            "<working>Checking the report…</working>\n",
+            "<working>Checking the report…</working>\n<work",
+        ] {
+            assert!(!has_visible_reply_text(thinking), "{thinking:?}");
+        }
+        assert!(has_visible_reply_text("The answer"));
+        assert!(has_visible_reply_text(
+            "<working>Checking the report…</working>\nThe answer"
+        ));
+        assert!(has_visible_reply_text("`<working>` is a tag"));
     }
 
     #[test]

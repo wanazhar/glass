@@ -785,6 +785,19 @@ final class MarbleNavigationTests: XCTestCase {
         XCTAssertEqual(nav.viewingConversationId, "conv-1")
     }
 
+    func testNewAgentChatStaysInRosterChatWhenHostIgnoresAgent() throws {
+        var nav = MarbleNavigation()
+        nav.openMarble("ada")
+        let response = Data(#"{"id":"chat-1","title":"","taskIds":[],"updatedAt":0}"#.utf8)
+        var chat = try JSONDecoder().decode(MarbleConversation.self, from: response)
+        nav.openNewAgentChat(chat, agentId: "ada")
+        XCTAssertEqual(nav.chatPath, [.marbleChat("ada")])
+
+        chat.marbleId = "ada"
+        nav.openNewAgentChat(chat, agentId: "ada")
+        XCTAssertEqual(nav.chatPath, [.marbleChat("ada"), .conversation("chat-1")])
+    }
+
     func testDeletedPopsBackToList() {
         var nav = MarbleNavigation()
         nav.openConversation("a")

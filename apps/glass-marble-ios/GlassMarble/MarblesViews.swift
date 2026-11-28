@@ -614,7 +614,7 @@ struct MarbleChatScreen: View {
                             defer { creatingChat = false }
                             do {
                                 let chat = try await store.createConversation(marbleId: marbleId)
-                                navigation.openNewChat(chat.id)
+                                navigation.openNewAgentChat(chat, agentId: marbleId)
                             } catch {
                                 store.errorMessage = error.localizedDescription
                             }

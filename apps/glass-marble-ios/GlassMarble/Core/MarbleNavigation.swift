@@ -125,6 +125,11 @@ public struct MarbleNavigation: Sendable, Equatable {
         }
     }
 
+    mutating func openNewAgentChat(_ chat: MarbleConversation, agentId: String) {
+        guard chat.marbleId == agentId else { return }
+        openNewChat(chat.id)
+    }
+
     /// A roster row: the default assistant opens its chats list, a named
     /// marble opens its own chat.
     public mutating func openMarble(_ id: String) {

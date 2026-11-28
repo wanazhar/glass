@@ -20,6 +20,9 @@ final class MarbleNavigationModel: ObservableObject {
     }
     func setEveryonePath(_ path: [ChatRoute]) { state.everyonePath = path }
     func openNewChat(_ id: String?) { state.openNewChat(id) }
+    func openNewAgentChat(_ chat: MarbleConversation, agentId: String) {
+        state.openNewAgentChat(chat, agentId: agentId)
+    }
     func draftResolved(_ id: String) { state.draftResolved(id) }
     func deleted(_ id: String) { state.deleted(id) }
     func notificationTapped(_ id: String) { state.notificationTapped(id) }

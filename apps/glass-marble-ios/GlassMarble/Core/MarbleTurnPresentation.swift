@@ -105,6 +105,7 @@ struct MarbleToolActivity: Identifiable, Equatable {
     var isWebSearch: Bool { ["web_search", "web.search", "glass.web.search", "glass.browser.search"].contains(name) }
 
     var title: String {
+        if status == .failed { return failureTitle }
         if isWebSearch { return "Searched the web" }
         if ["bash", "shell", "exec"].contains(name) {
             let command = details?.command.isEmpty == false ? details?.command : query
@@ -126,6 +127,25 @@ struct MarbleToolActivity: Identifiable, Equatable {
             return "Opened \(host)"
         }
         return MarbleDecisionWords.action(tool: name)
+    }
+
+    private var failureTitle: String {
+        if isWebSearch { return "Couldn’t search the web" }
+        if ["bash", "shell", "exec"].contains(name) {
+            let command = details?.command.isEmpty == false ? details?.command : query
+            let executable = command?.split(whereSeparator: \.isWhitespace).first
+                .map { (String($0) as NSString).lastPathComponent }
+            return executable.map { "Couldn’t run \($0)" } ?? "Couldn’t run a shell command"
+        }
+        if ["read", "glass.workspace.read"].contains(name), let query {
+            return "Couldn’t read \((query as NSString).lastPathComponent)"
+        }
+        if ["web_fetch", "web.fetch", "glass.web.fetch"].contains(name),
+           let query, let host = URL(string: query)?.host {
+            return "Couldn’t open \(host)"
+        }
+        let action = MarbleDecisionWords.action(tool: name)
+        return "Couldn’t \(action.prefix(1).lowercased())\(action.dropFirst())"
     }
 
     /// The host stores transcript tool rows as "name · summary · status".

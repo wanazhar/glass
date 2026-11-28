@@ -832,7 +832,30 @@ The iOS app lives in `apps/glass-marble-ios` and is built with Xcode, not Cargo.
   user-supplied plain-HTTP origin. Prefer `tailscale serve` if you want TLS.
 
 The project ships one shared scheme, `Glass Marble`, so Xcode and CI build the
-same target without a per-machine scheme.
+same target without a per-machine scheme. Pass
+`MARBLE_GIT_COMMIT="$(git rev-parse HEAD)"` to `xcodebuild` when producing a
+release. The app compares that bundled commit with `/healthz` and shows a
+notice when the two builds differ.
+
+### Shell commands
+
+Shell tools run on the connected host. On iOS, the app sends messages and
+approval decisions over HTTP and displays tool output. No shell processes run
+on the phone or iPad.
+
+For private chats and Everyone’s scoped sessions on a macOS host, Marble uses
+`sandbox-exec`. Shells can read the current session, the current chat or shared
+group workspace, and designated system and toolchain files. They can write to
+that session and workspace, with a temporary directory inside the session.
+Reads of file contents elsewhere, including other chats and unrelated files
+in the host user’s home directory, are denied. File metadata and outbound
+network access are outside this file-content policy. Saved connections use
+the host credential broker so OAuth rotation stays in the shared Core store.
+Update Glass Core alongside Marble on macOS if you use a saved connection.
+
+Linux hosts use Glass Core’s configured sandbox policy for shell tools. The
+Marble per-chat macOS profile is specific to the host, regardless of which
+device connects.
 
 Build and run:
 

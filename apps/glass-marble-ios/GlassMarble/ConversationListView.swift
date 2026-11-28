@@ -206,9 +206,11 @@ struct ArchivedChatsView: View {
                         ConversationRow(conversation: conversation, line: store.stateLine(for: conversation))
                     }
                     .buttonStyle(.plain)
+                    .navigationLinkIndicatorVisibility(.hidden)
                     MarbleInlineButton(title: "Restore") {
                         Task { await store.archiveConversation(conversation.id, archived: false) }
                     }
+                    .accessibilityLabel("Restore \(conversation.displayTitle)")
                 }
                 .listRowBackground(MarbleTheme.card)
             }
@@ -220,23 +222,45 @@ struct ArchivedChatsView: View {
 }
 
 struct MarbleNewChatButton: View {
+    private enum ChatKind { case direct, group }
+
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var creating = false
     @State private var failure: String?
     @State private var makingGroup = false
     @State private var choosingChat = false
+    @State private var choice: ChatKind?
 
     var body: some View {
         Button { choosingChat = true } label: {
-            Label("New Chat", systemImage: "square.and.pencil")
+            Label("New chat", systemImage: "square.and.pencil")
                 .labelStyle(.iconOnly)
+                .frame(minWidth: 44, minHeight: 44)
         }
         .accessibilityIdentifier("chat.compose")
         .disabled(creating)
-        .confirmationDialog("New chat", isPresented: $choosingChat, titleVisibility: .visible) {
-            Button("Private chat") { create() }
-            Button("Group chat") { makingGroup = true }
+        .sheet(isPresented: $choosingChat, onDismiss: openChoice) {
+            NavigationStack {
+                ScrollView {
+                    VStack(spacing: 12) {
+                        MarbleInlineButton(title: "Private chat", prominent: true, expands: true) { choose(.direct) }
+                        MarbleInlineButton(title: "Group chat", expands: true) { choose(.group) }
+                    }
+                    .padding(16)
+                    .frame(maxWidth: 420)
+                    .frame(maxWidth: .infinity)
+                }
+                .marbleNewChatBackground()
+                .navigationTitle("New chat")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { choosingChat = false }
+                    }
+                }
+            }
+            .presentationDetents([.medium])
         }
         .sheet(isPresented: $makingGroup) {
             MarbleGroupComposer { thread in
@@ -251,6 +275,20 @@ struct MarbleNewChatButton: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(failure ?? "")
+        }
+    }
+
+    private func choose(_ kind: ChatKind) {
+        choice = kind
+        choosingChat = false
+    }
+
+    private func openChoice() {
+        defer { choice = nil }
+        switch choice {
+        case .direct: create()
+        case .group: makingGroup = true
+        case nil: break
         }
     }
 
@@ -304,6 +342,7 @@ private struct MarbleGroupComposer: View {
                 }
                 .listRowBackground(MarbleTheme.card)
                 Section("Members") { MarbleGroupMemberPicker(members: $members) }
+                    .listRowBackground(MarbleTheme.card)
                 Section("Task (optional)") {
                     TextField("Goal", text: $goal, axis: .vertical)
                         .accessibilityIdentifier("group.goal")
@@ -313,7 +352,7 @@ private struct MarbleGroupComposer: View {
                 .listRowBackground(MarbleTheme.card)
             }
             .scrollContentBackground(.hidden)
-            .background(MarbleTheme.paper)
+            .marbleNewChatBackground()
             .navigationTitle("New group chat")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

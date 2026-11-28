@@ -41,12 +41,29 @@ struct MarbleSilhouette: Shape {
         case "petal":
             vertices = [point(0.04, 0.2), point(0.61, 0), point(0.98, 0.4),
                         point(0.8, 0.96), point(0.28, 0.89)]
+        case "cross":
+            vertices = [point(0.3, 0), point(0.7, 0), point(0.7, 0.3), point(1, 0.3),
+                        point(1, 0.7), point(0.7, 0.7), point(0.7, 1), point(0.3, 1),
+                        point(0.3, 0.7), point(0, 0.7), point(0, 0.3), point(0.3, 0.3)]
+        case "moon":
+            var path = Path()
+            path.move(to: point(0.85, 0.04))
+            path.addQuadCurve(to: point(0.84, 0.94), control: point(0.19, 0.51))
+            path.addCurve(to: point(0.85, 0.04), control1: point(-0.24, 1.28), control2: point(-0.23, -0.24))
+            return path
+        case "clover":
+            var path = Path()
+            for (x, y) in [(0.0, 0.25), (0.5, 0.25), (0.25, 0.0), (0.25, 0.5), (0.25, 0.25)] {
+                path.addEllipse(in: CGRect(origin: point(x, y), size: CGSize(width: rect.width / 2, height: rect.height / 2)))
+            }
+            return path
         default:
-            if let index = Int(glyph.dropFirst("roster-".count)), glyph.hasPrefix("roster-"), index > 0 {
-                let count = 6 + index % 5
+            if let index = Int(glyph.dropFirst("roster-".count)), glyph.hasPrefix("roster-"),
+               (1...32).contains(index) {
+                let count = 5 + (index - 1) % 8
                 vertices = (0..<count * 2).map { vertex in
                     let angle = Double(vertex) * .pi / Double(count) - .pi / 2
-                    let radius = vertex.isMultiple(of: 2) ? 0.49 : 0.37 - 0.03 * Double(index / 5)
+                    let radius = vertex.isMultiple(of: 2) ? 0.49 : 0.37 - 0.06 * Double((index - 1) / 8)
                     return point(0.5 + cos(angle) * radius, 0.5 + sin(angle) * radius)
                 }
                 break
@@ -69,22 +86,78 @@ struct MarbleSilhouette: Shape {
     }
 }
 
+struct MarbleAvatarChoices {
+    static let builtIns: [String: (glyph: String, hue: Int)] = [
+        "marble": ("circle", 210), "lead": ("hex", 42), "engineer": ("square", 152),
+        "designer": ("drop", 280), "researcher": ("star", 329), "reviewer": ("shield", 0),
+        "finance": ("diamond", 105), "shopper": ("triangle", 180)
+    ]
+    private static let shapes = MarbleMentions.glyphs
+        + ["diamond", "triangle", "capsule", "petal", "cross", "moon", "clover"]
+        + (1...32).map { "roster-\($0)" }
+
+    private var usedGlyphs = Set(MarbleAvatarChoices.builtIns.values.map { $0.glyph })
+    private var usedHues = MarbleAvatarChoices.builtIns.values.map { $0.hue }
+
+    var glyphs: [String] { Self.shapes.filter { !usedGlyphs.contains($0) } }
+
+    var hues: [Int] {
+        let named = MarbleTheme.hues.map(\.degrees).filter { distance($0) >= 8 }
+        return named.isEmpty ? [furthestHue] : named
+    }
+
+    private var furthestHue: Int {
+        (0..<360).max { lhs, rhs in
+            let lhsDistance = distance(lhs)
+            let rhsDistance = distance(rhs)
+            return lhsDistance == rhsDistance ? lhs < rhs : lhsDistance < rhsDistance
+        } ?? 0
+    }
+
+    private func distance(_ hue: Int) -> Int {
+        usedHues.map {
+            let delta = abs($0 - hue)
+            return min(delta, 360 - delta)
+        }.min() ?? 180
+    }
+
+    func available(glyph: String, hue: Int) -> (glyph: String, hue: Int) {
+        let hue = (hue % 360 + 360) % 360
+        return (glyphs.contains(glyph) ? glyph : glyphs.first ?? "petal",
+                distance(hue) >= 8 ? hue : furthestHue)
+    }
+
+    mutating func assign(_ agent: MarblePrismMarble) -> (glyph: String, hue: Int) {
+        if let fixed = Self.builtIns[agent.id] { return fixed }
+        let value = available(glyph: agent.glyph, hue: agent.hue)
+        usedGlyphs.insert(value.glyph)
+        usedHues.append(value.hue)
+        return value
+    }
+}
+
 extension MarbleStore {
     func rosterStyle(for agent: MarblePrismMarble) -> MarbleSpeakerStyle {
-        var hues: [Int] = []
-        var glyphs: Set<String> = []
-        let shapes = MarbleMentions.glyphs + ["diamond", "triangle", "capsule", "petal"]
+        var choices = MarbleAvatarChoices()
         for member in prism.marbles {
-            let preferredHue = MarbleTheme.hues[MarbleTheme.paletteIndex(for: member.hue)].degrees
-            let hue = !hues.contains(preferredHue) ? preferredHue
-                : MarbleTheme.hues.first { !hues.contains($0.degrees) }?.degrees ?? MarbleMentions.nextHue(used: hues)
-            let glyph = !glyphs.contains(member.glyph) ? member.glyph
-                : shapes.first { !glyphs.contains($0) } ?? "roster-\(glyphs.count - shapes.count + 1)"
-            if member.id == agent.id { return .init(name: agent.name, hue: hue, glyph: glyph) }
-            hues.append(hue)
-            glyphs.insert(glyph)
+            let look = choices.assign(member)
+            if member.id == agent.id { return .init(name: agent.name, hue: look.hue, glyph: look.glyph) }
         }
-        return .init(name: agent.name, hue: agent.hue, glyph: agent.glyph)
+        let look = choices.assign(agent)
+        return .init(name: agent.name, hue: look.hue, glyph: look.glyph)
+    }
+
+    func avatarChoices(excluding id: String? = nil) -> MarbleAvatarChoices {
+        var all = MarbleAvatarChoices()
+        var choices = MarbleAvatarChoices()
+        for var member in prism.marbles {
+            let look = all.assign(member)
+            if member.id != id {
+                (member.glyph, member.hue) = look
+                _ = choices.assign(member)
+            }
+        }
+        return choices
     }
 }
 

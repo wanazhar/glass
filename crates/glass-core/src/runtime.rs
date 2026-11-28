@@ -1550,6 +1550,10 @@ pub fn serve(cfg: config::Config) -> Result<(), String> {
             if text_blocks {
                 initialization["capabilities"]["textBlockBoundaries"] = json!(true);
             }
+            #[cfg(target_os = "macos")]
+            if crate::auth::broker::connected() {
+                initialization["capabilities"]["scopedCredentials"] = json!(true);
+            }
             reply(&id, initialization);
             continue;
         }

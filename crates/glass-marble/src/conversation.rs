@@ -460,7 +460,7 @@ pub struct Conversation {
     steering: Option<mpsc::Receiver<SteerRequest>>,
     /// How to start a fresh engine after the transport dies. `None` means this
     /// conversation drives a runtime it cannot replace (one-shot runs, tests).
-    respawn: Option<Arc<dyn Fn() -> Command + Send + Sync>>,
+    respawn: Option<RuntimeFactory>,
     /// Where the engine keeps its durable session journal.
     storage_dir: PathBuf,
     device_time_zone: Option<String>,
@@ -486,6 +486,7 @@ pub struct Conversation {
 }
 
 type Instructions = Arc<dyn Fn(&Path) -> String + Send + Sync>;
+type RuntimeFactory = Arc<dyn Fn() -> std::io::Result<Command> + Send + Sync>;
 
 impl Drop for Conversation {
     fn drop(&mut self) {
@@ -496,6 +497,21 @@ impl Drop for Conversation {
 #[cfg(target_os = "macos")]
 struct ScopedCoreConfig(PathBuf);
 
+fn requires_scoped_credentials(command: &Command) -> bool {
+    command
+        .get_envs()
+        .any(|(key, value)| key == "GLASS_CORE_AUTH_FD" && value.is_some())
+}
+
+fn require_scoped_credentials(expected: bool, init: &Value) -> Result<(), MarbleError> {
+    if expected && init["capabilities"]["scopedCredentials"] != true {
+        return Err(MarbleError::Protocol(
+            "Update glass-core to use host sign-in with scoped chats".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 impl Drop for ScopedCoreConfig {
     fn drop(&mut self) {
@@ -504,31 +520,33 @@ impl Drop for ScopedCoreConfig {
 }
 
 #[cfg(target_os = "macos")]
-fn scoped_core_config(
-    command: &Command,
-    session: &Path,
-    workspace: &Path,
-) -> std::io::Result<Option<ScopedCoreConfig>> {
-    let env = |name: &str| {
-        command
-            .get_envs()
-            .find(|(key, _)| *key == name)
-            .map_or_else(
-                || std::env::var_os(name),
-                |(_, value)| value.map(ToOwned::to_owned),
-            )
-            .filter(|value| !value.is_empty())
-    };
-    let source = env("XDG_CONFIG_HOME")
+fn command_env(command: &Command, name: &str) -> Option<std::ffi::OsString> {
+    command
+        .get_envs()
+        .find(|(key, _)| *key == name)
+        .map_or_else(
+            || std::env::var_os(name),
+            |(_, value)| value.map(ToOwned::to_owned),
+        )
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn core_config_source(command: &Command, workspace: &Path) -> PathBuf {
+    command_env(command, "XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| env("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .or_else(|| command_env(command, "HOME").map(|home| PathBuf::from(home).join(".config")))
         .map_or_else(
             || workspace.join(".glass-core/config"),
             |path| workspace.join(path).join("glass-core"),
-        );
+        )
+}
+
+#[cfg(target_os = "macos")]
+fn scoped_core_config(source: &Path, session: &Path) -> std::io::Result<ScopedCoreConfig> {
     let config = match std::fs::read_to_string(source.join("config.toml")) {
         Ok(config) => config,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error),
     };
     let mut config = config.parse::<toml_edit::DocumentMut>().map_err(|_| {
@@ -543,19 +561,18 @@ fn scoped_core_config(
             .and_then(toml_edit::Item::as_str)
             .map(|value| value.trim().to_ascii_lowercase())
     };
-    if setting("sandbox").as_deref() != Some("workspace")
-        || !matches!(
+    if setting("sandbox").as_deref() == Some("workspace")
+        && matches!(
             setting("permission_profile").as_deref(),
             None | Some("unrestricted")
         )
-        || !matches!(setting("sandbox_egress").as_deref(), None | Some("off"))
+        && matches!(setting("sandbox_egress").as_deref(), None | Some("off"))
     {
-        return Ok(None);
+        config["sandbox"] = toml_edit::value("off");
     }
     if matches!(setting("sandbox_env").as_deref(), None | Some("")) {
         config["sandbox_env"] = toml_edit::value("scrub");
     }
-    config["sandbox"] = toml_edit::value("off");
     let root = ScopedCoreConfig(session.join(format!(".core-config-{}", crate::next_request_id())));
     let destination = root.0.join("glass-core");
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -563,10 +580,25 @@ fn scoped_core_config(
         .recursive(true)
         .mode(0o700)
         .create(&destination)?;
-    for entry in std::fs::read_dir(source)? {
-        let entry = entry?;
-        if entry.file_name() != "config.toml" {
-            std::os::unix::fs::symlink(entry.path(), destination.join(entry.file_name()))?;
+    for name in ["requirements.toml", "addons.json", "profiles.json"] {
+        match std::fs::File::open(source.join(name)) {
+            Ok(input) => {
+                use std::io::Read;
+                let mut destination = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(destination.join(name))?;
+                let written = std::io::copy(&mut input.take(1024 * 1024 + 1), &mut destination)?;
+                if written > 1024 * 1024 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Core configuration file exceeds 1 MiB",
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
     }
     use std::io::Write;
@@ -576,40 +608,147 @@ fn scoped_core_config(
         .mode(0o600)
         .open(destination.join("config.toml"))?
         .write_all(config.to_string().as_bytes())?;
-    Ok(Some(root))
+    Ok(root)
 }
 
 #[cfg(target_os = "macos")]
-fn sandbox_conversation_runtime(command: Command, session: &Path, workspace: &Path) -> Command {
+fn connect_core_auth_broker(
+    core: &Command,
+    scoped: &mut Command,
+    cwd: &Path,
+) -> std::io::Result<()> {
+    use std::os::fd::{AsRawFd, OwnedFd};
+    use std::os::unix::{net::UnixStream, process::CommandExt};
+    use std::process::Stdio;
+    let (client, server) = UnixStream::pair()?;
+    let input = OwnedFd::from(server.try_clone()?);
+    let output = OwnedFd::from(server);
+    let mut command = Command::new(core.get_program());
+    command.arg("marble-auth-broker").current_dir(cwd);
+    for (key, value) in core.get_envs() {
+        match value {
+            Some(value) => {
+                command.env(key, value);
+            }
+            None => {
+                command.env_remove(key);
+            }
+        }
+    }
+    let mut broker = command
+        .stdin(Stdio::from(input))
+        .stdout(Stdio::from(output))
+        .spawn()?;
+    std::thread::spawn(move || {
+        let _ = broker.wait();
+    });
+
+    scoped.env("GLASS_CORE_AUTH_FD", client.as_raw_fd().to_string());
+    // The Core runtime makes the socket close-on-exec again before starting
+    // any commands. The closure keeps this end open until the runtime spawns.
+    unsafe {
+        scoped.pre_exec(move || {
+            if libc::fcntl(client.as_raw_fd(), libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn sandbox_conversation_runtime(
+    command: &Command,
+    session: &Path,
+    workspace: &Path,
+    config: &Path,
+) -> Command {
     let store = session.parent().expect("session storage has a parent");
+    let config = config
+        .canonicalize()
+        .unwrap_or_else(|_| config.to_path_buf());
     let mut sandbox = Command::new("/usr/bin/sandbox-exec");
+    let program = Path::new(command.get_program());
+    let program = if program.components().count() == 1 {
+        command_env(command, "PATH")
+            .and_then(|path| {
+                std::env::split_paths(&path)
+                    .map(|dir| workspace.join(dir).join(program))
+                    .find_map(|candidate| {
+                        candidate
+                            .canonicalize()
+                            .ok()
+                            .filter(|candidate| candidate.is_file())
+                    })
+            })
+            .unwrap_or_else(|| program.to_path_buf())
+    } else {
+        let path = workspace.join(program);
+        path.canonicalize().unwrap_or(path)
+    };
     for (key, path) in [
         ("STORE", store),
         ("SESSION", session),
         ("WORKSPACE", workspace),
+        ("CORE_CONFIG", &config),
     ] {
         let mut parameter = std::ffi::OsString::from(format!("{key}="));
         parameter.push(path);
         sandbox.arg("-D").arg(parameter);
     }
+    let mut executable = std::ffi::OsString::from("EXECUTABLE=");
+    executable.push(&program);
+    sandbox.arg("-D").arg(executable);
     sandbox
         .args([
             "-p",
             r#"(version 1)
 (allow default)
+(deny file-read*)
+(allow file-read-metadata)
+(allow file-read*
+    (subpath (param "SESSION"))
+    (subpath (param "WORKSPACE"))
+    (literal (param "EXECUTABLE"))
+    (subpath "/System/Library")
+    (subpath "/System/Volumes/Preboot/Cryptexes/OS")
+    (subpath "/Library/Apple/System/Library")
+    (subpath "/bin")
+    (subpath "/sbin")
+    (subpath "/usr/bin")
+    (subpath "/usr/sbin")
+    (subpath "/usr/lib")
+    (subpath "/usr/libexec")
+    (subpath "/usr/share")
+    (subpath "/usr/local/bin")
+    (subpath "/usr/local/lib")
+    (subpath "/usr/local/Cellar")
+    (subpath "/opt/homebrew/bin")
+    (subpath "/opt/homebrew/lib")
+    (subpath "/opt/homebrew/Cellar")
+    (subpath "/private/etc/ssl")
+    (literal "/private/etc/hosts")
+    (literal "/private/etc/resolv.conf")
+    (literal "/private/etc/services")
+    (subpath "/private/var/db/dyld")
+    (subpath "/private/var/db/timezone")
+    (literal "/dev/null")
+    (literal "/dev/random")
+    (literal "/dev/urandom"))
 (deny file-write*
     (require-all
         (require-not (subpath (param "SESSION")))
         (require-not (subpath (param "WORKSPACE")))
         (require-not (literal "/dev/null"))))
-(deny file-read*
+(deny file-read-data
     (require-all
         (subpath (param "STORE"))
         (require-not (subpath (param "SESSION")))
         (require-not (subpath (param "WORKSPACE")))))
-(allow file-read-metadata (literal (param "STORE")))"#,
+(deny file-read-data file-write* (subpath (param "CORE_CONFIG")))"#,
         ])
-        .arg(command.get_program())
+        .arg(program)
         .args(command.get_args());
     for (key, value) in command.get_envs() {
         match value {
@@ -678,12 +817,14 @@ impl Conversation {
         events: EventBus,
     ) -> Result<Self, MarbleError> {
         command.current_dir(cwd);
+        let scoped_credentials = requires_scoped_credentials(&command);
         let mut client = RuntimeClient::spawn_command(command).map_err(MarbleError::Io)?;
         let init_id = client
             .request("initialize", value!({"protocolVersion":2,"requiredCapabilities":["mixedTools"],"optionalCapabilities":["textBlockBoundaries"],"storageDir":storage_dir}))
             .map_err(MarbleError::Io)?;
         let init = Self::wait_response(&mut client, &router, &events, &init_id)?;
         Self::require_capabilities(&init)?;
+        require_scoped_credentials(scoped_credentials, &init)?;
         Ok(Self {
             text_block_boundaries: init["capabilities"]["textBlockBoundaries"] == true,
             speaker: "Marble".into(),
@@ -776,7 +917,7 @@ impl Conversation {
     /// which also loses the loaded document; with one, the next turn gets a
     /// fresh engine and the product never stops serving.
     pub fn with_respawn(mut self, factory: impl Fn() -> Command + Send + Sync + 'static) -> Self {
-        self.respawn = Some(Arc::new(factory));
+        self.respawn = Some(Arc::new(move || Ok(factory())));
         self
     }
 
@@ -826,22 +967,28 @@ impl Conversation {
         std::fs::create_dir_all(&root).map_err(MarbleError::Io)?;
         let root = root.canonicalize().map_err(MarbleError::Io)?;
         #[cfg(target_os = "macos")]
-        let factory: Arc<dyn Fn() -> Command + Send + Sync> = {
+        let factory: RuntimeFactory = {
             std::fs::create_dir_all(root.join(".tmp")).map_err(MarbleError::Io)?;
             let factory = factory.clone();
             let root = root.clone();
             let cwd = cwd.clone();
-            let config = scoped_core_config(&factory(), &root, &cwd).map_err(MarbleError::Io)?;
+            let host_cwd = self.cwd.clone();
+            let source = core_config_source(&factory().map_err(MarbleError::Io)?, &host_cwd);
+            let config = scoped_core_config(&source, &root).map_err(MarbleError::Io)?;
             std::sync::Arc::new(move || {
-                let mut command = sandbox_conversation_runtime(factory(), &root, &cwd);
-                if let Some(config) = &config {
-                    let ScopedCoreConfig(path) = config;
-                    command.env("XDG_CONFIG_HOME", path);
+                let engine = factory()?;
+                let mut command = sandbox_conversation_runtime(&engine, &root, &cwd, &source);
+                let ScopedCoreConfig(path) = &config;
+                command.env("XDG_CONFIG_HOME", path);
+                match std::fs::metadata(source.join("auth.json")) {
+                    Ok(_) => connect_core_auth_broker(&engine, &mut command, &host_cwd)?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
                 }
-                command
+                Ok(command)
             })
         };
-        let mut command = factory();
+        let mut command = factory().map_err(MarbleError::Io)?;
         if let Some(zone) = zone {
             command.env("TZ", zone);
         }
@@ -958,17 +1105,19 @@ impl Conversation {
                 "the engine transport failed and this conversation has no way to restart it".into(),
             ));
         };
-        let mut command = factory();
+        let mut command = factory().map_err(MarbleError::Io)?;
         command.current_dir(&self.cwd);
         if let Some(zone) = &self.device_time_zone {
             command.env("TZ", zone);
         }
+        let scoped_credentials = requires_scoped_credentials(&command);
         let mut client = RuntimeClient::spawn_command(command).map_err(MarbleError::Io)?;
         let init_id = client
             .request("initialize", value!({"protocolVersion":2,"requiredCapabilities":["mixedTools"],"optionalCapabilities":["textBlockBoundaries"],"storageDir":self.storage_dir}))
             .map_err(MarbleError::Io)?;
         let init = Self::wait_response(&mut client, &self.router, &self.events, &init_id)?;
         Self::require_capabilities(&init)?;
+        require_scoped_credentials(scoped_credentials, &init)?;
         self.text_block_boundaries = init["capabilities"]["textBlockBoundaries"] == true;
         let previous = std::mem::replace(&mut self.client, client);
         drop(previous);
@@ -2237,10 +2386,9 @@ mod tests {
         core.arg("runtime")
             .env("XDG_CONFIG_HOME", &config)
             .env("XDG_DATA_HOME", dir.join("data"));
-        let scoped = scoped_core_config(&core, &session, &workspace)
-            .unwrap()
-            .unwrap();
-        let mut command = sandbox_conversation_runtime(core, &session, &workspace);
+        let source = core_config_source(&core, &workspace);
+        let scoped = scoped_core_config(&source, &session).unwrap();
+        let mut command = sandbox_conversation_runtime(&core, &session, &workspace, &source);
         command
             .current_dir(&workspace)
             .env("XDG_CONFIG_HOME", &scoped.0);
@@ -2300,20 +2448,25 @@ mod tests {
     #[test]
     fn scoped_runtime_can_read_its_group_workspace_but_not_another_chat() {
         let dir = std::env::temp_dir().join(format!("marble-sandbox-{}", crate::next_request_id()));
-        let session = dir.join("session");
         let workspace = dir.join("group");
-        let sibling = dir.join("other");
-        for root in [&session, &workspace, &sibling] {
+        let sibling = dir.join("chats/other");
+        let unrelated = dir.join("unrelated");
+        let session = dir.join("chats/session");
+        for root in [&session, &workspace, &sibling, &unrelated] {
             std::fs::create_dir_all(root).unwrap();
             std::fs::write(root.join("file"), b"test").unwrap();
         }
         let session = session.canonicalize().unwrap();
         let workspace = workspace.canonicalize().unwrap();
         let sibling = sibling.canonicalize().unwrap();
+        let unrelated = unrelated.canonicalize().unwrap();
+        let config = workspace.join("core-config");
+        std::fs::create_dir(&config).unwrap();
+        std::fs::write(config.join("file"), b"saved credentials").unwrap();
         let read = |root: &std::path::Path| {
             let mut command = std::process::Command::new("/bin/cat");
             command.arg(root.join("file"));
-            super::sandbox_conversation_runtime(command, &session, &workspace)
+            super::sandbox_conversation_runtime(&command, &session, &workspace, &config)
                 .output()
                 .unwrap()
         };
@@ -2322,11 +2475,24 @@ mod tests {
         let denied = read(&sibling);
         assert!(!denied.status.success());
         assert!(denied.stdout.is_empty());
+        assert!(!read(&unrelated).status.success());
+        assert!(!read(&config).status.success());
+        let link = workspace.join("link");
+        std::os::unix::fs::symlink(unrelated.join("file"), &link).unwrap();
+        let mut cat = Command::new("/bin/cat");
+        cat.arg(link);
+        assert!(
+            !sandbox_conversation_runtime(&cat, &session, &workspace, &config)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
         let store = session.parent().unwrap();
         let mut metadata = std::process::Command::new("/usr/bin/stat");
         metadata.arg(store);
         assert!(
-            super::sandbox_conversation_runtime(metadata, &session, &workspace)
+            super::sandbox_conversation_runtime(&metadata, &session, &workspace, &config)
                 .output()
                 .unwrap()
                 .status
@@ -2335,7 +2501,7 @@ mod tests {
         let mut list = std::process::Command::new("/bin/ls");
         list.arg(store);
         assert!(
-            !super::sandbox_conversation_runtime(list, &session, &workspace)
+            !super::sandbox_conversation_runtime(&list, &session, &workspace, &config)
                 .output()
                 .unwrap()
                 .status
@@ -2360,7 +2526,7 @@ mod tests {
         let write = |path: &Path| {
             let mut shell = Command::new("/bin/sh");
             shell.args(["-c", r#"printf test > "$1""#, "sh"]).arg(path);
-            sandbox_conversation_runtime(shell, &session, &workspace)
+            sandbox_conversation_runtime(&shell, &session, &workspace, &dir.join("core-config"))
                 .output()
                 .unwrap()
         };

@@ -125,6 +125,14 @@ final class FixtureDecodeTests: XCTestCase {
         XCTAssertEqual(health.build?.gitCommitShort, "6e211232b75e")
     }
 
+    func testHostVersionWarnsOnlyWhenKnownCommitsDiffer() {
+        let build = MarbleHealth.Build(version: "0.3.14", gitCommit: "198e346c0000", gitCommitShort: "198e346c")
+        XCTAssertFalse(build.differs(from: nil))
+        XCTAssertFalse(build.differs(from: "$(MARBLE_GIT_COMMIT)"))
+        XCTAssertFalse(build.differs(from: "198E346"))
+        XCTAssertTrue(build.differs(from: "198e346c0010"))
+    }
+
     func testLeanStateDecodes() throws {
         let state = try decode(MarbleState.self, "state-lean.json")
         XCTAssertFalse(state.conversations.isEmpty)
@@ -236,6 +244,12 @@ final class SSEParserTests: XCTestCase {
 }
 
 final class ErrorMappingTests: XCTestCase {
+    func testCancelledNetworkRequestPreservesTaskCancellation() {
+        XCTAssertTrue(MarbleClientError.requestError(URLError(.cancelled)) is CancellationError)
+        XCTAssertTrue(MarbleClientError.requestError(CancellationError()) is CancellationError)
+        XCTAssertEqual(MarbleClientError.requestError(URLError(.timedOut)) as? MarbleClientError, .timeout)
+    }
+
     private func validate(status: Int, body: String = "", acceptsNotFound: Bool = false) throws {
         let response = HTTPURLResponse(
             url: URL(string: "http://h/api")!,

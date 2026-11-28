@@ -1520,6 +1520,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "glass-runtime-client",
+ "libc",
  "regex-syntax",
  "ring",
  "rustls",

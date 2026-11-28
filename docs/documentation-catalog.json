@@ -6542,6 +6542,11 @@
           "anchor": "ios-client"
         },
         {
+          "level": "3",
+          "title": "Shell commands",
+          "anchor": "shell-commands"
+        },
+        {
           "level": "2",
           "title": "Build and run",
           "anchor": "build-and-run"

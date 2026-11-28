@@ -5,6 +5,7 @@ enum MarbleTheme {
     static let tint = adaptive(0x653E52, 0xE3B7CA)
     static let card = adaptive(0xFFFBF6, 0x2D2523)
     static let wash = adaptive(0xEEE3E0, 0x3C2C32)
+    static let chatWash = adaptive(0xF4DCD2, 0x3E2931)
     static let ink = adaptive(0x282022, 0xFFF4E9)
     static let muted = adaptive(0x695B59, 0xCBB9AD)
     static let line = adaptive(0xE2D6CB, 0x51443F)
@@ -24,11 +25,15 @@ enum MarbleTheme {
     }
 
     static let hues: [(degrees: Int, name: String, fill: Color)] = [
+        (0, "Red", adaptive(0xDC6469, 0xF48388)),
+        (105, "Green", adaptive(0x88B35D, 0xA6CB76)),
+        (180, "Teal", adaptive(0x59ABAB, 0x7AC5C4)),
+        (210, "Blue", adaptive(0x639AD1, 0x82B4E4)),
         (15, "Clay", clay), (27, "Peach", adaptive(0xF6C8AE, 0xE9AD92)),
-        (85, "Moss", moss), (280, "Plum", adaptive(0xD8BFDE, 0xC9A8D1)),
-        (42, "Honey", adaptive(0xECC988, 0xDDB570)), (230, "Iris", adaptive(0xC5C9E9, 0xADB4DD)),
-        (329, "Rose", adaptive(0xE9BDD0, 0xDDA9C3)),
-        (152, "Mint", adaptive(0x9DDEC8, 0x8DCCB5)),
+        (85, "Moss", moss), (280, "Plum", adaptive(0xA98ACC, 0xBA9CDD)),
+        (42, "Honey", adaptive(0xD7AB54, 0xECC275)), (230, "Iris", adaptive(0xC5C9E9, 0xADB4DD)),
+        (329, "Rose", adaptive(0xDA81AE, 0xEBA0C6)),
+        (152, "Mint", adaptive(0x6ABF9C, 0x8AD2AF)),
         (196, "Sky", adaptive(0xA7D6E7, 0x94C9DF)),
         (56, "Lemon", adaptive(0xEDE3A0, 0xD9CE87))
     ]
@@ -66,29 +71,31 @@ struct MarbleInlineButton: View {
     let title: LocalizedStringKey
     var role: ButtonRole? = nil
     var prominent = false
+    var expands = false
     let action: () -> Void
 
     var body: some View {
-        if prominent {
-            control.buttonStyle(.glassProminent)
-        } else {
-            control.buttonStyle(.glass)
-        }
-    }
-
-    private var control: some View {
         Button(role: role, action: action) {
-            Text(title).frame(minWidth: 44, minHeight: 44)
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .multilineTextAlignment(.center)
+                .foregroundStyle(role == .destructive ? Color.red : MarbleTheme.ink)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .frame(minWidth: 44, maxWidth: expands ? .infinity : nil, minHeight: 44)
+                .contentShape(Capsule())
+                .marbleFloating(tint: prominent ? (role == .destructive ? .red : MarbleTheme.tint) : nil,
+                                interactive: true)
         }
-        .buttonBorderShape(.capsule)
+        .buttonStyle(.plain)
     }
 }
 
 extension View {
     /// Background for controls that float above the transcript.
     /// Liquid Glass with an opaque fill when transparency is reduced.
-    func marbleFloating(in shape: some Shape = Capsule()) -> some View {
-        modifier(MarbleFloatingMaterial(shape: shape))
+    func marbleFloating(in shape: some Shape = Capsule(), tint: Color? = nil, interactive: Bool = false) -> some View {
+        modifier(MarbleFloatingMaterial(shape: shape, tint: tint, interactive: interactive))
     }
 
     func marbleChatBar<Bar: View>(edge: VerticalEdge, @ViewBuilder content: () -> Bar) -> some View {
@@ -96,7 +103,18 @@ extension View {
     }
 
     func marbleChatScrollEdges() -> some View {
-        scrollEdgeEffectStyle(.soft, for: .top)
+        scrollEdgeEffectStyle(.hard, for: .top)
+            .scrollEdgeEffectStyle(.soft, for: .bottom)
+    }
+
+    func marbleNewChatBackground() -> some View {
+        background {
+            MarbleTheme.paper.overlay(alignment: .top) {
+                LinearGradient(colors: [MarbleTheme.chatWash, MarbleTheme.paper],
+                               startPoint: .top, endPoint: .bottom)
+            }
+            .ignoresSafeArea()
+        }
     }
 
     func marbleToolbarTitle() -> some View {
@@ -108,13 +126,15 @@ extension View {
 
 private struct MarbleFloatingMaterial<S: Shape>: ViewModifier {
     var shape: S
+    var tint: Color?
+    var interactive: Bool
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     func body(content: Content) -> some View {
         if reduceTransparency {
-            content.background(MarbleTheme.card, in: shape)
+            content.background(tint == nil ? MarbleTheme.card : MarbleTheme.wash, in: shape)
         } else {
-            content.glassEffect(.regular, in: shape)
+            content.glassEffect(.regular.tint(tint).interactive(interactive), in: shape)
         }
     }
 }

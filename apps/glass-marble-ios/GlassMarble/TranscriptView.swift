@@ -76,7 +76,7 @@ struct TranscriptView: View {
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
-        .background(MarbleTheme.paper)
+        .background(MarbleTheme.paper.opacity(entries.isEmpty ? 0 : 1))
         .scrollDismissesKeyboard(.interactively)
         .marbleFollowsLatest(hasMessages: !entries.isEmpty, outgoing: store.lastOutgoing(to: target)) { beforePrepend in
             if let conversationId { await store.loadOlderHistory(conversationId, beforePrepend: beforePrepend) }
@@ -380,12 +380,17 @@ struct MarbleToolRow: View {
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: tool.isWebSearch ? "magnifyingglass" : "wrench.and.screwdriver")
-                Text([sender, tool.title].compactMap { $0 }.joined(separator: " · "))
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tool.title)
+                        .foregroundStyle(tool.status == .failed ? Color.red : MarbleTheme.muted)
+                    if let sender { Text(sender).foregroundStyle(MarbleTheme.muted) }
+                }
                 Spacer(minLength: 4)
                 if let elapsed = tool.details?.elapsedMs { Text(MarbleToolTimeline.duration(elapsed)) }
                 if tool.status == .failed {
-                    Label("Failed", systemImage: "xmark.circle.fill").foregroundStyle(.red)
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                        .accessibilityHidden(true)
                 } else {
                     Text(tool.status.rawValue)
                 }
@@ -638,7 +643,6 @@ struct ComposerBar: View {
             }
         }
         .padding(.horizontal, 6)
-        .padding(.vertical, 5)
         .marbleFloating()
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
@@ -940,8 +944,8 @@ struct ApprovalCard: View {
     }
 
     @ViewBuilder private var actions: some View {
-        MarbleInlineButton(title: "Deny", role: .destructive) { onDecision(false, false) }
-        MarbleInlineButton(title: "Always allow") { onDecision(true, true) }
-        MarbleInlineButton(title: "Allow", prominent: true) { onDecision(true, false) }
+        MarbleInlineButton(title: "Deny", role: .destructive, expands: true) { onDecision(false, false) }
+        MarbleInlineButton(title: "Always allow", expands: true) { onDecision(true, true) }
+        MarbleInlineButton(title: "Allow", prominent: true, expands: true) { onDecision(true, false) }
     }
 }

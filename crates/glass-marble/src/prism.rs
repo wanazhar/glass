@@ -50,7 +50,68 @@ pub const ROLE_LIMIT: usize = 80;
 pub const PERSONA_LIMIT: usize = 2000;
 /// Glyphs the roster offers. Simple shapes read at sidebar size; the eyes and
 /// the state motion are what make a marble recognisable rather than the outline.
-pub const GLYPHS: [&str; 6] = ["circle", "hex", "shield", "drop", "star", "square"];
+pub const GLYPHS: [&str; 13] = [
+    "circle", "hex", "shield", "drop", "star", "square", "diamond", "triangle", "capsule", "petal",
+    "cross", "moon", "clover",
+];
+const BUILTIN_AVATARS: [(&str, &str, u16); 8] = [
+    ("marble", "circle", 210),
+    ("lead", "hex", 42),
+    ("engineer", "square", 152),
+    ("designer", "drop", 280),
+    ("researcher", "star", 329),
+    ("reviewer", "shield", 0),
+    ("finance", "diamond", 105),
+    ("shopper", "triangle", 180),
+];
+const AVATAR_HUE_GAP: u16 = 8;
+
+fn builtin_avatar(id: &str) -> Option<(&'static str, u16)> {
+    BUILTIN_AVATARS
+        .iter()
+        .find_map(|(agent, glyph, hue)| (*agent == id).then_some((*glyph, *hue)))
+}
+
+fn avatar_choices() -> impl Iterator<Item = String> {
+    GLYPHS
+        .into_iter()
+        .map(str::to_owned)
+        .chain((1..=PRISM_LIMIT).map(|index| format!("roster-{index}")))
+}
+
+fn reserved_avatars() -> (Vec<String>, Vec<u16>) {
+    BUILTIN_AVATARS
+        .iter()
+        .map(|(_, glyph, hue)| (glyph.to_string(), *hue))
+        .unzip()
+}
+
+fn available_avatar(glyph: String, hue: u16, glyphs: &[String], hues: &[u16]) -> (String, u16) {
+    let glyph = if glyphs.contains(&glyph) {
+        avatar_choices()
+            .find(|candidate| !glyphs.contains(candidate))
+            .expect("more glyphs than roster slots")
+    } else {
+        glyph
+    };
+    let distance = |candidate: u16| {
+        hues.iter()
+            .map(|used| {
+                let distance = candidate.abs_diff(*used);
+                distance.min(360 - distance)
+            })
+            .min()
+            .unwrap_or(180)
+    };
+    let hue = if distance(hue) >= AVATAR_HUE_GAP {
+        hue
+    } else {
+        (0..360)
+            .max_by_key(|candidate| distance(*candidate))
+            .unwrap()
+    };
+    (glyph, hue)
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -244,7 +305,7 @@ pub struct PrismState {
 impl PrismState {
     pub fn install_template(&mut self) -> bool {
         if self.template_installed && self.get("lead").is_some() {
-            return false;
+            return self.normalize_avatars();
         }
         for agent in &mut self.marbles {
             if agent.card.is_none() {
@@ -383,7 +444,38 @@ impl PrismState {
             }
         }
         self.template_installed = true;
+        self.normalize_avatars();
         true
+    }
+
+    fn normalize_avatars(&mut self) -> bool {
+        let (mut glyphs, mut hues) = reserved_avatars();
+        let mut changed = false;
+        for agent in &mut self.marbles {
+            let look = if let Some((glyph, hue)) = builtin_avatar(&agent.id) {
+                (glyph.to_string(), hue)
+            } else {
+                let glyph = valid_glyph(&agent.glyph).unwrap_or_else(|_| default_glyph());
+                let look = available_avatar(glyph, agent.hue.min(359), &glyphs, &hues);
+                glyphs.push(look.0.clone());
+                hues.push(look.1);
+                look
+            };
+            changed |= agent.glyph != look.0 || agent.hue != look.1;
+            (agent.glyph, agent.hue) = look;
+        }
+        changed
+    }
+
+    fn custom_avatar(&self, glyph: String, hue: u16, excluding: Option<&str>) -> (String, u16) {
+        let (mut glyphs, mut hues) = reserved_avatars();
+        for agent in &self.marbles {
+            if Some(agent.id.as_str()) != excluding && builtin_avatar(&agent.id).is_none() {
+                glyphs.push(agent.glyph.clone());
+                hues.push(agent.hue.min(359));
+            }
+        }
+        available_avatar(glyph, hue.min(359), &glyphs, &hues)
     }
 
     pub fn get(&self, id: &str) -> Option<&PrismMarble> {
@@ -460,14 +552,14 @@ impl PrismState {
         {
             return Err(format!("a marble is already named {name}"));
         }
-        let glyph = valid_glyph(glyph)?;
+        let (glyph, hue) = self.custom_avatar(valid_glyph(glyph)?, hue, None);
         let workspace = valid_workspace(workspace)?;
         let marble = PrismMarble {
             id: next_marble_id(),
             name,
             role,
             glyph,
-            hue: hue.min(359),
+            hue,
             workspace,
             state: idle(),
             conversation_id: String::new(),
@@ -562,6 +654,20 @@ impl PrismState {
             }
             return Ok(changed);
         }
+        let agent = self.get(id).ok_or("unknown marble")?;
+        let look = if glyph.is_some() || hue.is_some() {
+            Some(if let Some((glyph, hue)) = builtin_avatar(id) {
+                (glyph.to_string(), hue)
+            } else {
+                self.custom_avatar(
+                    glyph.unwrap_or_else(|| agent.glyph.clone()),
+                    hue.unwrap_or(agent.hue),
+                    Some(id),
+                )
+            })
+        } else {
+            None
+        };
         let mut identity_changed = false;
         let marble = self
             .find_mut(id)
@@ -577,11 +683,8 @@ impl PrismState {
             identity_changed |= marble.persona != persona;
             marble.persona = persona;
         }
-        if let Some(glyph) = glyph {
-            marble.glyph = glyph;
-        }
-        if let Some(hue) = hue {
-            marble.hue = hue.min(359);
+        if let Some(look) = look {
+            (marble.glyph, marble.hue) = look;
         }
         if let Some(workspace) = workspace {
             // A different workspace is a different job, so the conversation does
@@ -750,7 +853,12 @@ fn valid_glyph(glyph: &str) -> Result<String, String> {
     if glyph.is_empty() {
         return Ok(default_glyph());
     }
-    if !GLYPHS.contains(&glyph) {
+    let generated = glyph.strip_prefix("roster-").is_some_and(|suffix| {
+        suffix
+            .parse::<usize>()
+            .is_ok_and(|index| (1..=PRISM_LIMIT).contains(&index) && suffix == index.to_string())
+    });
+    if !GLYPHS.contains(&glyph) && !generated {
         return Err(format!("unknown glyph {glyph}: use {}", GLYPHS.join(", ")));
     }
     Ok(glyph.to_string())
@@ -2858,7 +2966,7 @@ mod tests {
             "names are compared without case, so a roster cannot show two Scouts"
         );
         assert!(state.add("", "", "circle", 0, "", "").is_err());
-        assert!(state.add("Nova", "", "triangle", 0, "", "").is_err());
+        assert!(state.add("Nova", "", "octagon", 0, "", "").is_err());
         assert!(state.add("Nova", "", "star", 0, "../outside", "").is_err());
         assert!(state.add("Nova", "", "star", 0, "/etc", "").is_err());
     }
@@ -2875,6 +2983,43 @@ mod tests {
             .add("one too many", "", "circle", 0, "", "")
             .unwrap_err();
         assert!(error.contains("at most"));
+        let glyphs: std::collections::BTreeSet<_> =
+            state.marbles.iter().map(|agent| &agent.glyph).collect();
+        let hues: std::collections::BTreeSet<_> =
+            state.marbles.iter().map(|agent| agent.hue).collect();
+        assert_eq!(glyphs.len(), PRISM_LIMIT);
+        assert_eq!(hues.len(), PRISM_LIMIT);
+    }
+
+    #[test]
+    fn template_migration_and_custom_edits_reserve_builtin_avatars() {
+        let mut state = PrismState::default();
+        assert!(state.install_template());
+        let id = state
+            .add("Scout", "", "hex", 42, "", "")
+            .unwrap()
+            .id
+            .clone();
+        let custom = state.find_mut(&id).unwrap();
+        (custom.glyph, custom.hue) = ("hex".into(), 42);
+        assert!(state.install_template());
+        assert!(!state.install_template());
+        state
+            .update(&id, None, None, Some("drop"), Some(280), None, None)
+            .unwrap();
+
+        let (glyphs, hues) = reserved_avatars();
+        let custom = state.get(&id).unwrap();
+        assert!(!glyphs.contains(&custom.glyph));
+        assert!(!hues.contains(&custom.hue));
+        for (id, glyph, hue) in BUILTIN_AVATARS {
+            let entry = if id == "marble" {
+                state.default_marble()
+            } else {
+                state.get(id).unwrap().clone()
+            };
+            assert_eq!((entry.glyph.as_str(), entry.hue), (glyph, hue));
+        }
     }
 
     #[test]
@@ -2896,14 +3041,14 @@ mod tests {
                 &id,
                 Some("Lookout"),
                 Some("scans"),
-                Some("drop"),
+                Some("cross"),
                 Some(300),
                 None,
                 None,
             )
             .unwrap();
         assert_eq!(state.marbles[0].name, "Lookout");
-        assert_eq!(state.marbles[0].glyph, "drop");
+        assert_eq!(state.marbles[0].glyph, "cross");
         assert_eq!(state.marbles[0].hue, 300);
         assert_eq!(state.marbles[0].conversation_id, "conv-1");
 

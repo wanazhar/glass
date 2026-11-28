@@ -101,10 +101,12 @@ struct SettingsView: View {
                 } label: {
                     Label("Stop everything", systemImage: "stop.circle")
                         .foregroundStyle(.red)
+                        .frame(minHeight: 44)
                 }
                 .accessibilityIdentifier("settings.stopEverything")
+                .disabled(store.changingHostPause)
             } footer: {
-                Text("Cancels every running turn on the host.")
+                Text("Cancels every running turn and pauses the host.")
             }
         }
         .scrollContentBackground(.hidden)
@@ -116,7 +118,7 @@ struct SettingsView: View {
                 Task { await store.stopEverything() }
             }
         } message: {
-            Text("Every running turn is cancelled.")
+            Text("This cancels every running turn and pauses the host. New messages wait until you resume.")
         }
     }
 
@@ -272,7 +274,7 @@ struct AboutSettingsView: View {
 private struct MarbleAppVersionRows: View {
     var body: some View {
         LabeledContent("App version", value: versionLabel)
-        if let commit = Bundle.main.object(forInfoDictionaryKey: "MarbleGitCommit") as? String, !commit.isEmpty {
+        if let commit = MarbleStore.appCommit, !commit.isEmpty, !commit.hasPrefix("$(") {
             LabeledContent("App commit", value: String(commit.prefix(12)))
         }
     }

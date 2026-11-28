@@ -286,6 +286,13 @@ enum MarbleClientError: LocalizedError, Equatable {
         }
     }
 
+    static func requestError(_ error: Error) -> Error {
+        if error is CancellationError || (error as? URLError)?.code == .cancelled {
+            return CancellationError()
+        }
+        return from(error)
+    }
+
     /// Map a URL error to a reachable case so surfaces say "cannot reach"
     /// instead of echoing a transport code.
     static func from(_ error: Error) -> MarbleClientError {

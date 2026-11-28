@@ -85,7 +85,7 @@ final class MarbleClient: @unchecked Sendable {
             } catch let error as MarbleClientError {
                 throw error
             } catch {
-                throw MarbleClientError.from(error)
+                throw MarbleClientError.requestError(error)
             }
         }
     }
@@ -100,7 +100,7 @@ final class MarbleClient: @unchecked Sendable {
             } catch let error as MarbleClientError {
                 throw error
             } catch {
-                throw MarbleClientError.from(error)
+                throw MarbleClientError.requestError(error)
             }
         }
     }
@@ -114,7 +114,7 @@ final class MarbleClient: @unchecked Sendable {
         } catch let error as MarbleClientError {
             throw error
         } catch {
-            throw MarbleClientError.from(error)
+            throw MarbleClientError.requestError(error)
         }
     }
 
@@ -136,7 +136,7 @@ final class MarbleClient: @unchecked Sendable {
             } catch let error as MarbleClientError {
                 throw error
             } catch {
-                throw MarbleClientError.from(error)
+                throw MarbleClientError.requestError(error)
             }
         }
     }
@@ -335,12 +335,18 @@ final class MarbleClient: @unchecked Sendable {
         try await post("/api/control/profile", body: Body(profile: profile))
     }
 
-    func setPaused(_ paused: Bool) async throws {
-        try await post(paused ? "/api/control/pause" : "/api/control/resume")
+    func setPaused(_ paused: Bool) async throws -> MarbleControl {
+        try await changeControl(at: paused ? "/api/control/pause" : "/api/control/resume")
     }
 
-    func stopEverything() async throws {
-        try await post("/api/control/stop")
+    func stopEverything() async throws -> MarbleControl {
+        try await changeControl(at: "/api/control/stop")
+    }
+
+    private func changeControl(at path: String) async throws -> MarbleControl {
+        struct Response: Decodable { let control: MarbleControl }
+        let response: Response = try await fetch(try makeRequest(path: path, method: "POST"))
+        return response.control
     }
 
     func revokeGrant(_ grantId: String) async throws {

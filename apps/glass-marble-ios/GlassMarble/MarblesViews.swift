@@ -168,6 +168,8 @@ struct EveryoneHistoryView: View {
         .background(MarbleTheme.paper)
         .navigationTitle("Everyone")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(MarbleTheme.paper, for: .navigationBar)
+        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 MarbleTitleView(title: "Everyone")
@@ -377,6 +379,7 @@ struct NewMarbleView: View {
     @State private var hue = 42
     @State private var creating = false
     @State private var creationError: String?
+    @State private var choseAvatar = false
 
     var body: some View {
         Form {
@@ -401,7 +404,7 @@ struct NewMarbleView: View {
                     }
                 }
                 if duplicate == nil {
-                    Section("Avatar") { MarbleLookPicker(glyph: $glyph, hue: $hue) }
+                    Section("Avatar") { MarbleLookPicker(glyph: $glyph, hue: $hue, choices: store.avatarChoices()) }
                     MarbleAgentCardFields(card: $card, persona: $persona)
                 }
             }
@@ -425,9 +428,11 @@ struct NewMarbleView: View {
             if let duplicate, name.isEmpty {
                 name = "\(duplicate.name) copy"
             }
-            let used = Set(store.prism.marbles.map { MarbleTheme.paletteIndex(for: $0.hue) })
-            if let index = MarbleTheme.hues.indices.first(where: { !used.contains($0) }) {
-                hue = MarbleTheme.hues[index].degrees
+            if !choseAvatar {
+                let choices = store.avatarChoices()
+                glyph = choices.glyphs.first ?? glyph
+                hue = choices.hues.first ?? hue
+                choseAvatar = true
             }
         }
     }
@@ -438,8 +443,7 @@ struct NewMarbleView: View {
             name = draft.name
             role = draft.role
             persona = draft.persona
-            glyph = draft.glyph
-            hue = draft.hue
+            (glyph, hue) = store.avatarChoices().available(glyph: draft.glyph, hue: draft.hue)
             card = draft.card ?? .init()
             creationError = nil
             imported = true
@@ -546,23 +550,23 @@ private struct MarbleAgentCardFields: View {
 private struct MarbleLookPicker: View {
     @Binding var glyph: String
     @Binding var hue: Int
+    let choices: MarbleAvatarChoices
 
     var body: some View {
+        let namedShapes = choices.glyphs.filter { !$0.hasPrefix("roster-") }
+        let offeredShapes = namedShapes.isEmpty ? Array(choices.glyphs.prefix(6)) : namedShapes
         MarbleAvatar(glyph: glyph, hue: hue, size: 58)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
         Picker("Shape", selection: $glyph) {
-            ForEach(MarbleMentions.glyphs, id: \.self) { shape in
-                Text(shape == "hex" ? "Hexagon" : shape.capitalized).tag(shape)
+            ForEach(offeredShapes.contains(glyph) ? offeredShapes : [glyph] + offeredShapes, id: \.self) { shape in
+                let label = shape.hasPrefix("roster-") ? "Rosette \(shape.dropFirst(7))" : shape.capitalized
+                Text(label).tag(shape)
             }
         }
-        Picker("Hue", selection: Binding(
-            get: { MarbleTheme.hues[MarbleTheme.paletteIndex(for: hue)].degrees },
-            set: { hue = $0 }
-        )) {
-            ForEach(MarbleTheme.hues.indices, id: \.self) { index in
-                let choice = MarbleTheme.hues[index]
-                Text(choice.name).tag(choice.degrees)
+        Picker("Hue", selection: $hue) {
+            ForEach(choices.hues.contains(hue) ? choices.hues : [hue] + choices.hues, id: \.self) { choice in
+                Text(MarbleTheme.hues.first { $0.degrees == choice }?.name ?? "Hue \(choice)°").tag(choice)
             }
         }
         .sensoryFeedback(.selection, trigger: hue)
@@ -635,7 +639,8 @@ struct MarbleChatScreen: View {
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink(value: ChatRoute.marbleInfo(marbleId)) {
                     if let marble {
-                        MarbleAvatar(glyph: marble.glyph, hue: marble.hue, size: 24)
+                        let style = store.rosterStyle(for: marble)
+                        MarbleAvatar(glyph: style.glyph, hue: style.hue ?? marble.hue, size: 24)
                             .accessibilityHidden(false)
                     } else {
                         Image(systemName: "person.crop.circle")
@@ -658,6 +663,7 @@ struct MarbleChatScreen: View {
 
     @ViewBuilder
     private func transcript(_ marble: MarblePrismMarble) -> some View {
+        let style = store.rosterStyle(for: marble)
         let target = MarbleSendTarget.marble(marble.id)
         let durable = store.marbleTranscript(marble)
         let presentation = store.outgoingPresentation(durable, to: target, conversationId: marble.conversationId)
@@ -683,8 +689,7 @@ struct MarbleChatScreen: View {
                     let transcript = MarbleReasoningAssociation(entries)
                     ForEach(transcript.standalone, id: \.rowID) { entry in
                         MarbleEntryView(entry: entry, speaker: entry.kind == "assistant" || entry.kind == "pending"
-                                        ? MarbleSpeakerStyle(name: marble.name, hue: marble.hue, glyph: marble.glyph)
-                                        : nil, replyHue: marble.hue, reasoning: transcript.attached[entry.id],
+                                        ? style : nil, replyHue: style.hue ?? marble.hue, reasoning: transcript.attached[entry.id],
                                         toolRows: transcript.tools[entry.id] ?? [], timestamp: transcript.timestamps[entry.id])
                     }
                     let reasoning = active.map { store.reasoning(for: $0.id) } ?? ""
@@ -793,8 +798,10 @@ struct MarbleInfoView: View {
                         TextField("First name", text: $name).frame(minHeight: 44)
                         TextField("Role", text: $role).frame(minHeight: 44)
                     }
-                    Section("Avatar") {
-                        MarbleLookPicker(glyph: $glyph, hue: $hue)
+                    if MarbleAvatarChoices.builtIns[marble.id] == nil {
+                        Section("Avatar") {
+                            MarbleLookPicker(glyph: $glyph, hue: $hue, choices: store.avatarChoices(excluding: marble.id))
+                        }
                     }
                     Section("Everyone") {
                         Toggle("Member of Everyone", isOn: $card.inEveryone).frame(minHeight: 44)
@@ -836,8 +843,9 @@ struct MarbleInfoView: View {
             name = marble.name
             role = marble.role
             card = marble.card ?? .init()
-            glyph = marble.glyph
-            hue = marble.hue
+            let style = store.rosterStyle(for: marble)
+            glyph = style.glyph
+            hue = style.hue ?? marble.hue
         }
         .sheet(item: $duplicate) { agent in
             NavigationStack { NewMarbleView(duplicate: agent) }
@@ -865,8 +873,8 @@ struct MarbleInfoView: View {
             await store.updateMarble(marble.id, update: .init(
                 name: marble.isDefault ? nil : name,
                 role: marble.isDefault ? nil : role,
-                glyph: marble.isDefault ? nil : glyph,
-                hue: marble.isDefault ? nil : hue,
+                glyph: MarbleAvatarChoices.builtIns[marble.id] == nil ? glyph : nil,
+                hue: MarbleAvatarChoices.builtIns[marble.id] == nil ? hue : nil,
                 persona: persona,
                 card: card
             ))

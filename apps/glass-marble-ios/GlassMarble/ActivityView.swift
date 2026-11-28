@@ -15,28 +15,8 @@ struct ActivityView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(store.state.approvals) { approval in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(MarbleDecisionWords.action(tool: approval.tool))
-                            .font(.callout.weight(.semibold))
-                        Text(approval.argumentsSummary)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(3)
-                        HStack(spacing: 12) {
-                            Button("Deny", role: .destructive) {
-                                Task { await store.decide(approval, allow: false) }
-                            }
-                            .buttonStyle(.bordered)
-                            Spacer()
-                            Button("Always allow") {
-                                Task { await store.decide(approval, allow: true, remember: true) }
-                            }
-                            .buttonStyle(.bordered)
-                            Button("Allow") {
-                                Task { await store.decide(approval, allow: true) }
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
+                    ApprovalCard(approval: approval) { allow, remember in
+                        Task { await store.decide(approval, allow: allow, remember: remember) }
                     }
                     .padding(.vertical, 4)
                 }
@@ -52,7 +32,9 @@ struct ActivityView: View {
                     } label: {
                         Label("Stop everything", systemImage: "stop.circle")
                             .foregroundStyle(.red)
+                            .frame(minHeight: 44)
                     }
+                    .disabled(store.changingHostPause)
                 }
                 if runningTasks.isEmpty {
                     Text("Nothing is running.")
@@ -70,10 +52,9 @@ struct ActivityView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button("Stop", role: .destructive) {
+                        MarbleInlineButton(title: "Stop", role: .destructive) {
                             Task { await store.cancel(task) }
                         }
-                        .buttonStyle(.bordered)
                     }
                 }
             }
@@ -82,6 +63,7 @@ struct ActivityView: View {
                 Toggle(isOn: pausedBinding) {
                     Text("Pause new work")
                 }
+                .disabled(store.changingHostPause)
             } footer: {
                 Text("New messages wait until you resume. What is already running keeps going.")
             }
@@ -113,7 +95,7 @@ struct ActivityView: View {
                 Task { await store.stopEverything() }
             }
         } message: {
-            Text("Every running turn is cancelled.")
+            Text("This cancels every running turn and pauses the host. New messages wait until you resume.")
         }
     }
 

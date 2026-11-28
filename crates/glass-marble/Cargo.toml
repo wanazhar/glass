@@ -25,4 +25,5 @@ base64 = "0.22"
 regex-syntax = { version = "0.8", default-features = false, features = ["std", "unicode-script"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 toml_edit = "0.25.15"

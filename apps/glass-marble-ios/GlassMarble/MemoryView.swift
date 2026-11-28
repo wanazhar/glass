@@ -346,14 +346,25 @@ struct MarbleKnowledgeCards: View {
                 Text("Use a private memory here?").font(.subheadline.weight(.semibold))
                 Text(hasMemory ? "Only the memory you choose can be used in this chat." : "There are no saved memories to choose from.")
                     .font(.footnote).foregroundStyle(MarbleTheme.muted)
-                if hasMemory {
-                    MarbleInlineButton(title: "Choose memory", prominent: true) { chooseMemory(request) }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { consentActions(request, hasMemory: hasMemory, chooseMemory: chooseMemory) }
+                    VStack(spacing: 8) { consentActions(request, hasMemory: hasMemory, chooseMemory: chooseMemory) }
                 }
-                MarbleInlineButton(title: "Not now") { Task { await store.updateKnowledge(id: request.id, .resolveConsent) } }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(MarbleTheme.wash, in: MarbleTheme.panel)
+        }
+    }
+
+    @ViewBuilder
+    private func consentActions(_ request: MarbleMemoryConsent, hasMemory: Bool,
+                                chooseMemory: @escaping (MarbleMemoryConsent) -> Void) -> some View {
+        MarbleInlineButton(title: "Not now", expands: true) {
+            Task { await store.updateKnowledge(id: request.id, .resolveConsent) }
+        }
+        if hasMemory {
+            MarbleInlineButton(title: "Choose memory", prominent: true, expands: true) { chooseMemory(request) }
         }
     }
 
@@ -402,7 +413,9 @@ private struct MarblePruningCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Suggested cleanup").font(.subheadline.weight(.semibold))
+            Label("Suggested cleanup", systemImage: "trash")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.red)
             ForEach(items) { item in
                 let selected = !unchecked.contains(item.id)
                 Button {
@@ -413,7 +426,7 @@ private struct MarblePruningCard: View {
                         Spacer()
                         if selected {
                             Image(systemName: "checkmark").font(.body.weight(.semibold))
-                                .foregroundStyle(MarbleTheme.tint)
+                                .foregroundStyle(.red)
                                 .accessibilityHidden(true)
                         }
                     }
@@ -430,15 +443,14 @@ private struct MarblePruningCard: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(MarbleTheme.wash, in: MarbleTheme.panel)
+        .marbleFloating(in: MarbleTheme.panel)
     }
 
     @ViewBuilder private var actions: some View {
         let selected = items.map(\.id).filter { !unchecked.contains($0) }
-        MarbleInlineButton(title: "Delete selected", role: .destructive, prominent: true) { resolve(selected) }
-            .tint(MarbleTheme.problem)
+        MarbleInlineButton(title: "Delete selected", role: .destructive, expands: true) { resolve(selected) }
             .disabled(selected.isEmpty)
-        MarbleInlineButton(title: "Keep all") { resolve([]) }
+        MarbleInlineButton(title: "Keep all", expands: true) { resolve([]) }
     }
 
     private func resolve(_ selected: [String]) {
@@ -523,8 +535,7 @@ struct SuggestionCard: View {
 
     @ViewBuilder private var actions: some View {
         MarbleInlineButton(title: "Not now") { Task { await store.dismiss(suggestion) } }
-        Button("Review") { review = true }
-            .buttonStyle(.glassProminent)
+        MarbleInlineButton(title: "Review", prominent: true) { review = true }
     }
 }
 

@@ -31,8 +31,7 @@ struct MarbleOnboardingView: View {
                         Text("Not connected").font(.largeTitle.weight(.semibold))
                         Text("Connect to your Marble host to see your conversations and memories.")
                             .foregroundStyle(MarbleTheme.muted)
-                        Button("Connect to host") { showsForm = true }
-                            .buttonStyle(.glassProminent)
+                        MarbleInlineButton(title: "Connect to host", prominent: true) { showsForm = true }
                     }
                     .multilineTextAlignment(.center)
                     .padding(28)
@@ -106,17 +105,11 @@ struct MarbleOnboardingView: View {
                     }
                     .frame(maxWidth: .infinity)
                 } else {
-                    Button {
+                    MarbleInlineButton(title: "Connect", prominent: true, expands: true) {
                         focusedField = nil
                         verdict = nil
                         checkTask = Task { await connect() }
-                    } label: {
-                        Text("Connect")
-                            .font(.headline)
-                            .foregroundStyle(canConnect ? MarbleTheme.paper : MarbleTheme.muted)
-                            .frame(maxWidth: .infinity, minHeight: 44)
                     }
-                    .buttonStyle(.glassProminent)
                     .disabled(!canConnect)
                 }
             }

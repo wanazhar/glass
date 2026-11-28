@@ -200,6 +200,12 @@ def run_turn(identifier, task, text, conversation, request):
         reply(identifier, {"settled": True})
         return
     if os.environ.get("MARBLE_FIXTURE_TURN_EVIDENCE") == "1":
+        if text == "Show a wide code sample.":
+            code = "let values = [" + ", ".join(str(index) for index in range(100)) + "]"
+            event(turn, "text", {"text": f"```swift\n{code}\n```\n\nEnd of code example."})
+            event(turn, "settled", {"reason": "completed"})
+            reply(identifier, {"settled": True})
+            return
         if text == "Approve the report draft":
             attempt_tool(turn, task, "glass.workspace.write", {"path": "report.md", "content": "Draft"})
             event(turn, "settled", {"reason": "completed"})

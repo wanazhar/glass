@@ -149,7 +149,7 @@ enum MarblePinning {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
-            throw MarbleClientError.from(error)
+            throw MarbleClientError.requestError(error)
         }
         try marbleValidate(response, data: data)
         struct Proof: Decodable {

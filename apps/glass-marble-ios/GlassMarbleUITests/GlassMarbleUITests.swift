@@ -185,7 +185,7 @@ final class GlassMarbleUITests: XCTestCase {
         assertHittable("No messages yet")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.buttons["chat.compose"].isHittable)
-        app.staticTexts["New Chat"].tap()
+        app.staticTexts["New chat"].tap()
         XCTAssertTrue(app.textFields["composer.field"].waitForExistence(timeout: 5))
         assertHittable("No messages yet")
     }
@@ -223,12 +223,12 @@ final class GlassMarbleUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
 
         let list = app.collectionViews.firstMatch
-        let emptyChat = list.staticTexts["New Chat"]
+        let emptyChat = list.staticTexts["New chat"]
         let otherChat = list.staticTexts["Fixture conversation 0"]
         XCTAssertTrue(emptyChat.waitForExistence(timeout: 5))
         XCTAssertTrue(otherChat.exists)
 
-        searchConversations("New Chat")
+        searchConversations("New chat")
         XCTAssertTrue(otherChat.waitForNonExistence(timeout: 5))
         XCTAssertTrue(emptyChat.isHittable)
         emptyChat.tap()

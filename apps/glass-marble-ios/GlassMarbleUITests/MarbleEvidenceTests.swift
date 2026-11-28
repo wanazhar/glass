@@ -23,7 +23,7 @@ final class MarbleEvidenceTests: XCTestCase {
     private func checkCapsule(_ title: String) {
         let control = button(title)
         check(control)
-        XCTAssertGreaterThanOrEqual(control.frame.height, 44)
+        XCTAssertEqual(control.frame.height, 44, accuracy: 1)
     }
 
     private func start(address: String = "http://127.0.0.1:4783", expectedAgent: String = "Ada") throws {
@@ -622,7 +622,7 @@ final class MarbleEvidenceTests: XCTestCase {
         let collapsed = button("Used 2 tools")
         check(collapsed, timeout: 15)
         collapsed.tap()
-        let listing = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Listed appendix.pdf")).firstMatch
+        let listing = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Couldn’t run ls")).firstMatch
         let search = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Searched the web")).firstMatch
         check(listing)
         check(search)
@@ -637,7 +637,7 @@ final class MarbleEvidenceTests: XCTestCase {
         collapsed.tap()
         shot("p1-tools-collapsed")
         collapsed.tap()
-        let failed = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Failed")).firstMatch
+        let failed = listing
         check(failed)
         XCTAssertTrue(app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Done")).firstMatch.exists)
         shot("p1-tools-expanded")
@@ -681,6 +681,73 @@ final class MarbleEvidenceTests: XCTestCase {
         XCTAssertLessThanOrEqual(approve.frame.maxX, app.frame.maxX - 16)
         shot("p4-inline-approval")
         decline.tap()
+    }
+
+    func testHostedP5CodeAndComposer() throws {
+        guard let address = ProcessInfo.processInfo.environment["MARBLE_TURN_EVIDENCE_URL"] else {
+            throw XCTSkip("Requires the local turn presentation fixture")
+        }
+        try start(address: address, expectedAgent: "Marble")
+        app.staticTexts["Marble"].firstMatch.tap()
+        button("chat.compose").tap()
+        button("Private chat").tap()
+        let field = app.textFields["composer.field"]
+        check(field)
+        field.tap()
+        field.typeText("Show a wide code sample.")
+        button("Send").tap()
+        let code = app.scrollViews["chat.code"].firstMatch
+        let copy = button("Copy code")
+        check(code)
+        check(copy)
+        XCTAssertEqual(copy.frame.height, 44, accuracy: 1)
+        XCTAssertTrue(copy.isHittable)
+        shot("p5-code-start")
+        code.swipeLeft(velocity: .slow)
+        XCTAssertTrue(copy.isHittable)
+        shot("p5-code-scrolled")
+        copy.tap()
+        check(button("Copied"))
+        field.tap()
+        check(app.keyboards.firstMatch)
+        let latest = app.staticTexts["End of code example."].firstMatch
+        check(latest)
+        XCTAssertTrue(latest.isHittable)
+        XCTAssertLessThanOrEqual(latest.frame.maxY, field.frame.minY)
+        shot("p5-code-keyboard")
+    }
+
+    func testHostedP5PauseAcrossTabs() throws {
+        guard let address = ProcessInfo.processInfo.environment["MARBLE_TURN_EVIDENCE_URL"] else {
+            throw XCTSkip("Requires the local turn presentation fixture")
+        }
+        try start(address: address, expectedAgent: "Marble")
+        app.tabBars.buttons["Settings"].tap()
+        let stop = button("settings.stopEverything")
+        for _ in 0..<5 where !stop.isHittable { app.swipeUp() }
+        XCTAssertTrue(stop.isHittable)
+        stop.tap()
+        check(app.staticTexts["This cancels every running turn and pauses the host. New messages wait until you resume."])
+        shot("p5-stop-confirmation")
+        app.buttons["Stop everything"].lastMatch.tap()
+        let resume = button("host.resume")
+        check(resume)
+        shot("p5-settings-paused")
+        app.tabBars.buttons["Everyone"].tap()
+        check(resume)
+        XCTAssertFalse(app.alerts["Couldn’t update threads"].exists)
+        shot("p5-everyone-paused")
+        resume.tap()
+        XCTAssertTrue(resume.waitForNonExistence(timeout: 9))
+    }
+
+    func testHostedP5BuildMismatch() throws {
+        guard let address = ProcessInfo.processInfo.environment["MARBLE_MISMATCH_EVIDENCE_URL"] else {
+            throw XCTSkip("Requires a local host built at a different git commit")
+        }
+        try start(address: address, expectedAgent: "Marble")
+        check(app.descendants(matching: .any)["host.versionMismatch"].firstMatch)
+        shot("p5-host-version-mismatch")
     }
 
     func testHostedNamedStop() throws {

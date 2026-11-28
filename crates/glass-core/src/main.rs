@@ -166,6 +166,22 @@ fn main() {
         eprintln!("glass-core: {hardening_line}");
     }
 
+    #[cfg(target_os = "macos")]
+    if args.as_slice() == ["marble-auth-broker"] {
+        if let Err(error) = auth::broker::run() {
+            cli::error("glass-core credential broker", &error);
+            std::process::exit(1);
+        }
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if args.as_slice() == ["runtime"]
+        && let Err(error) = auth::broker::install()
+    {
+        cli::error("glass-core credential broker", &error);
+        std::process::exit(1);
+    }
+
     match cli::command_help(&args) {
         Ok(true) => return,
         Ok(false) => {}

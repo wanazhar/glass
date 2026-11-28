@@ -184,9 +184,10 @@ final class MarbleTurnPresentationTests: XCTestCase {
         MarbleToolActivity.apply(end, to: &calls)
         XCTAssertEqual(calls.first?.status, .failed)
         XCTAssertNil(calls.first?.query)
+        XCTAssertEqual(calls.first?.title, "Couldn’t search the web")
     }
 
-    func testToolDetailsStayWithTheReplyAndTheLabelDoesNotChange() throws {
+    func testFailedToolDetailsStayWithTheReplyAndNameTheAction() throws {
         var calls: [MarbleToolActivity] = []
         let start = try toolEvent("tool_start", data: #"{"callId":"shell","name":"bash","title":"printf hello"}"#)
         MarbleToolActivity.apply(start, to: &calls)
@@ -195,7 +196,7 @@ final class MarbleTurnPresentationTests: XCTestCase {
         MarbleToolActivity.apply(end, to: &calls)
         let tool = try XCTUnwrap(calls.first)
         XCTAssertEqual(label, "Ran printf")
-        XCTAssertEqual(tool.title, label)
+        XCTAssertEqual(tool.title, "Couldn’t run printf")
         XCTAssertEqual(tool.details?.command, "printf hello")
         XCTAssertEqual(tool.details?.output, "hello")
         XCTAssertEqual(tool.status, .failed)

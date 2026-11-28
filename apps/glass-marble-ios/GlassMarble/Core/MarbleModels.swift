@@ -60,7 +60,7 @@ struct MarbleConversation: Codable, Identifiable, Equatable {
     var archived: Bool? = nil
     var marbleId: String? = nil
 
-    var displayTitle: String { title.isEmpty ? "New Chat" : title }
+    var displayTitle: String { title.isEmpty ? "New chat" : title }
     var isEveryoneSession: Bool { id == everyoneConversationId || id.hasPrefix("everyone-session-") }
 }
 
@@ -773,6 +773,18 @@ struct MarbleHealth: Decodable, Equatable {
         var version: String
         var gitCommit: String
         var gitCommitShort: String
+
+        func differs(from appCommit: String?) -> Bool {
+            func commit(_ value: String?) -> String? {
+            guard let value, (7...64).contains(value.count),
+                      value.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+                else { return nil }
+                return value
+            }
+            guard let app = commit(appCommit?.lowercased()), let host = commit(gitCommit.lowercased())
+            else { return false }
+            return !app.hasPrefix(host) && !host.hasPrefix(app)
+        }
     }
 
     struct RuntimeHealth: Decodable, Equatable {

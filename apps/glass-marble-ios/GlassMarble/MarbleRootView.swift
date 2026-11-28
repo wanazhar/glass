@@ -60,11 +60,22 @@ struct MarbleRootView: View {
                     }
                     .accessibilityIdentifier("tab.settings")
                 }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    MarbleHostNotices()
+                }
             } else {
                 MarbleOnboardingView(expiredToken: store.needsToken)
             }
         }
         .tint(MarbleTheme.tint)
+        .alert("Couldn’t change host pause", isPresented: Binding(
+            get: { store.hostPauseError != nil },
+            set: { if !$0 { store.hostPauseError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(store.hostPauseError ?? "")
+        }
         .task { store.start() }
         .onReceive(NotificationCenter.default.publisher(for: .marbleOpenConversation)) { note in
             guard let id = note.object as? String, !store.isDeletedConversation(id) else { return }
@@ -72,6 +83,48 @@ struct MarbleRootView: View {
         }
         .onChange(of: store.onboarded) { _, onboarded in
             if !onboarded { navigation.signOut() }
+        }
+    }
+}
+
+private struct MarbleHostNotices: View {
+    @EnvironmentObject private var store: MarbleStore
+
+    var body: some View {
+        if store.control.paused || store.hostVersionMismatch {
+            VStack(alignment: .leading, spacing: 8) {
+                if store.control.paused {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label("Paused", systemImage: "pause.circle")
+                                .font(.subheadline.weight(.semibold))
+                            Text("New messages wait until you resume the host.")
+                                .font(.footnote)
+                                .foregroundStyle(MarbleTheme.muted)
+                        }
+                        Spacer()
+                        MarbleInlineButton(title: "Resume") { Task { await store.setPaused(false) } }
+                            .disabled(store.changingHostPause)
+                            .accessibilityIdentifier("host.resume")
+                    }
+                    .foregroundStyle(MarbleTheme.ink)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .background(MarbleTheme.card, in: MarbleTheme.panel)
+                    .accessibilityIdentifier("host.paused")
+                }
+                if store.hostVersionMismatch {
+                    Label("Marble and your host are on different builds.", systemImage: "info.circle")
+                        .font(.footnote)
+                        .foregroundStyle(MarbleTheme.muted)
+                        .accessibilityIdentifier("host.versionMismatch")
+                }
+            }
+            .frame(maxWidth: 660, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity)
+            .background(MarbleTheme.paper)
         }
     }
 }
@@ -198,6 +251,7 @@ struct MarbleChatView: View {
                 onDictate: { dictation.toggle() }
             )
         }
+        .marbleNewChatBackground()
         .toolbarVisibility(.hidden, for: .tabBar)
         .onAppear { store.selectedConversationId = conversationId }
         .onDisappear {
@@ -212,7 +266,7 @@ struct MarbleChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                MarbleTitleView(title: conversationId.flatMap { store.state.conversation($0) }?.displayTitle ?? "New Chat")
+                MarbleTitleView(title: conversationId.flatMap { store.state.conversation($0) }?.displayTitle ?? "New chat")
                     .marbleToolbarTitle()
             }
             if conversationId != nil {

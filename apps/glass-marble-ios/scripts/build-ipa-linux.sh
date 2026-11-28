@@ -21,8 +21,8 @@ PBXPROJ="$APP_DIR/GlassMarble.xcodeproj/project.pbxproj"
 MARKETING_VERSION="$(grep -m1 'MARKETING_VERSION' "$PBXPROJ" | sed -E 's/.*= *"?([^";]+)"?;.*/\1/')"
 CURRENT_PROJECT_VERSION="$(grep -m1 'CURRENT_PROJECT_VERSION' "$PBXPROJ" | sed -E 's/.*= *"?([^";]+)"?;.*/\1/')"
 PRODUCT_BUNDLE_IDENTIFIER="$(grep -m1 'PRODUCT_BUNDLE_IDENTIFIER' "$PBXPROJ" | sed -E 's/.*= *"?([^";]+)"?;.*/\1/')"
-GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
-SHORT_SHA="$GIT_SHA"
+GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+SHORT_SHA="${GIT_SHA:0:12}"
 if [ -n "$(git -C "$REPO_ROOT" status --porcelain -- apps/glass-marble-ios)" ]; then
     SHORT_SHA="$SHORT_SHA-dirty"
 fi
@@ -68,6 +68,7 @@ substitutions = {
     "$(PRODUCT_BUNDLE_PACKAGE_TYPE)": "APPL",
     "$(MARKETING_VERSION)": os.environ["MARKETING_VERSION"],
     "$(CURRENT_PROJECT_VERSION)": os.environ["CURRENT_PROJECT_VERSION"],
+    "$(MARBLE_GIT_COMMIT)": os.environ["GIT_SHA"],
 }
 
 def subst(value):
@@ -115,10 +116,6 @@ info["CFBundleIcons~ipad"] = {
         "CFBundleIconFiles": ["AppIcon60x60", "AppIcon76x76", "AppIcon83.5x83.5"]
     }
 }
-
-# The About screen shows this commit; Xcode builds leave it absent → "dev".
-if os.environ.get("GIT_SHA"):
-    info["MarbleGitCommit"] = os.environ["GIT_SHA"]
 
 # Keys Xcode normally injects at build time.
 info["CFBundleSupportedPlatforms"] = ["iPhoneOS"]

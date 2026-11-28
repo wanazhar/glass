@@ -97,6 +97,7 @@ private struct MarbleCodeBlock: View {
     var code: String
     var language: String
     @State private var copied = false
+    @State private var overflows = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -104,7 +105,14 @@ private struct MarbleCodeBlock: View {
                 Text(language.isEmpty ? "code" : language)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Spacer()
+                if overflows {
+                    Image(systemName: "arrow.left.and.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Scrolls horizontally")
+                }
                 Button {
                     UIPasteboard.general.string = code
                     copied = true
@@ -115,21 +123,32 @@ private struct MarbleCodeBlock: View {
                 } label: {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
                         .font(.caption)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel(copied ? "Copied" : "Copy code")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.leading, 12)
             Divider()
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView(.horizontal) {
                 Text(code)
                     .font(.system(.footnote, design: .monospaced))
+                    .fixedSize(horizontal: true, vertical: true)
                     .textSelection(.enabled)
                     .padding(12)
             }
+            .defaultScrollAnchor(.leading)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.width > geometry.containerSize.width + 1
+            } action: { _, value in
+                overflows = value
+            }
+            .accessibilityIdentifier("chat.code")
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(MarbleTheme.card, in: MarbleTheme.panel)
+        .clipShape(MarbleTheme.panel)
     }
 }
 

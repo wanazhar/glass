@@ -87,7 +87,14 @@ pub struct Store {
     #[serde(default)]
     pub credentials: BTreeMap<String, Credential>,
 }
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod broker;
+
 pub fn load() -> Result<Store, String> {
+    #[cfg(target_os = "macos")]
+    if let Some(response) = broker::request(broker::Request::Load) {
+        return response;
+    }
     load_from(&config::config_dir().join("auth.json"))
 }
 fn load_from(path: &Path) -> Result<Store, String> {
@@ -121,9 +128,6 @@ pub fn secure_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     }
     result
 }
-pub fn save(store: &Store) -> Result<(), String> {
-    save_to(&config::config_dir().join("auth.json"), store)
-}
 fn save_to(path: &Path, store: &Store) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(store).map_err(|e| e.to_string())?;
     if bytes.len() > MAX_AUTH_STORE_BYTES {
@@ -133,11 +137,23 @@ fn save_to(path: &Path, store: &Store) -> Result<(), String> {
 }
 /// Update the store under an OS lock; a crashed process releases it automatically.
 pub fn edit<T>(update: impl FnOnce(&mut Store) -> Result<T, String>) -> Result<T, String> {
-    std::fs::create_dir_all(config::config_dir()).map_err(|e| e.to_string())?;
-    let _lock = RefreshLock::acquire(&config::config_dir().join(".auth.lock"))?;
-    let mut store = load()?;
+    #[cfg(target_os = "macos")]
+    if broker::connected() {
+        return Err("Sign in from the host to update saved connections".into());
+    }
+    edit_at(&config::config_dir().join("auth.json"), update)
+}
+
+fn edit_at<T>(
+    path: &Path,
+    update: impl FnOnce(&mut Store) -> Result<T, String>,
+) -> Result<T, String> {
+    let directory = path.parent().ok_or("missing credential directory")?;
+    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let _lock = RefreshLock::acquire(&directory.join(".auth.lock"))?;
+    let mut store = load_from(path)?;
     let result = update(&mut store)?;
-    save(&store)?;
+    save_to(path, &store)?;
     Ok(result)
 }
 pub fn apply(cfg: &mut config::Config) -> Result<(), String> {
@@ -253,7 +269,40 @@ pub fn resolve(cfg: &config::Config) -> Result<Option<String>, String> {
     }
 }
 pub fn resolve_credential(id: &str) -> Result<String, String> {
-    let store = load()?;
+    #[cfg(target_os = "macos")]
+    if let Some(response) = broker::request(broker::Request::Resolve(id.into())) {
+        return response;
+    }
+    resolve_credential_at(
+        &config::config_dir().join("auth.json"),
+        id,
+        exchange_refresh_token,
+    )
+}
+
+fn exchange_refresh_token(cred: &Credential) -> Result<Value, String> {
+    if cred.flow == DEVICE_FLOW {
+        oauth_token_form(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", &cred.client_id),
+            ("refresh_token", &cred.refresh_token),
+        ])
+    } else {
+        token_form(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", &cred.client_id),
+            ("refresh_token", &cred.refresh_token),
+            ("resource", RESOURCE),
+        ])
+    }
+}
+
+fn resolve_credential_at(
+    path: &Path,
+    id: &str,
+    exchange: impl FnOnce(&Credential) -> Result<Value, String>,
+) -> Result<String, String> {
+    let store = load_from(path)?;
     let cred = store
         .credentials
         .get(id)
@@ -261,7 +310,7 @@ pub fn resolve_credential(id: &str) -> Result<String, String> {
     if cred.client_id.is_empty() || cred.expires_at > now() + 90 {
         return Ok(cred.access_token.clone());
     }
-    let key = edit(|store| {
+    let key = edit_at(path, |store| {
         let mut cred = store
             .credentials
             .get(id)
@@ -271,20 +320,7 @@ pub fn resolve_credential(id: &str) -> Result<String, String> {
             if cred.refresh_token.is_empty() {
                 return Err("ChatGPT session expired. Use /login to reconnect.".into());
             }
-            let token = match if cred.flow == DEVICE_FLOW {
-                oauth_token_form(&[
-                    ("grant_type", "refresh_token"),
-                    ("client_id", &cred.client_id),
-                    ("refresh_token", &cred.refresh_token),
-                ])
-            } else {
-                token_form(&[
-                    ("grant_type", "refresh_token"),
-                    ("client_id", &cred.client_id),
-                    ("refresh_token", &cred.refresh_token),
-                    ("resource", RESOURCE),
-                ])
-            } {
+            let token = match exchange(&cred) {
                 Ok(token) => token,
                 Err(e) if e.starts_with("ChatGPT session expired or was revoked") => {
                     cred.refresh_token.clear();

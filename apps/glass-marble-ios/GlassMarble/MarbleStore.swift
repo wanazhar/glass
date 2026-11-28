@@ -86,6 +86,7 @@ final class MarbleStore: ObservableObject {
     @Published private(set) var threadUpdates: [String: MarbleThread] = [:]
     @Published private(set) var threadEventSequences: [String: UInt64] = [:]
     @Published private(set) var threadHostRevision: UInt64 = 0
+    private var everyoneThreadRequest: UInt64 = 0
     private var threadTaskIds: Set<String> = []
     private var chatsRevision: Int = -1
     /// Advanced on every host change or sign-out so late replies from the
@@ -112,6 +113,15 @@ final class MarbleStore: ObservableObject {
     /// Reported by `/healthz` during refresh, for the About section.
     @Published private(set) var hostBuild: MarbleHealth.Build?
     @Published private(set) var engineHealth: MarbleHealth.RuntimeHealth?
+    @Published private(set) var changingHostPause = false
+    @Published var hostPauseError: String?
+    private var hostPauseRevision: UInt64 = 0
+
+    static var appCommit: String? {
+        Bundle.main.object(forInfoDictionaryKey: "MarbleGitCommit") as? String
+    }
+
+    var hostVersionMismatch: Bool { hostBuild?.differs(from: Self.appCommit) == true }
 
     private var client: MarbleClient?
     private let speaker = MarbleSpeaker()
@@ -571,6 +581,7 @@ final class MarbleStore: ObservableObject {
         guard let client else { return }
         let generation = hostGeneration.current
         let knownDeletions = deletionSequence
+        let knownPauseRevision = hostPauseRevision
         do {
             async let healthFetch = client.health()
             var snapshot = try await client.state()
@@ -578,6 +589,7 @@ final class MarbleStore: ObservableObject {
             if knownDeletions == deletionSequence {
                 snapshot.reconcileDeletedConversations(&deletedConversationIDs)
             }
+            if knownPauseRevision != hostPauseRevision { snapshot.control = state.control }
             removeDeletedConversations(from: &snapshot)
             let previousChats = Set(state.conversations.map(\.id))
             if !previousChats.isSubset(of: Set(snapshot.conversations.map(\.id))) {
@@ -1252,9 +1264,20 @@ final class MarbleStore: ObservableObject {
 
     func refreshEveryoneThreads() async throws {
         let revision = threadHostRevision
-        let threads = try await threads(in: everyoneConversationId)
-            .sorted { $0.summary.lastActivityAt > $1.summary.lastActivityAt }
-        guard !Task.isCancelled, revision == threadHostRevision, everyoneThreadList != threads else { return }
+        everyoneThreadRequest &+= 1
+        let request = everyoneThreadRequest
+        let threads: [MarbleThread]
+        do {
+            threads = try await self.threads(in: everyoneConversationId)
+                .sorted { $0.summary.lastActivityAt > $1.summary.lastActivityAt }
+        } catch {
+            try Task.checkCancellation()
+            guard revision == threadHostRevision, request == everyoneThreadRequest else { throw CancellationError() }
+            throw error
+        }
+        try Task.checkCancellation()
+        guard revision == threadHostRevision, request == everyoneThreadRequest else { throw CancellationError() }
+        guard everyoneThreadList != threads else { return }
         everyoneThreadList = threads
         saveCache()
     }
@@ -1574,21 +1597,27 @@ final class MarbleStore: ObservableObject {
     }
 
     func setPaused(_ paused: Bool) async {
-        guard let client else { return }
-        do {
-            try await client.setPaused(paused)
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        await refresh()
+        await changeHostPause { try await $0.setPaused(paused) }
     }
 
     func stopEverything() async {
-        guard let client else { return }
+        await changeHostPause { try await $0.stopEverything() }
+    }
+
+    private func changeHostPause(_ request: (MarbleClient) async throws -> MarbleControl) async {
+        guard !changingHostPause else { return }
+        changingHostPause = true
+        defer { changingHostPause = false }
         do {
-            try await client.stopEverything()
+            let control = try await withChatClient(request)
+            hostPauseRevision &+= 1
+            state.control = control
+            saveCache()
+        } catch is CancellationError {
+            return
         } catch {
-            errorMessage = error.localizedDescription
+            hostPauseError = error.localizedDescription
+            return
         }
         await refresh()
     }
@@ -2045,7 +2074,6 @@ final class MarbleStore: ObservableObject {
                         switch update {
                         case .opened:
                             self.status.streamOpened()
-                            self.threadHostRevision &+= 1
                             let openedGeneration = generation
                             // A newly restarted host may not send any live event.
                             Task {
@@ -2104,6 +2132,7 @@ final class MarbleStore: ObservableObject {
         if resume.restarted {
             // Keep cached rows visible while fetching fresh transcripts.
             hostGeneration.advance()
+            threadHostRevision &+= 1
             resetChatActivity()
             live = [:]
             syncLive()
@@ -2364,7 +2393,7 @@ final class MarbleStore: ObservableObject {
             }
         case "approval_pending":
             scheduleEventRefresh()
-        case "approval_resolved", "state", "memory":
+        case "approval_resolved", "state", "memory", "control":
             scheduleEventRefresh()
         case "everyone":
             everyoneTimeline = MarbleEveryoneTimeline.applying(event, to: everyoneTimeline)

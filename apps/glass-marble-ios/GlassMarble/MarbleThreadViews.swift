@@ -8,6 +8,7 @@ struct EveryoneView: View {
     @State private var title = ""
     @State private var deleting: MarbleThread?
     @State private var failed = false
+    @State private var loadFailed = false
     @State private var archived = false
 
     private var threads: [MarbleThread] { store.everyoneThreadList ?? [] }
@@ -20,8 +21,18 @@ struct EveryoneView: View {
     var body: some View {
         List {
             let active = threads.filter { !$0.archived }
-            if store.everyoneThreadList == nil && !failed {
-                MarbleListSkeleton()
+            if store.everyoneThreadList == nil {
+                if loadFailed {
+                    ContentUnavailableView {
+                        Label("Couldn’t load threads", systemImage: "bubble.left.and.bubble.right")
+                    } description: {
+                        EmptyView()
+                    } actions: {
+                        MarbleInlineButton(title: "Retry") { Task { await load(reportFailure: true) } }
+                    }
+                } else {
+                    MarbleListSkeleton()
+                }
             } else if active.isEmpty {
                 ContentUnavailableView("No threads yet", systemImage: "bubble.left.and.bubble.right",
                                        description: Text("Start a thread to talk with Everyone."))
@@ -90,6 +101,7 @@ struct EveryoneView: View {
                 HStack {
                     row(thread)
                     MarbleInlineButton(title: "Restore") { update(thread, action: "restore") }
+                        .accessibilityLabel("Restore \(thread.displayTitle)")
                 }
                 .listRowBackground(MarbleTheme.card)
             }
@@ -98,7 +110,7 @@ struct EveryoneView: View {
             .navigationTitle("Archived")
         }
         .task(id: RefreshKey(updates: store.threadUpdates, revision: store.threadHostRevision)) { await load() }
-        .refreshable { await load() }
+        .refreshable { await load(reportFailure: true) }
     }
 
     private func row(_ thread: MarbleThread) -> some View {
@@ -111,12 +123,15 @@ struct EveryoneView: View {
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
     }
 
-    private func load() async {
+    private func load(reportFailure: Bool = false) async {
         do {
             try await store.refreshEveryoneThreads()
+            loadFailed = false
         } catch is CancellationError {
         } catch {
-            failed = true
+            guard !Task.isCancelled else { return }
+            if store.everyoneThreadList == nil { loadFailed = true }
+            else if reportFailure { failed = true }
         }
     }
 
@@ -125,6 +140,7 @@ struct EveryoneView: View {
             do {
                 let thread = try await store.startEveryoneThread(title: title)
                 navigation.setEveryonePath([.thread(thread.id)])
+            } catch is CancellationError {
             } catch {
                 failed = true
             }
@@ -135,7 +151,8 @@ struct EveryoneView: View {
         Task {
             do {
                 try await store.updateEveryoneThread(thread.id, action: action)
-                await load()
+                await load(reportFailure: true)
+            } catch is CancellationError {
             } catch {
                 failed = true
             }
@@ -352,6 +369,9 @@ private struct MarbleThreadView: View {
         }
         .navigationTitle(page?.thread.displayTitle ?? "Thread")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(MarbleTheme.paper, for: .navigationBar)
+        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+        .background(MarbleTheme.paper)
         .toolbarVisibility(.hidden, for: .tabBar)
         .searchable(text: $query, isPresented: $searching, prompt: "Search this thread")
         .marbleComposerInset {
@@ -469,15 +489,26 @@ private struct MarbleThreadView: View {
             if let group = page.thread.group,
                group.closed || !group.goal.isEmpty || !group.doneWhen.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
-                    if !group.goal.isEmpty { LabeledContent("Goal", value: group.goal) }
-                    if !group.doneWhen.isEmpty { LabeledContent("Done when", value: group.doneWhen) }
-                    if group.closed { Label("Task completed", systemImage: "checkmark.circle") }
+                    if !group.goal.isEmpty {
+                        LabeledContent {
+                            Text(group.goal).foregroundStyle(MarbleTheme.ink)
+                        } label: { Text("Goal").fontWeight(.semibold) }
+                    }
+                    if !group.doneWhen.isEmpty {
+                        LabeledContent {
+                            Text(group.doneWhen).foregroundStyle(MarbleTheme.ink)
+                        } label: { Text("Done when").fontWeight(.semibold) }
+                    }
+                    if group.closed {
+                        Label("Task completed", systemImage: "checkmark.circle").foregroundStyle(MarbleTheme.ready)
+                    }
                 }
                 .font(.subheadline)
+                .foregroundStyle(MarbleTheme.ink)
                 .padding(.vertical, 10)
                 .padding(.horizontal, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .marbleFloating(in: MarbleTheme.panel)
+                .background(MarbleTheme.card, in: MarbleTheme.panel)
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
             }
@@ -695,6 +726,7 @@ private struct MarbleJumpTimeline: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
+            .background(MarbleTheme.paper)
             .marbleFollowsLatest(
                 hasMessages: !entries.isEmpty, searchJump: jump?.requestId, outgoing: outgoing, loadOlder: loadOlder
             )
@@ -740,6 +772,8 @@ private struct MarbleHistoryView: View {
             }
             .navigationTitle(conversationId == everyoneConversationId ? "Everyone" : store.state.conversation(conversationId)?.title ?? "Chat")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(MarbleTheme.paper, for: .navigationBar)
+            .toolbarBackgroundVisibility(.visible, for: .navigationBar)
             .toolbarVisibility(.hidden, for: .tabBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

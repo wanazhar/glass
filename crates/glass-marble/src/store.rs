@@ -336,14 +336,16 @@ impl StateStore {
         let live = crate::live::LiveStore::for_store(self);
         let before = state.pending_everyone_cleanup.len();
         state.pending_everyone_cleanup.retain(|id| {
-            let Some(root) = self.conversation_root(id).filter(|_| crate::everyone::is_session(id))
+            let Some(root) = self.conversation_root(id).filter(|_| {
+                crate::everyone::is_session(id) || id.starts_with("group-thread-")
+            })
             else {
                 return false;
             };
             let workspace = remove_conversation_root(&root);
             let result = workspace.and(live.cleanup_conversation(id));
             if let Err(error) = result {
-                tracing::warn!(%error, conversation = %id, "could not clean up a cleared Everyone session");
+                tracing::warn!(%error, conversation = %id, "could not remove deleted thread or session files");
                 true
             } else {
                 false

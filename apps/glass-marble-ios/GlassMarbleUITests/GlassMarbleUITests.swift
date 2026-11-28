@@ -180,6 +180,7 @@ final class GlassMarbleUITests: XCTestCase {
     func testComposeOpensASavedChatThatCanBeReopened() {
         openDefaultChats()
         app.buttons["chat.compose"].tap()
+        app.buttons["Private chat"].tap()
         XCTAssertTrue(app.textFields["composer.field"].waitForExistence(timeout: 5))
         assertHittable("No messages yet")
         app.navigationBars.buttons.element(boundBy: 0).tap()
@@ -217,6 +218,7 @@ final class GlassMarbleUITests: XCTestCase {
     func testConversationListSearchFindsSavedEmptyChatByDisplayedTitle() {
         openDefaultChats()
         app.buttons["chat.compose"].tap()
+        app.buttons["Private chat"].tap()
         assertHittable("No messages yet")
         app.navigationBars.buttons.element(boundBy: 0).tap()
 

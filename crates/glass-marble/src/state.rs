@@ -98,6 +98,8 @@ pub struct ConversationRecord {
     pub lane: u8,
     #[serde(default)]
     pub engine_conversation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_model: Option<String>,
     /// Explicitly created chats acquire their engine session on first send.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub needs_engine_session: bool,
@@ -408,6 +410,7 @@ impl ProductState {
         }
         self.conversations.push(ConversationRecord {
             id: id.to_string(),
+            chat_model: Some(self.model.trim().to_owned()),
             ..ConversationRecord::default()
         });
         self.conversations
@@ -514,6 +517,9 @@ impl ProductState {
     /// "recent turns" for a chat nobody can open. Dropping them on load keeps
     /// the document self-consistent.
     pub fn prune_orphaned_tasks(&mut self) -> usize {
+        if self.threads.iter().any(|thread| thread.group.is_some()) {
+            self.conversation_mut(crate::threads::GROUP_CONVERSATION);
+        }
         let known: std::collections::HashSet<&str> = self
             .conversations
             .iter()
@@ -828,11 +834,12 @@ impl ProductState {
                 .take(CONVERSATION_LIMIT)
                 .chain(empty.into_iter().take(UNSENT_CONVERSATION_LIMIT))
                 .collect();
+            let has_group_threads = self.threads.iter().any(|thread| thread.group.is_some());
             for (index, conversation) in self.conversations.iter().enumerate() {
-                if self
-                    .tasks
-                    .iter()
-                    .any(|task| task.conversation_id == conversation.id && !settled(&task.status))
+                if (has_group_threads && conversation.id == crate::threads::GROUP_CONVERSATION)
+                    || self.tasks.iter().any(|task| {
+                        task.conversation_id == conversation.id && !settled(&task.status)
+                    })
                     || self.control.queue.iter().any(|entry| {
                         entry.conversation_id.as_deref() == Some(conversation.id.as_str())
                     })

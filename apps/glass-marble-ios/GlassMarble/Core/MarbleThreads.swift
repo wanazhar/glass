@@ -39,6 +39,22 @@ struct MarbleThreadSummary: Codable, Hashable, Sendable {
     var replyLabel: String { replyCount == 1 ? "1 reply" : "\(replyCount) replies" }
 }
 
+let marbleGroupConversationId = "group-chats"
+
+struct MarbleGroupThread: Codable, Hashable, Sendable {
+    struct Suggestion: Codable, Hashable, Identifiable, Sendable {
+        let agentId: String
+        let suggestedBy: String
+        var id: String { agentId }
+    }
+
+    var members: [String]
+    var goal = ""
+    var doneWhen = ""
+    var closed = false
+    var suggestions: [Suggestion] = []
+}
+
 struct MarbleThread: Codable, Identifiable, Hashable, Sendable {
     let summary: MarbleThreadSummary
     let conversationId: String
@@ -49,6 +65,7 @@ struct MarbleThread: Codable, Identifiable, Hashable, Sendable {
     let participants: [String]
     let title: String
     let archived: Bool
+    let group: MarbleGroupThread?
 
     var id: String { summary.id }
 
@@ -63,6 +80,7 @@ struct MarbleThread: Codable, Identifiable, Hashable, Sendable {
         participants = try values.optional("participants") ?? []
         title = try values.optional("title") ?? ""
         archived = try values.optional("archived") ?? false
+        group = try values.optional("group")
     }
 
     func encode(to encoder: Encoder) throws {
@@ -78,6 +96,7 @@ struct MarbleThread: Codable, Identifiable, Hashable, Sendable {
         try values.encode(participants, forKey: .init("participants"))
         try values.encode(title, forKey: .init("title"))
         try values.encode(archived, forKey: .init("archived"))
+        try values.encodeIfPresent(group, forKey: .init("group"))
     }
 }
 

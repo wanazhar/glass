@@ -958,7 +958,8 @@ final class MarbleStore: ObservableObject {
         case .everyone: responders = MarbleMentions.responders(in: trimmed, roster: prism.marbles)
         case .marble(let id): responders = [id]
         case .conversation(let id, _):
-            responders = [prism.marbles.first(where: { $0.conversationId == id })?.id ?? "marble"]
+            responders = id == marbleGroupConversationId ? []
+                : [prism.marbles.first(where: { $0.conversationId == id })?.id ?? "marble"]
         }
         let previous = target.isEveryone
             ? outgoingPresentation(entries, to: target, conversationId: everyoneConversationId).entries
@@ -1324,6 +1325,24 @@ final class MarbleStore: ObservableObject {
         return thread
     }
 
+    func startGroupThread(title: String, group: MarbleGroupThread) async throws -> MarbleThread {
+        let thread = try await withChatClient {
+            try await $0.createThread(conversationId: marbleGroupConversationId, title: title, group: group)
+        }
+        threadUpdates[thread.id] = thread
+        return thread
+    }
+
+    func updateGroupMembers(_ id: String, members: [String]) async throws {
+        try await withChatClient { try await $0.updateGroupMembers(id, members: members) }
+        try await loadThreadHistory(id)
+    }
+
+    func respondToGroupSuggestion(_ id: String, agentId: String, add: Bool) async throws {
+        try await withChatClient { try await $0.respondToGroupSuggestion(id, agentId: agentId, add: add) }
+        try await loadThreadHistory(id)
+    }
+
     func updateEveryoneThread(_ id: String, action: String) async throws {
         try await withChatClient { try await $0.updateEveryoneThread(id, action: action) }
         threadPages.removeValue(forKey: id)
@@ -1358,7 +1377,8 @@ final class MarbleStore: ObservableObject {
 
     func addMarble(
         name: String, role: String = "", glyph: String, hue: Int,
-        workspace: String = "", persona: String = ""
+        workspace: String = "", persona: String = "", card: MarbleAgentCard? = nil,
+        duplicateId: String? = nil
     ) async -> String? {
         guard let client else {
             errorMessage = "Reconnect to your host to create a Marble."
@@ -1372,7 +1392,9 @@ final class MarbleStore: ObservableObject {
                 glyph: glyph,
                 hue: hue,
                 workspace: workspace,
-                persona: persona
+                persona: persona,
+                card: card,
+                duplicateId: duplicateId
             )
             let updated = try await client.addMarble(draft)
             errorMessage = nil
@@ -1396,12 +1418,6 @@ final class MarbleStore: ObservableObject {
             errorMessage = error.localizedDescription
         }
         await refresh()
-    }
-
-    /// Save a marble's personality; the host restarts its conversation so the
-    /// next turn actually speaks with the new voice.
-    func savePersona(_ marble: MarblePrismMarble, persona: String) async {
-        await updateMarble(marble.id, update: .init(persona: persona))
     }
 
     /// Default-Marble turns this iPhone started from Everyone.

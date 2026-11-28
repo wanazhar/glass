@@ -21,7 +21,11 @@ use crate::events::EventBus;
 use crate::live::LiveStore;
 use crate::state::{ProductState, TaskRecord, TranscriptEntry};
 use crate::store::{self, StateStore};
-use crate::tools::{ToolOutcome, ToolRouter};
+use crate::threads::{GROUP_CONVERSATION, GroupAction, MemberSuggestion};
+use crate::tools::{
+    AgentTools, MARBLE_ASK, ToolOutcome, ToolRouter, WORKSPACE_LIST, WORKSPACE_READ,
+    WORKSPACE_SEARCH, WORKSPACE_WRITE,
+};
 use crate::worker::{CancelRegistry, now_millis};
 use crate::{
     ApprovalInbox, Conversation, HostPolicy, MarbleError, SteerRequest, TurnOptions, run_turn,
@@ -31,12 +35,13 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Marbles one host keeps. A roster is meant to be scanned, not paged.
-pub const PRISM_LIMIT: usize = 8;
+pub const PRISM_LIMIT: usize = 32;
 /// Longest accepted marble name.
 pub const NAME_LIMIT: usize = 40;
 /// Longest accepted role line.
@@ -46,6 +51,67 @@ pub const PERSONA_LIMIT: usize = 2000;
 /// Glyphs the roster offers. Simple shapes read at sidebar size; the eyes and
 /// the state motion are what make a marble recognisable rather than the outline.
 pub const GLYPHS: [&str; 6] = ["circle", "hex", "shield", "drop", "star", "square"];
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WhenToSpeak {
+    Mentioned,
+    #[default]
+    Relevant,
+    Always,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentCard {
+    pub voice: String,
+    pub model: String,
+    pub when_to_speak: WhenToSpeak,
+    pub tools: AgentTools,
+    pub in_everyone: bool,
+    pub tool_call_limit: Option<usize>,
+    pub turn_timeout_secs: Option<u64>,
+}
+
+fn role_prompt(name: &str, focus: &str) -> String {
+    format!(
+        "You are {name}. {focus} Stay in your role and answer briefly by default. Reply to small talk without tools."
+    )
+}
+
+fn template_card(
+    when_to_speak: WhenToSpeak,
+    native: bool,
+    tools: &[&str],
+    engineer: bool,
+) -> AgentCard {
+    AgentCard {
+        when_to_speak,
+        tools: AgentTools {
+            native,
+            allowed: tools.iter().map(|name| (*name).into()).collect(),
+        },
+        in_everyone: true,
+        tool_call_limit: Some(if engineer { 25 } else { 8 }),
+        turn_timeout_secs: Some(if engineer { 600 } else { 120 }),
+        ..Default::default()
+    }
+}
+
+impl AgentCard {
+    pub(crate) fn validate(&mut self) -> Result<(), String> {
+        self.tools.validate()?;
+        self.model = self.model.trim().to_owned();
+        self.voice = self.voice.trim().to_owned();
+        if self.model.chars().count() > 180 || self.voice.chars().count() > PERSONA_LIMIT {
+            return Err("agent model or voice is too long".into());
+        }
+        if self.tool_call_limit == Some(0) || self.turn_timeout_secs == Some(0) {
+            return Err("turn budgets must be positive".into());
+        }
+        Ok(())
+    }
+}
 
 /// One named marble in the roster.
 ///
@@ -92,6 +158,8 @@ pub struct PrismMarble {
     pub tool_call_limit: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_timeout_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<AgentCard>,
 }
 
 fn default_glyph() -> String {
@@ -103,11 +171,14 @@ fn idle() -> String {
 }
 
 impl PrismMarble {
-    fn turn_budget(&self) -> (usize, Duration) {
+    pub(crate) fn turn_budget(&self) -> (usize, Duration) {
         let engineer = self.role.eq_ignore_ascii_case("engineer")
             || self.name.eq_ignore_ascii_case("engineer");
         let tools = self
-            .tool_call_limit
+            .card
+            .as_ref()
+            .and_then(|card| card.tool_call_limit)
+            .or(self.tool_call_limit)
             .filter(|limit| *limit > 0)
             .unwrap_or(if engineer {
                 25
@@ -115,7 +186,10 @@ impl PrismMarble {
                 crate::turn::DEFAULT_TOOL_LIMIT
             });
         let seconds = self
-            .turn_timeout_secs
+            .card
+            .as_ref()
+            .and_then(|card| card.turn_timeout_secs)
+            .or(self.turn_timeout_secs)
             .filter(|seconds| *seconds > 0)
             .unwrap_or(if engineer {
                 600
@@ -128,6 +202,21 @@ impl PrismMarble {
     /// Whether this marble is running a turn right now.
     pub fn is_working(&self) -> bool {
         self.state == "working"
+    }
+
+    pub(crate) fn in_everyone(&self) -> bool {
+        self.card.as_ref().is_none_or(|card| card.in_everyone)
+    }
+
+    pub(crate) fn model(&self, fallback: &str) -> Option<String> {
+        let model = self
+            .card
+            .as_ref()
+            .map(|card| card.model.as_str())
+            .filter(|model| !model.is_empty())
+            .unwrap_or(fallback)
+            .trim();
+        (!model.is_empty()).then(|| model.to_owned())
     }
 }
 
@@ -146,9 +235,157 @@ pub struct PrismState {
     /// The default assistant's own personality text, editable like a marble's.
     #[serde(default)]
     pub default_persona: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_card: Option<AgentCard>,
+    #[serde(default)]
+    template_installed: bool,
 }
 
 impl PrismState {
+    pub fn install_template(&mut self) -> bool {
+        if self.template_installed && self.get("lead").is_some() {
+            return false;
+        }
+        for agent in &mut self.marbles {
+            if agent.card.is_none() {
+                agent.card = Some(AgentCard {
+                    tools: AgentTools {
+                        native: true,
+                        allowed: ToolRouter::catalog()
+                            .into_iter()
+                            .map(|tool| tool.name)
+                            .collect(),
+                    },
+                    in_everyone: true,
+                    ..Default::default()
+                });
+            }
+        }
+        let reads = &[WORKSPACE_LIST, WORKSPACE_READ, WORKSPACE_SEARCH];
+        let write = &[
+            WORKSPACE_LIST,
+            WORKSPACE_READ,
+            WORKSPACE_SEARCH,
+            WORKSPACE_WRITE,
+        ];
+        if self.default_persona.is_empty() {
+            self.default_persona = role_prompt(
+                "the generalist companion",
+                "Answer everyday questions and handle light tasks. Ask one clarifying question when it would prevent a wrong answer.",
+            );
+        }
+        self.default_card
+            .get_or_insert_with(|| template_card(WhenToSpeak::Relevant, true, write, false));
+        for (id, name, role, glyph, hue, focus, speak, native, tools) in [
+            (
+                "lead",
+                "Lead",
+                "Plans work and closes group threads",
+                "hex",
+                42,
+                "Set the order, give each specialist a distinct assignment, and close with the decision and what is done. Suggest rather than add members.",
+                WhenToSpeak::Always,
+                false,
+                &[MARBLE_ASK][..],
+            ),
+            (
+                "engineer",
+                "Engineer",
+                "Writes code and fixes defects",
+                "square",
+                145,
+                "Read the relevant code before changing it, make focused fixes, and report which tests actually ran.",
+                WhenToSpeak::Relevant,
+                true,
+                write,
+            ),
+            (
+                "designer",
+                "Designer",
+                "Designs and reviews interfaces",
+                "drop",
+                265,
+                "Review hierarchy, accessibility and interaction. Offer concrete visual improvements and state which screens you actually checked.",
+                WhenToSpeak::Relevant,
+                true,
+                reads,
+            ),
+            (
+                "researcher",
+                "Researcher",
+                "Finds and checks sources",
+                "star",
+                32,
+                "Prefer primary sources, verify claims across sources and distinguish evidence from inference. Cite sources you actually checked.",
+                WhenToSpeak::Relevant,
+                true,
+                reads,
+            ),
+            (
+                "reviewer",
+                "Reviewer",
+                "Reviews work and reports what was verified",
+                "shield",
+                152,
+                "Look for concrete regressions and missing tests. Do not edit the work; state what you verified and what remains uncertain.",
+                WhenToSpeak::Relevant,
+                false,
+                reads,
+            ),
+            (
+                "finance",
+                "Finance",
+                "Reviews costs, budgets and spending",
+                "hex",
+                44,
+                "Show units and assumptions, distinguish estimates from actual costs, and do not make purchases or financial commitments.",
+                WhenToSpeak::Mentioned,
+                false,
+                reads,
+            ),
+            (
+                "shopper",
+                "Shopper",
+                "Finds and compares products",
+                "drop",
+                277,
+                "Compare a small number of products against the user's constraints. State price, currency and uncertainty. Never place an order.",
+                WhenToSpeak::Mentioned,
+                true,
+                reads,
+            ),
+        ] {
+            if self.get(id).is_some() || (self.template_installed && id != "lead") {
+                continue;
+            }
+            let taken = |name: &str| {
+                self.marbles
+                    .iter()
+                    .any(|agent| agent.name.eq_ignore_ascii_case(name))
+            };
+            let name = if !taken(name) {
+                name.to_string()
+            } else if id != "lead" {
+                continue;
+            } else {
+                std::iter::once("Lead (built-in)".to_string())
+                    .chain((2..).map(|number| format!("Lead (built-in {number})")))
+                    .find(|name| !taken(name))
+                    .expect("the roster is finite")
+            };
+            if self
+                .add(&name, role, glyph, hue, "", &role_prompt(&name, focus))
+                .is_ok()
+            {
+                let agent = self.marbles.last_mut().expect("just added");
+                agent.id = id.into();
+                agent.card = Some(template_card(speak, native, tools, id == "engineer"));
+            }
+        }
+        self.template_installed = true;
+        true
+    }
+
     pub fn get(&self, id: &str) -> Option<&PrismMarble> {
         self.marbles.iter().find(|marble| marble.id == id)
     }
@@ -241,6 +478,7 @@ impl PrismState {
             persona: valid_persona(persona)?,
             tool_call_limit: None,
             turn_timeout_secs: None,
+            card: None,
         };
         self.marbles.push(marble);
         Ok(self
@@ -256,7 +494,7 @@ impl PrismState {
         PrismMarble {
             id: "marble".to_string(),
             name: "Marble".to_string(),
-            role: "the default assistant".to_string(),
+            role: "The default assistant".to_string(),
             glyph: GLYPHS[0].to_string(),
             hue: 210,
             workspace: String::new(),
@@ -269,6 +507,7 @@ impl PrismState {
             persona: self.default_persona.clone(),
             tool_call_limit: None,
             turn_timeout_secs: None,
+            card: self.default_card.clone(),
         }
     }
 
@@ -315,9 +554,12 @@ impl PrismState {
             {
                 return Err("the default assistant only changes its personality".into());
             }
-            let persona = persona.unwrap_or_default();
-            let changed = self.default_persona != persona;
-            self.default_persona = persona;
+            let changed = persona
+                .as_ref()
+                .is_some_and(|persona| self.default_persona != *persona);
+            if let Some(persona) = persona {
+                self.default_persona = persona;
+            }
             return Ok(changed);
         }
         let mut identity_changed = false;
@@ -369,6 +611,9 @@ impl PrismState {
 
     /// Remove one marble; returns the conversation it owned, if any.
     pub fn remove(&mut self, id: &str) -> Result<String, String> {
+        if id == "lead" {
+            return Err("Lead is required in group chats".into());
+        }
         let index = self
             .marbles
             .iter()
@@ -645,6 +890,17 @@ pub struct PrismPoolParts {
 /// One end of a marble-to-marble ask: the reply text or why there is none.
 type AskWaiter = mpsc::Sender<Result<String, String>>;
 
+#[derive(Default)]
+struct GroupLane {
+    running: Mutex<()>,
+    latest: Mutex<Option<Arc<AtomicBool>>>,
+}
+
+struct GroupTurn<'a> {
+    context: &'a str,
+    cancel: &'a Arc<AtomicBool>,
+}
+
 /// Owns one engine process and one conversation per marble.
 pub struct PrismPool {
     factory: Arc<dyn Fn() -> Command + Send + Sync>,
@@ -658,6 +914,7 @@ pub struct PrismPool {
     approvals: ApprovalInbox,
     timeout: Duration,
     engines: Mutex<HashMap<String, PrismEngine>>,
+    groups: Mutex<HashMap<String, Arc<GroupLane>>>,
     /// Marbles waiting on an ask: marble id → the channels answering that ask.
     ask_waiters: Mutex<HashMap<String, Vec<AskWaiter>>>,
     /// Depth of the turn each task is part of, so asks cannot chain forever.
@@ -702,6 +959,7 @@ impl PrismPool {
             approvals: parts.approvals,
             timeout: parts.timeout,
             engines: Mutex::new(HashMap::new()),
+            groups: Mutex::new(HashMap::new()),
             ask_waiters: Mutex::new(HashMap::new()),
             task_depths: Mutex::new(HashMap::new()),
             pending_depths: Mutex::new(HashMap::new()),
@@ -725,6 +983,267 @@ impl PrismPool {
         }
         root.canonicalize()
             .map_err(|error| format!("cannot open {}'s workspace: {error}", marble.name))
+    }
+
+    pub(crate) fn start_group_round(
+        self: &Arc<Self>,
+        thread: String,
+        text: String,
+        client: Option<crate::state::ClientMessage>,
+        zone: Option<String>,
+    ) -> Result<(), (u16, &'static str)> {
+        let lane = self
+            .groups
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(thread.clone())
+            .or_default()
+            .clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let round_id = format!("group-round-{}", crate::next_request_id());
+        let mut latest = lane.latest.lock().unwrap_or_else(|e| e.into_inner());
+        let snapshot = {
+            let mut state = self.lock_state();
+            if state.control.paused {
+                return Err((409, "admission_paused"));
+            }
+            let record = state
+                .threads
+                .iter()
+                .find(|item| item.id == thread)
+                .ok_or((404, "unknown_thread"))?;
+            let group = record.group.as_ref().ok_or((409, "not_a_group_thread"))?;
+            if record.archived || group.closed {
+                return Err((409, "group_thread_closed"));
+            }
+            if let Some(previous) = latest.replace(cancel.clone()) {
+                previous.store(true, Ordering::Relaxed);
+            }
+            self.cancels.register(&round_id, cancel.clone());
+            state.push_transcript(TranscriptEntry {
+                id: client
+                    .as_ref()
+                    .map(|message| message.entry_id.clone())
+                    .unwrap_or_default(),
+                client_message_id: client.map(|message| message.id),
+                conversation_id: GROUP_CONVERSATION.into(),
+                kind: "user".into(),
+                text: text.clone(),
+                thread_id: Some(thread.clone()),
+                at: now_millis(),
+                ..Default::default()
+            });
+            state.bump();
+            state.clone()
+        };
+        self.persist(&snapshot);
+        drop(latest);
+        let pool = Arc::clone(self);
+        std::thread::spawn(move || {
+            let _running = lane.running.lock().unwrap_or_else(|e| e.into_inner());
+            pool.run_group_round(&thread, &text, zone.as_deref(), &cancel);
+            pool.cancels.forget(&round_id);
+            let mut latest = lane.latest.lock().unwrap_or_else(|e| e.into_inner());
+            if latest
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &cancel))
+            {
+                *latest = None;
+            }
+        });
+        Ok(())
+    }
+
+    fn run_group_round(
+        self: &Arc<Self>,
+        thread: &str,
+        message: &str,
+        zone: Option<&str>,
+        cancel: &Arc<AtomicBool>,
+    ) {
+        let mut visited = Vec::new();
+        let mut replies = Vec::<(String, String)>::new();
+        let mut handoff = String::new();
+        for _ in 0..4 {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let (agent, context) = {
+                let state = self.lock_state();
+                let Some(record) = state
+                    .threads
+                    .iter()
+                    .find(|item| item.id == thread && !item.archived)
+                else {
+                    return;
+                };
+                let Some(group) = record.group.as_ref().filter(|group| !group.closed) else {
+                    return;
+                };
+                let roster = |id: &str| {
+                    if id == "marble" {
+                        Some(state.prism.default_marble())
+                    } else {
+                        state.prism.get(id).cloned()
+                    }
+                };
+                let agents: Vec<_> = group
+                    .members
+                    .iter()
+                    .filter(|id| !visited.contains(*id))
+                    .filter_map(|id| roster(id))
+                    .collect();
+                let mentioned = |text: &str, agent: &PrismMarble| {
+                    let text = text.to_lowercase();
+                    crate::everyone::mention_position(&text, &agent.id).or_else(|| {
+                        crate::everyone::mention_position(&text, &agent.name.to_lowercase())
+                    })
+                };
+                let agent =
+                    if visited.is_empty() {
+                        agents.iter().find(|agent| agent.id == "lead")
+                    } else {
+                        agents
+                            .iter()
+                            .filter_map(|agent| {
+                                mentioned(&handoff, agent).map(|position| (position, agent))
+                            })
+                            .min_by_key(|(position, _)| *position)
+                            .map(|(_, agent)| agent)
+                            .or_else(|| {
+                                agents
+                                    .iter()
+                                    .filter_map(|agent| {
+                                        mentioned(message, agent).map(|position| (position, agent))
+                                    })
+                                    .min_by_key(|(position, _)| *position)
+                                    .map(|(_, agent)| agent)
+                            })
+                            .or_else(|| {
+                                agents.iter().find(|agent| {
+                                    agent.card.as_ref().is_some_and(|card| {
+                                        card.when_to_speak == WhenToSpeak::Always
+                                    })
+                                })
+                            })
+                            .or_else(|| {
+                                agents.iter().find(|agent| {
+                                    agent.card.as_ref().is_none_or(|card| {
+                                        card.when_to_speak == WhenToSpeak::Relevant
+                                    })
+                                })
+                            })
+                    };
+                let Some(agent) = agent.cloned() else { return };
+                let available = state
+                    .prism
+                    .marbles
+                    .iter()
+                    .filter(|agent| !group.members.contains(&agent.id))
+                    .map(|agent| agent.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let history = state
+                    .thread_entry_refs(record)
+                    .into_iter()
+                    .rev()
+                    .filter(|entry| matches!(entry.kind.as_str(), "user" | "assistant"))
+                    .take(16)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .map(|entry| {
+                        (
+                            state.entry_sender(entry),
+                            entry.text.chars().take(1800).collect::<String>(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let context = format!(
+                    "You're {} in the group chat {}. Speak only for yourself; be brief and do not repeat earlier contributions. If you have nothing new to add, reply with exactly [[PASS]]. Use @agent-id to hand off to an existing member. If an outside specialist would help, start your reply with [[SUGGEST: agent-id]] on its own line; do not claim they joined. Only Lead may close a task after its Done when is met: start with [[CLOSE]] on its own line, then give a short summary.\nMembers: {}\nAvailable specialists: {}\nGoal: {}\nDone when: {}\nRecent thread messages (quoted): {}\nEarlier replies this round (quoted, in order): {}",
+                    agent.name,
+                    record.title,
+                    group.members.join(", "),
+                    available,
+                    group.goal,
+                    group.done_when,
+                    json!(history),
+                    json!(replies),
+                );
+                (agent, context)
+            };
+            visited.push(agent.id.clone());
+            let root = match self.workspace_root(&agent) {
+                Ok(root) => root,
+                Err(error) => {
+                    self.fail_before_acceptance(&agent, message, &error, Some(thread), None);
+                    continue;
+                }
+            };
+            let Some(reply) = self.run_marble(
+                &agent,
+                root,
+                message,
+                Some(thread.into()),
+                None,
+                zone.map(str::to_owned),
+                Some(GroupTurn {
+                    context: &context,
+                    cancel,
+                }),
+            ) else {
+                continue;
+            };
+            if reply.cancelled || cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            handoff.clone_from(&reply.text);
+            if !reply.text.is_empty() {
+                replies.push((agent.name.clone(), reply.text));
+            }
+            let snapshot = {
+                let mut state = self.lock_state();
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                let valid_suggestion = match &reply.group_action {
+                    Some(GroupAction::Suggest(id)) => {
+                        id == "marble" || state.prism.get(id).is_some()
+                    }
+                    _ => false,
+                };
+                let Some(group) = state
+                    .threads
+                    .iter_mut()
+                    .find(|item| item.id == thread)
+                    .and_then(|item| item.group.as_mut())
+                else {
+                    return;
+                };
+                match reply.group_action {
+                    Some(GroupAction::Close)
+                        if agent.id == "lead" && !group.done_when.is_empty() =>
+                    {
+                        group.closed = true
+                    }
+                    Some(GroupAction::Suggest(id))
+                        if valid_suggestion
+                            && !group.members.contains(&id)
+                            && !group.suggestions.iter().any(|item| item.agent_id == id) =>
+                    {
+                        group.suggestions.push(MemberSuggestion {
+                            agent_id: id,
+                            suggested_by: agent.id,
+                        });
+                    }
+                    _ => continue,
+                }
+                state.refresh_thread(thread);
+                state.bump();
+                state.clone()
+            };
+            self.persist(&snapshot);
+        }
     }
 
     /// Admit a dispatch and start each marble on its own thread.
@@ -912,7 +1431,8 @@ impl PrismPool {
                         thread,
                         turn_identity,
                         device_time_zone,
-                    )
+                        None,
+                    );
                 });
             if let Err(error) = spawned {
                 tracing::error!(%error, marble = %marble_name, "could not start a prism turn");
@@ -1051,7 +1571,7 @@ impl PrismPool {
                 .unwrap_or_else(|error| error.into_inner())
                 .insert(marble.id.clone(), depth);
         }
-        self.run_marble(marble, root, text, thread_id, None, device_time_zone);
+        self.run_marble(marble, root, text, thread_id, None, device_time_zone, None);
     }
 
     /// Runs an ask from the marble that owns `scope`.
@@ -1060,6 +1580,11 @@ impl PrismPool {
         scope: &crate::tools::ToolScope,
         arguments: &Value,
     ) -> ToolOutcome {
+        if crate::everyone::is_group_session(&scope.conversation_id) {
+            return ToolOutcome::error(
+                "Use an @mention in your reply to hand off this group round.",
+            );
+        }
         const MAX_DEPTH: u8 = 2;
         const MAX_ASKS: usize = 3;
         const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
@@ -1288,6 +1813,7 @@ impl PrismPool {
     }
 
     /// Run one marble's turn to settlement.
+    #[allow(clippy::too_many_arguments)]
     fn run_marble(
         self: &Arc<Self>,
         marble: &PrismMarble,
@@ -1296,7 +1822,8 @@ impl PrismPool {
         thread_id: Option<String>,
         client: Option<crate::state::ClientMessage>,
         device_time_zone: Option<String>,
-    ) {
+        group: Option<GroupTurn<'_>>,
+    ) -> Option<crate::MarbleReply> {
         let engine = match self.engine(marble, &root) {
             Ok(engine) => engine,
             Err(error) => {
@@ -1308,14 +1835,44 @@ impl PrismPool {
                     client.as_ref(),
                 );
                 self.resume_held();
-                return;
+                return None;
             }
         };
         let mut guard = engine.lock().unwrap_or_else(|error| error.into_inner());
+        let refreshed;
+        let marble = if let Some(group) = &group {
+            let state = self.lock_state();
+            if group.cancel.load(Ordering::Relaxed) || state.control.paused {
+                return None;
+            }
+            let still_member = state.threads.iter().any(|thread| {
+                Some(thread.id.as_str()) == thread_id.as_deref()
+                    && !thread.archived
+                    && thread
+                        .group
+                        .as_ref()
+                        .is_some_and(|group| !group.closed && group.members.contains(&marble.id))
+            });
+            if !still_member {
+                return None;
+            }
+            refreshed = if marble.id == "marble" {
+                state.prism.default_marble()
+            } else {
+                state.prism.get(&marble.id)?.clone()
+            };
+            &refreshed
+        } else {
+            marble
+        };
         let conversation = &mut *guard;
         conversation.set_store(self.store.as_deref());
         let (tool_limit, turn_timeout) = marble.turn_budget();
         conversation.set_tool_limit(tool_limit);
+        conversation.set_agent_tools(marble.card.as_ref().map(|card| card.tools.clone()));
+        let host_model = self.lock_state().model.trim().to_owned();
+        conversation.set_model((!host_model.is_empty()).then_some(host_model));
+        conversation.set_card_model(marble.model(""));
         let conversation_id = self.turn_conversation(marble, thread_id.as_deref());
         let mut accepted: Option<(String, String)> = None;
         let request_id = crate::next_request_id();
@@ -1328,7 +1885,9 @@ impl PrismPool {
             &marble.id,
             text,
         );
-        if let Some(context) = thread_id
+        if let Some(group) = &group {
+            input.text = format!("{}\n\n{}", group.context, input.text);
+        } else if let Some(context) = thread_id
             .as_deref()
             .and_then(|id| self.lock_state().thread_preamble(id))
         {
@@ -1340,7 +1899,10 @@ impl PrismPool {
             request_id,
             input,
         };
-        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = group.as_ref().map_or_else(
+            || Arc::new(AtomicBool::new(false)),
+            |group| Arc::clone(group.cancel),
+        );
         let mut on_accepted = |conversation_id: &str, task_id: &str| {
             if let Some((_, previous)) =
                 accepted.replace((conversation_id.to_string(), task_id.to_string()))
@@ -1384,21 +1946,25 @@ impl PrismPool {
                     routine_id: String::new(),
                 });
                 state.bind_thread(task_id, thread_id.as_deref());
-                state.push_transcript(TranscriptEntry {
-                    id: client
-                        .as_ref()
-                        .map(|message| message.entry_id.clone())
-                        .unwrap_or_default(),
-                    client_message_id: client.as_ref().map(|message| message.id.clone()),
-                    conversation_id: conversation_id.to_string(),
-                    kind: "user".into(),
-                    text: text.to_string(),
-                    task_id: task_id.to_string(),
-                    at: now,
-                    ..Default::default()
-                });
+                if group.is_none() {
+                    state.push_transcript(TranscriptEntry {
+                        id: client
+                            .as_ref()
+                            .map(|message| message.entry_id.clone())
+                            .unwrap_or_default(),
+                        client_message_id: client.as_ref().map(|message| message.id.clone()),
+                        conversation_id: conversation_id.to_string(),
+                        kind: "user".into(),
+                        text: text.to_string(),
+                        task_id: task_id.to_string(),
+                        at: now,
+                        ..Default::default()
+                    });
+                }
                 state.prism.note_task(&marble.id, conversation_id, task_id);
-                crate::everyone::claim(&mut state, &format!("marble:{}", marble.id), task_id);
+                if group.is_none() {
+                    crate::everyone::claim(&mut state, &format!("marble:{}", marble.id), task_id);
+                }
                 state.bump();
                 state.clone()
             };
@@ -1429,24 +1995,26 @@ impl PrismPool {
             &turn,
             conversation,
             TurnOptions {
+                group: group.is_some(),
                 cancel: Some(cancel.as_ref()),
                 timeout: self.timeout.min(turn_timeout),
                 on_accepted: Some(&mut on_accepted),
                 live: live_turn.as_mut(),
             },
         );
-        match result {
-            Ok(reply) => {
+        let reply = match result {
+            Ok(mut reply) => {
                 self.cancels.forget(&reply.task_id);
                 self.task_depths
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .remove(&reply.task_id);
-                if let Some(waiters) = self
-                    .ask_waiters
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .remove(&marble.id)
+                if group.is_none()
+                    && let Some(waiters) = self
+                        .ask_waiters
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .remove(&marble.id)
                 {
                     for waiter in waiters {
                         let _ = waiter.send(Ok(reply.text.clone()));
@@ -1454,6 +2022,9 @@ impl PrismPool {
                 }
                 let snapshot = {
                     let mut state = self.lock_state();
+                    if group.is_some() && cancel.load(Ordering::Relaxed) {
+                        reply.cancelled = true;
+                    }
                     let now = now_millis();
                     let status = if reply.cancelled {
                         "cancelled"
@@ -1462,7 +2033,7 @@ impl PrismPool {
                     };
                     state.set_task_status(&reply.task_id, status);
                     state.conversation_mut(&reply.conversation_id).updated_at = now;
-                    if !reply.reasoning.trim().is_empty() {
+                    if (group.is_none() || !reply.cancelled) && !reply.reasoning.trim().is_empty() {
                         state.push_transcript(TranscriptEntry {
                             conversation_id: reply.conversation_id.clone(),
                             kind: "reasoning".into(),
@@ -1472,7 +2043,7 @@ impl PrismPool {
                             ..Default::default()
                         });
                     }
-                    if !reply.text.trim().is_empty() {
+                    if (group.is_none() || !reply.cancelled) && !reply.text.trim().is_empty() {
                         state.push_transcript(TranscriptEntry {
                             conversation_id: reply.conversation_id.clone(),
                             kind: "assistant".into(),
@@ -1503,13 +2074,15 @@ impl PrismPool {
                         "marble": marble.id,
                     }),
                 );
+                Some(reply)
             }
             Err(error) => {
-                if let Some(waiters) = self
-                    .ask_waiters
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .remove(&marble.id)
+                if group.is_none()
+                    && let Some(waiters) = self
+                        .ask_waiters
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .remove(&marble.id)
                 {
                     for waiter in waiters {
                         let _ = waiter.send(Err(crate::failure::MESSAGE.to_string()));
@@ -1522,16 +2095,18 @@ impl PrismPool {
                             .runtime
                             .note_engine_failure(conversation.engine_id(), error.to_string());
                     }
-                    self.fail_before_acceptance(
-                        marble,
-                        text,
-                        &error.to_string(),
-                        thread_id.as_deref(),
-                        client.as_ref(),
-                    );
+                    if !cancel.load(Ordering::Relaxed) {
+                        self.fail_before_acceptance(
+                            marble,
+                            text,
+                            &error.to_string(),
+                            thread_id.as_deref(),
+                            client.as_ref(),
+                        );
+                    }
                     drop(guard);
                     self.resume_held();
-                    return;
+                    return None;
                 }
                 let snapshot = {
                     let mut state = self.lock_state();
@@ -1548,8 +2123,12 @@ impl PrismPool {
                             .unwrap_or_else(|error| error.into_inner())
                             .remove(task_id);
                         self.cancels.forget(task_id);
-                        state.set_task_status(task_id, "failed");
-                        state.record_failure(conversation_id, task_id, &error.to_string());
+                        if group.is_some() && cancel.load(Ordering::Relaxed) {
+                            state.set_task_status(task_id, "cancelled");
+                        } else {
+                            state.set_task_status(task_id, "failed");
+                            state.record_failure(conversation_id, task_id, &error.to_string());
+                        }
                         crate::everyone::mirror_settlement(&mut state, task_id, "", "failed");
                         state.conversation_mut(conversation_id).updated_at = now;
                     }
@@ -1571,10 +2150,12 @@ impl PrismPool {
                         "revision": snapshot.revision,
                     }),
                 );
+                None
             }
-        }
+        };
         drop(guard);
         self.resume_held();
+        reply
     }
 
     fn fail_before_acceptance(
@@ -1645,7 +2226,9 @@ impl PrismPool {
                 });
             }
             state.record_failure(&conversation_id, &task_id, error);
-            crate::everyone::claim(&mut state, &format!("marble:{}", marble.id), &task_id);
+            if !crate::everyone::is_group_session(&conversation_id) {
+                crate::everyone::claim(&mut state, &format!("marble:{}", marble.id), &task_id);
+            }
             crate::everyone::mirror_settlement(&mut state, &task_id, "", "failed");
             state
                 .prism
@@ -1670,7 +2253,8 @@ impl PrismPool {
             || thread.is_some_and(|id| {
                 state.threads.iter().any(|thread| {
                     thread.id == id
-                        && thread.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                        && (thread.conversation_id == crate::everyone::EVERYONE_CONVERSATION
+                            || thread.group.is_some())
                 })
             })
         {

@@ -2,7 +2,8 @@
 
 use crate::{
     Approval, MarbleError, TURN_TIMEOUT, control::Verdict, events::EventBus, host::HostPolicy,
-    state::PendingApproval, state::ProductState, tools::ToolRouter, tools::ToolScope,
+    state::PendingApproval, state::ProductState, tools::AgentTools, tools::ToolRouter,
+    tools::ToolScope,
 };
 use glass_runtime_client::{
     Incoming, RuntimeClient, RuntimeEvent, SessionOptions, TurnInput, json, protocol::ToolRequest,
@@ -443,9 +444,11 @@ pub struct Conversation {
     approvals: ApprovalInbox,
     router: ToolRouter,
     suppress_tools: bool,
+    agent_tools: Option<AgentTools>,
     tool_limit: usize,
     events: EventBus,
     model: Option<String>,
+    card_model: Option<String>,
     approval_timeout: Duration,
     active_conversation: String,
     active_task: String,
@@ -554,9 +557,11 @@ impl Conversation {
             approvals,
             router,
             suppress_tools: false,
+            agent_tools: None,
             tool_limit: crate::turn::DEFAULT_TOOL_LIMIT,
             events,
             model: None,
+            card_model: None,
             approval_timeout: Duration::from_secs(300),
             active_conversation: String::new(),
             active_task: String::new(),
@@ -671,10 +676,17 @@ impl Conversation {
         let root = store
             .conversation_root(id)
             .ok_or_else(|| MarbleError::Protocol("invalid conversation storage id".into()))?;
-        let cwd = root.join("workspace");
+        let group = crate::everyone::group_session_thread(id);
+        let cwd = match group {
+            Some(thread) => store
+                .conversation_root(thread)
+                .ok_or_else(|| MarbleError::Protocol("invalid group storage id".into()))?
+                .join("workspace"),
+            None => root.join("workspace"),
+        };
         std::fs::create_dir_all(&cwd).map_err(MarbleError::Io)?;
         let cwd = cwd.canonicalize().map_err(MarbleError::Io)?;
-        let storage = cwd.parent().expect("workspace has a parent");
+        std::fs::create_dir_all(&root).map_err(MarbleError::Io)?;
         let mut command = factory();
         if let Some(zone) = zone {
             command.env("TZ", zone);
@@ -682,7 +694,7 @@ impl Conversation {
         let mut scoped = Self::spawn_with_router(
             command,
             &cwd,
-            storage,
+            &root,
             self.host,
             self.approvals.clone(),
             self.router.in_workspace(&cwd)?,
@@ -691,8 +703,10 @@ impl Conversation {
         scoped.product = self.product.clone();
         scoped.store = self.store.clone();
         scoped.model = self.model.clone();
+        scoped.card_model.clone_from(&self.card_model);
         scoped.speaker.clone_from(&self.speaker);
         scoped.tool_limit = self.tool_limit;
+        scoped.agent_tools.clone_from(&self.agent_tools);
         scoped.steering = self.steering.take();
         scoped.respawn = self.respawn.clone();
         scoped.device_time_zone = zone.map(str::to_owned);
@@ -713,6 +727,24 @@ impl Conversation {
 
     pub(crate) fn set_tool_limit(&mut self, limit: usize) {
         self.tool_limit = limit;
+    }
+
+    pub(crate) fn set_agent_tools(&mut self, tools: Option<AgentTools>) {
+        self.agent_tools = tools;
+    }
+
+    fn tool_options(&self, suppress: bool) -> SessionOptions {
+        if suppress {
+            return SessionOptions::host(self.cwd.clone(), Vec::new());
+        }
+        let mut catalog = ToolRouter::catalog();
+        if let Some(policy) = &self.agent_tools {
+            catalog.retain(|tool| policy.allows(&tool.name));
+            if !policy.native {
+                return SessionOptions::host(self.cwd.clone(), catalog);
+            }
+        }
+        SessionOptions::mixed(self.cwd.clone(), catalog)
     }
 
     pub(crate) fn tool_limit(&self) -> usize {
@@ -847,6 +879,10 @@ impl Conversation {
         self.model = model;
     }
 
+    pub(crate) fn set_card_model(&mut self, model: Option<String>) {
+        self.card_model = model;
+    }
+
     /// Fix the instructions this session's conversations open with — a named
     /// marble's identity instead of the default product posture.
     pub fn with_instructions(mut self, instructions: String) -> Self {
@@ -881,7 +917,11 @@ impl Conversation {
 
     /// Create a durable conversation and return its id.
     pub fn create(&mut self) -> Result<String, MarbleError> {
-        let mut options = SessionOptions::mixed(self.cwd.clone(), ToolRouter::catalog());
+        self.create_using_model(self.model.clone())
+    }
+
+    fn create_using_model(&mut self, model: Option<String>) -> Result<String, MarbleError> {
+        let mut options = self.tool_options(false);
         options.instructions = Some(
             self.instructions_fn
                 .as_ref()
@@ -889,7 +929,7 @@ impl Conversation {
                 .or_else(|| self.instructions.clone())
                 .unwrap_or_else(|| default_assistant_instructions("", &self.cwd)),
         );
-        options.model = self.model.clone();
+        options.model = model;
         let created = self.client.durable_create(&options);
         let create_id = self.issue(created)?;
         let result = self.pump(&create_id, Instant::now() + TURN_TIMEOUT, None, &mut |_| {})?;
@@ -907,7 +947,14 @@ impl Conversation {
     }
 
     pub(crate) fn create_for_turn(&mut self) -> Result<String, MarbleError> {
-        self.create().or_else(|error| {
+        self.create_for_turn_using_model(self.model.clone())
+    }
+
+    fn create_for_turn_using_model(
+        &mut self,
+        model: Option<String>,
+    ) -> Result<String, MarbleError> {
+        self.create_using_model(model.clone()).or_else(|error| {
             if !crate::failure::transient(&error.to_string()) {
                 return Err(error);
             }
@@ -916,8 +963,22 @@ impl Conversation {
                 value!({"attempt":1,"phase":"admission","reason":"transient_failure"}),
             );
             self.ensure_runtime()?;
-            self.create()
+            self.create_using_model(model)
         })
+    }
+
+    fn inspect_conversation(&mut self, engine_id: &str) -> Result<Value, MarbleError> {
+        let inspect = self.client.request(
+            "durable/inspect",
+            value!({"conversationId":engine_id,"limit":1}),
+        );
+        let inspect_id = self.issue(inspect)?;
+        self.pump(
+            &inspect_id,
+            Instant::now() + TURN_TIMEOUT,
+            None,
+            &mut |_| {},
+        )
     }
 
     /// Admit one durable request and return its task id.
@@ -945,9 +1006,22 @@ impl Conversation {
                 .find(|c| c.id == conversation_id)
                 .cloned()
         });
+        let mut chat_model = match record
+            .as_ref()
+            .and_then(|record| record.chat_model.as_deref())
+        {
+            Some(model) => (!model.is_empty()).then(|| model.to_owned()),
+            None if record
+                .as_ref()
+                .is_some_and(|record| !record.needs_engine_session) =>
+            {
+                None
+            }
+            None => self.model.clone(),
+        };
         let mut engine_id = match &record {
             Some(record) if record.needs_engine_session => {
-                let engine_id = self.create_for_turn()?;
+                let engine_id = self.create_for_turn_using_model(chat_model.clone())?;
                 if let Some(product) = &self.product {
                     let mut state = product.lock().unwrap_or_else(|e| e.into_inner());
                     let record = state.conversation_mut(conversation_id);
@@ -1017,11 +1091,32 @@ impl Conversation {
             }
         }
         self.suppress_tools = suppress_tools;
-        let agent = if suppress_tools {
-            value!({"toolMode":"host", "tools":[]})
-        } else {
-            value!({"toolMode":"mixed", "tools":ToolRouter::catalog()})
-        };
+        let options = self.tool_options(suppress_tools);
+        let mut agent = value!({"toolMode":options.tool_mode, "tools":options.tools});
+        if self.can_scope_runtime() && crate::everyone::is_group_session(conversation_id) {
+            agent["cwd"] = value!(self.cwd);
+        }
+        if chat_model.is_none() && self.product.is_some() {
+            let snapshot = self.inspect_conversation(&engine_id)?;
+            chat_model = snapshot["items"]
+                .as_array()
+                .and_then(|items| items.iter().find(|item| item["type"] == "conversation"))
+                .and_then(|item| item["value"]["agent"]["model"].as_str())
+                .filter(|model| !model.is_empty())
+                .map(str::to_owned);
+        }
+        if let (Some(product), Some(model)) = (&self.product, chat_model.as_ref()) {
+            let mut state = product.lock().unwrap_or_else(|e| e.into_inner());
+            let record = state.conversation_mut(conversation_id);
+            if record.chat_model.as_ref() != Some(model) {
+                record.chat_model = Some(model.clone());
+                state.bump();
+                crate::store::persist_optional(self.store.as_ref(), &state);
+            }
+        }
+        if let Some(model) = self.card_model.as_ref().or(chat_model.as_ref()) {
+            agent["model"] = value!(model);
+        }
         let configure = self.client.request(
             "durable/configure",
             value!({"conversationId":engine_id, "agent":agent}),
@@ -1033,17 +1128,7 @@ impl Conversation {
             None,
             &mut |_| {},
         )?;
-        let inspect = self.client.request(
-            "durable/inspect",
-            value!({"conversationId":engine_id,"limit":1}),
-        );
-        let inspect_id = self.issue(inspect)?;
-        let snapshot = self.pump(
-            &inspect_id,
-            Instant::now() + TURN_TIMEOUT,
-            None,
-            &mut |_| {},
-        )?;
+        let snapshot = self.inspect_conversation(&engine_id)?;
         let checkpoint = snapshot["sequence"]
             .as_u64()
             .ok_or_else(|| MarbleError::Protocol("durable/inspect returned no sequence".into()))?;
@@ -1361,14 +1446,23 @@ impl Conversation {
                 Incoming::Tool { request_id, call } => {
                     if self.suppress_tools
                         || budget.as_ref().is_some_and(|budget| budget.stop.is_some())
+                        || self
+                            .agent_tools
+                            .as_ref()
+                            .is_some_and(|policy| !policy.allows(&call.name))
                     {
                         self.client
                             .tool_result(
                                 request_id,
                                 if self.suppress_tools {
                                     "Continue without tools: this is a conversational turn."
-                                } else {
+                                } else if budget
+                                    .as_ref()
+                                    .is_some_and(|budget| budget.stop.is_some())
+                                {
                                     "This turn reached its limit."
+                                } else {
+                                    "This tool is not on the agent's allowed tools list."
                                 },
                                 true,
                             )

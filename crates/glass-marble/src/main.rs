@@ -336,6 +336,10 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     // An unreadable document is refused here, not replaced: load() restores the
     // newest backup when it can, and otherwise leaves the file for the operator.
     let mut loaded = store.load()?;
+    if loaded.prism.install_template() {
+        loaded.bump();
+        store.save(&loaded)?;
+    }
     store.retry_everyone_cleanup(&mut loaded);
     loaded.control.profile = profile;
     if let Some(model) = cli.model.clone() {

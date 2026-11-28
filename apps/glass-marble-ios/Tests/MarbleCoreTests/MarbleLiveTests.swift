@@ -471,7 +471,16 @@ extension MarbleLiveTests {
         let data = try await post("/api/prism/marbles", [
             "name": name, "persona": persona, "glyph": "circle", "hue": 90,
         ])
-        return try JSONDecoder().decode(MarbleCreated.self, from: data).marble
+        let marble = try JSONDecoder().decode(MarbleCreated.self, from: data).marble
+        if let marble {
+            _ = try await post("/api/prism/marbles/\(marble.id)/update", [
+                "card": [
+                    "inEveryone": true,
+                    "tools": ["native": false, "allowed": ["glass.workspace.list", "glass.marble.ask"]],
+                ],
+            ])
+        }
+        return marble
     }
 
     private func timeline() async throws -> [MarbleEntry] {

@@ -7,6 +7,7 @@
 use crate::MarbleError;
 use crate::crates::{CRATES_TOOL, CrateMap};
 use glass_runtime_client::ToolDefinition;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
@@ -21,6 +22,35 @@ pub const WORKSPACE_WRITE: &str = "glass.workspace.write";
 pub const WORKSPACE_SEARCH: &str = "glass.workspace.search";
 /// Ask another marble to take part of a job and bring back the result.
 pub const MARBLE_ASK: &str = "glass.marble.ask";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTools {
+    #[serde(default)]
+    pub native: bool,
+    #[serde(default)]
+    pub allowed: Vec<String>,
+}
+
+impl AgentTools {
+    pub(crate) fn validate(&mut self) -> Result<(), String> {
+        let catalog = ToolRouter::catalog();
+        if self
+            .allowed
+            .iter()
+            .any(|name| !catalog.iter().any(|tool| tool.name == *name))
+        {
+            return Err("unknown Marble tool".into());
+        }
+        self.allowed.sort_unstable();
+        self.allowed.dedup();
+        Ok(())
+    }
+
+    pub(crate) fn allows(&self, name: &str) -> bool {
+        self.allowed.iter().any(|tool| tool == name)
+    }
+}
 
 /// Whether one governed tool changes the workspace.
 pub fn is_write_tool(name: &str) -> bool {

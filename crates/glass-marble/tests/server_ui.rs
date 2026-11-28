@@ -2514,6 +2514,646 @@ fn repeated_login_failures_are_throttled_per_caller() {
 }
 
 #[test]
+fn group_rounds_handoff_pass_interrupt_and_close_without_leaking_sessions() {
+    if !python3_available() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("glass-marble-group-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let script = root.join("fake_glass_core_runtime.py");
+    std::fs::write(&script, include_str!("fixtures/fake_glass_core_runtime.py")).unwrap();
+    let mut product = ProductState::default();
+    product.prism.install_template();
+    product.control.profile = glass_marble::ControlProfile::Unattended;
+    product
+        .prism
+        .find_mut("reviewer")
+        .unwrap()
+        .card
+        .as_mut()
+        .unwrap()
+        .when_to_speak = glass_marble::prism::WhenToSpeak::Mentioned;
+    product
+        .prism
+        .find_mut("designer")
+        .unwrap()
+        .card
+        .as_mut()
+        .unwrap()
+        .when_to_speak = glass_marble::prism::WhenToSpeak::Always;
+    let state = Arc::new(Mutex::new(product));
+    let events = EventBus::default();
+    let pool = fixture_prism_pool(
+        &script,
+        &root,
+        &state,
+        &events,
+        vec!["--group-rounds".into()],
+    );
+    let server = MarbleServer::new(MarbleServerParts {
+        listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+        state: Arc::clone(&state),
+        store: None,
+        approvals: ApprovalInbox::default(),
+        events,
+        turn_tx: TurnSender::detached(),
+        steer_tx: mpsc::channel().0,
+        policy: AccessPolicy::new(None),
+        cancels: CancelRegistry::default(),
+    })
+    .with_prism(pool);
+    let (status, body) = server.handle("POST", "/api/threads",
+        r#"{"conversation_id":"group-chats","title":"Launch","group":{"members":["designer","engineer","reviewer","finance"],"goal":"Plan launch","doneWhen":"Checklist ready"}}"#);
+    assert_eq!(status, 201, "{body}");
+    let created: Value = serde_json::from_str(&body).unwrap();
+    let id = created["thread"]["id"].as_str().unwrap();
+    let post = |text: &str| {
+        server.handle(
+            "POST",
+            "/api/turns",
+            &json!({"threadId": id, "text":text, "clientMessageId":text}).to_string(),
+        )
+    };
+    let wait = |check: &dyn Fn(&ProductState) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !check(&state.lock().unwrap()) {
+            assert!(
+                Instant::now() < deadline,
+                "group round did not reach the expected state"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let (status, body) = post("Plan the launch");
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(post("Plan the launch"), (status, body));
+    wait(&|state| {
+        state.tasks.len() == 4 && state.tasks.iter().all(|task| task.status == "completed")
+    });
+    {
+        let state = state.lock().unwrap();
+        assert_eq!(
+            state
+                .tasks
+                .iter()
+                .map(|task| task.marble_id.as_str())
+                .collect::<Vec<_>>(),
+            ["lead", "engineer", "reviewer", "designer"]
+        );
+        let thread = state.threads.iter().find(|thread| thread.id == id).unwrap();
+        let entries = state.thread_entries(thread);
+        assert_eq!(
+            entries.iter().filter(|entry| entry.kind == "user").count(),
+            1
+        );
+        let replies: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.kind == "assistant")
+            .collect();
+        assert_eq!(replies.len(), 3);
+        assert!(replies[1].text.contains("checklist from Lead"));
+        assert!(
+            entries
+                .iter()
+                .all(|entry| !entry.text.contains("[[PASS]]") && !entry.text.contains("[[SUGGEST"))
+        );
+        let group = thread.group.as_ref().unwrap();
+        assert!(!group.members.contains(&"researcher".into()));
+        assert_eq!(group.suggestions[0].agent_id, "researcher");
+    }
+    let path = format!("/api/threads/{id}/suggestion");
+    assert_eq!(
+        server
+            .handle("POST", &path, r#"{"agentId":"researcher","add":false}"#)
+            .0,
+        200
+    );
+    assert_eq!(post("Pause this round").0, 202);
+    wait(&|state| {
+        state
+            .tasks
+            .iter()
+            .any(|task| task.prompt == "Pause this round" && task.status == "running")
+    });
+    assert_eq!(post("Close the task").0, 202);
+    wait(&|state| {
+        state
+            .threads
+            .iter()
+            .any(|thread| thread.group.as_ref().is_some_and(|group| group.closed))
+    });
+    let before = server.state();
+    let thread = before
+        .threads
+        .iter()
+        .find(|thread| thread.id == id)
+        .unwrap();
+    let entries = before.thread_entries(thread);
+    assert_eq!(
+        before
+            .tasks
+            .iter()
+            .filter(|task| task.prompt == "Pause this round")
+            .map(|task| task.status.as_str())
+            .collect::<Vec<_>>(),
+        ["cancelled"]
+    );
+    assert!(entries.iter().any(|entry| entry.kind == "assistant"
+        && entry.speaker_name == "Lead"
+        && entry.text == "The launch checklist is ready for review."));
+    assert!(
+        !thread
+            .group
+            .as_ref()
+            .unwrap()
+            .members
+            .contains(&"researcher".into())
+    );
+    assert_eq!(post("After close").0, 409);
+    assert_eq!(server.handle("POST", "/api/everyone/clear", "{}").0, 200);
+    assert_eq!(server.state().thread_entries(thread), entries);
+    assert_eq!(
+        server
+            .handle("POST", "/api/prism/marbles/engineer/remove", "")
+            .0,
+        200
+    );
+    let after = server.state();
+    let saved_thread = after.threads.iter().find(|item| item.id == id).unwrap();
+    assert!(
+        !saved_thread
+            .group
+            .as_ref()
+            .unwrap()
+            .members
+            .iter()
+            .any(|member| member == "engineer")
+    );
+    assert_eq!(after.thread_entries(saved_thread), entries);
+}
+
+#[test]
+fn group_threads_keep_lead_and_stay_out_of_everyone() {
+    let mut state = ProductState::default();
+    state.prism.install_template();
+    let server = server_with(
+        state,
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle(
+        "POST", "/api/threads",
+        r#"{"conversation_id":"group-chats","title":"Build it","preset":"launch","group":{"members":[],"goal":"File a release","doneWhen":"The build passes"}}"#,
+    );
+    assert_eq!(status, 201, "{body}");
+    let created: Value = serde_json::from_str(&body).unwrap();
+    let thread = &created["thread"];
+    let id = thread["id"].as_str().unwrap();
+    assert_eq!(
+        thread["group"]["members"],
+        json!(["lead", "designer", "engineer", "reviewer"])
+    );
+    assert_eq!(thread["group"]["doneWhen"], "The build passes");
+    let (status, body) = server.handle(
+        "POST",
+        "/api/turns",
+        &json!({"text":"Start the work","thread_id":id}).to_string(),
+    );
+    assert_eq!(status, 503, "{body}");
+    assert!(body.contains("prism_unavailable"), "{body}");
+    let (_, body) = server.handle("GET", "/api/threads?conversation_id=everyone", "");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["threads"],
+        json!([])
+    );
+    assert_eq!(
+        server
+            .handle(
+                "POST",
+                &format!("/api/threads/{id}/members"),
+                r#"["marble","researcher"]"#
+            )
+            .0,
+        200
+    );
+    assert_eq!(server.handle("POST", "/api/everyone/clear", "").0, 200);
+    let (status, body) = server.handle("GET", &format!("/api/threads/{id}"), "");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["thread"]["group"]["members"],
+        json!(["lead", "marble", "researcher"])
+    );
+}
+
+#[test]
+fn template_installation_keeps_existing_agents_and_duplicate_copies_only_the_card() {
+    let mut state = ProductState::default();
+    for name in ["Ada", "Dietrich"] {
+        state
+            .prism
+            .add(name, "", "", 0, "", "My original prompt")
+            .unwrap();
+    }
+    assert!(state.prism.install_template());
+    assert!(!state.prism.install_template());
+    assert_eq!(state.prism.marbles.len(), 9);
+    assert_eq!(state.prism.marbles[0].persona, "My original prompt");
+    assert_eq!(
+        state
+            .prism
+            .get("engineer")
+            .unwrap()
+            .card
+            .as_ref()
+            .unwrap()
+            .tool_call_limit,
+        Some(25)
+    );
+    let server = server_with(
+        state,
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle(
+        "POST",
+        "/api/prism/marbles",
+        r#"{"name":"Second engineer","duplicateId":"engineer"}"#,
+    );
+    assert_eq!(status, 202, "{body}");
+    let added: Value = serde_json::from_str(&body).unwrap();
+    let duplicate = &added["marble"];
+    assert_eq!(duplicate["card"]["toolCallLimit"], 25);
+    assert_eq!(duplicate["card"]["turnTimeoutSecs"], 600);
+    assert_eq!(duplicate["card"]["inEveryone"], false);
+    assert_eq!(duplicate["conversationId"], "");
+    assert_eq!(duplicate["runs"], 0);
+    assert_eq!(
+        server
+            .handle(
+                "POST",
+                "/api/prism/marbles",
+                r#"{"name":"Bad card","card":{"tools":{"allowed":["unknown"]}}}"#,
+            )
+            .0,
+        400
+    );
+}
+
+#[test]
+fn group_lead_is_installed_alongside_an_existing_namesake() {
+    for already_installed in [false, true] {
+        let mut state = ProductState::default();
+        let original = state
+            .prism
+            .add("Lead", "", "", 0, "", "My own Lead")
+            .unwrap()
+            .id
+            .clone();
+        let mut saved = serde_json::to_value(&state).unwrap();
+        saved["prism"]["templateInstalled"] = json!(already_installed);
+        let mut state: ProductState = serde_json::from_value(saved).unwrap();
+        state.prism.install_template();
+        let server = server_with(
+            state,
+            ApprovalInbox::default(),
+            EventBus::default(),
+            AccessPolicy::new(None),
+        );
+        let (status, body) = server.handle(
+            "POST",
+            "/api/threads",
+            r#"{"conversation_id":"group-chats","title":"Built-in Lead","group":{"members":[]}}"#,
+        );
+        assert_eq!(status, 201, "{body}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["thread"]["group"]["members"],
+            json!(["lead"])
+        );
+        let state = server.state();
+        assert_eq!(state.prism.get(&original).unwrap().name, "Lead");
+        assert_ne!(state.prism.get("lead").unwrap().name, "Lead");
+    }
+}
+
+#[test]
+fn group_prompts_survive_startup_orphan_pruning() {
+    let mut state = ProductState::default();
+    state.prism.install_template();
+    let server = server_with(
+        state,
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle(
+        "POST",
+        "/api/threads",
+        r#"{"conversation_id":"group-chats","title":"Keep the prompt","group":{"members":[]}}"#,
+    );
+    assert_eq!(status, 201, "{body}");
+    let id = serde_json::from_str::<Value>(&body).unwrap()["thread"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut reloaded: ProductState =
+        serde_json::from_value(serde_json::to_value(server.state()).unwrap()).unwrap();
+    reloaded.push_transcript(glass_marble::TranscriptEntry {
+        thread_id: Some(id),
+        conversation_id: "group-chats".into(),
+        kind: "user".into(),
+        text: "Start with this prompt".into(),
+        ..Default::default()
+    });
+    assert_eq!(reloaded.prune_orphaned_tasks(), 0);
+    assert_eq!(reloaded.transcript[0].text, "Start with this prompt");
+}
+
+#[test]
+fn group_prompts_survive_conversation_retention() {
+    let mut state = ProductState::default();
+    state.prism.install_template();
+    let server = server_with(
+        state,
+        ApprovalInbox::default(),
+        EventBus::default(),
+        AccessPolicy::new(None),
+    );
+    let (status, body) = server.handle(
+        "POST",
+        "/api/threads",
+        r#"{"conversation_id":"group-chats","title":"Keep the group","group":{"members":[]}}"#,
+    );
+    assert_eq!(status, 201, "{body}");
+    let created: Value = serde_json::from_str(&body).unwrap();
+    let thread = created["thread"]["id"].as_str().unwrap().to_owned();
+    let mut state = server.state();
+    state.push_transcript(TranscriptEntry {
+        conversation_id: "group-chats".into(),
+        thread_id: Some(thread.clone()),
+        kind: "user".into(),
+        text: "Keep this group prompt".into(),
+        ..Default::default()
+    });
+    for n in 1..=120 {
+        state.conversation_mut(&format!("private-{n}")).updated_at = n;
+    }
+    assert!(state.prune(121).conversations > 0);
+    assert!(
+        state
+            .conversations
+            .iter()
+            .any(|chat| chat.id == "group-chats")
+    );
+    assert!(state.transcript.iter().any(
+        |row| row.thread_id.as_deref() == Some(&thread) && row.text == "Keep this group prompt"
+    ));
+}
+
+#[test]
+fn group_workspaces_are_shared_inside_one_thread_only() {
+    if !python3_available() {
+        return;
+    }
+    let fixture =
+        NamedTurnFixture::with_persistence("group-workspaces", vec!["--group-rounds".into()], true);
+    fixture.state.lock().unwrap().prism.install_template();
+    let group = |title: &str| {
+        let (status, body) = fixture.post(
+            "/api/threads",
+            json!({
+                "conversation_id":"group-chats","title":title,"group":{"members":["engineer"]}
+            }),
+        );
+        assert_eq!(status, 201, "{body}");
+        body["thread"]["id"].as_str().unwrap().to_owned()
+    };
+    let cwd = |speaker: &str, thread: &str| {
+        let path = fixture
+            .root
+            .join("conversation-sessions")
+            .join(format!("everyone-session-{thread}__{speaker}"))
+            .join("fixture-session-options.json");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(value) = std::fs::read(&path)
+                && let Ok(value) = serde_json::from_slice::<Value>(&value)
+            {
+                return std::path::PathBuf::from(value["cwd"].as_str().unwrap());
+            }
+            assert!(Instant::now() < deadline, "missing {}", path.display());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let first = group("First");
+    let second = group("Second");
+    assert_eq!(
+        fixture
+            .post(
+                "/api/turns",
+                json!({"threadId":first,"text":"Create handoff files"})
+            )
+            .0,
+        202
+    );
+    let lead = cwd("lead", &first);
+    std::fs::write(lead.join("handoff.txt"), "For the next agent").unwrap();
+    let engineer = cwd("engineer", &first);
+    assert_eq!(
+        std::fs::read_to_string(engineer.join("handoff.txt"))
+            .ok()
+            .as_deref(),
+        Some("For the next agent")
+    );
+    assert_eq!(
+        fixture
+            .post(
+                "/api/turns",
+                json!({"threadId":second,"text":"Separate workspace"})
+            )
+            .0,
+        202
+    );
+    assert!(!cwd("lead", &second).join("handoff.txt").exists());
+}
+
+#[test]
+fn blocked_group_workspace_cleanup_is_retried_after_deletion() {
+    let fixture = NamedTurnFixture::with_persistence("blocked-group-cleanup", vec![], true);
+    fixture.state.lock().unwrap().prism.install_template();
+    let (status, body) = fixture.post(
+        "/api/threads",
+        json!({
+            "conversation_id":"group-chats","title":"Cleanup group","group":{"members":[]}
+        }),
+    );
+    assert_eq!(status, 201, "{body}");
+    let thread = body["thread"]["id"].as_str().unwrap();
+    let session = format!("everyone-session-{thread}__lead");
+    let base = fixture.root.join("conversation-sessions");
+    let group_root = base.join(thread);
+    let session_root = base.join(&session);
+    let store = fixture.store.as_ref().unwrap();
+    std::fs::create_dir_all(&session_root).unwrap();
+    std::fs::write(&group_root, b"blocks cleanup").unwrap();
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.conversation_mut(&session).private_storage = true;
+        for (kind, chat) in [("user", "group-chats"), ("assistant", &session)] {
+            state.push_transcript(TranscriptEntry {
+                conversation_id: chat.into(),
+                thread_id: Some(thread.into()),
+                kind: kind.into(),
+                text: format!("saved {kind}"),
+                ..Default::default()
+            });
+        }
+        store.save(&state).unwrap();
+    }
+    let backup = store.path().with_extension("original");
+    std::fs::rename(store.path(), &backup).unwrap();
+    std::fs::create_dir(store.path()).unwrap();
+    let path = format!("/api/threads/{thread}/delete");
+    let failed = fixture.post(&path, json!({}));
+    let intact = fixture.server.state();
+    let session_intact = session_root.is_dir();
+    std::fs::remove_dir(store.path()).unwrap();
+    std::fs::rename(backup, store.path()).unwrap();
+    assert_eq!(failed.0, 503, "{}", failed.1);
+    assert!(session_intact);
+    assert_eq!(intact.transcript.len(), 2);
+    assert!(intact.threads.iter().any(|entry| entry.id == thread));
+    let (status, body) = fixture.post(&path, json!({}));
+    assert_eq!(status, 200, "{body}");
+    assert!(!session_root.exists());
+    let mut reloaded = store.load().unwrap();
+    assert!(reloaded.transcript.is_empty());
+    assert!(reloaded.threads.is_empty());
+    assert_eq!(
+        serde_json::to_value(&reloaded).unwrap()["pendingEveryoneCleanup"],
+        json!([thread])
+    );
+    assert!(group_root.is_file());
+    std::fs::remove_file(&group_root).unwrap();
+    std::fs::create_dir_all(&group_root).unwrap();
+    store.retry_everyone_cleanup(&mut reloaded);
+    assert!(!group_root.exists());
+    assert!(
+        serde_json::to_value(store.load().unwrap()).unwrap()["pendingEveryoneCleanup"].is_null()
+    );
+}
+
+#[test]
+fn group_admission_refreshes_card_while_engine_is_busy() {
+    blocked_group_admission(false);
+}
+
+#[test]
+fn group_admission_can_be_stopped_while_engine_is_busy() {
+    blocked_group_admission(true);
+}
+
+fn blocked_group_admission(stop: bool) {
+    if !python3_available() {
+        return;
+    }
+    {
+        let fixture = NamedTurnFixture::new(if stop {
+            "group-stop-before-engine"
+        } else {
+            "group-policy-before-engine"
+        });
+        fixture.state.lock().unwrap().prism.install_template();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(Some(release_rx));
+        let script = fixture.script.clone();
+        let factory: Arc<dyn Fn() -> Command + Send + Sync> = Arc::new(move || {
+            if let Some(release) = release_rx.lock().unwrap().take() {
+                entered_tx.send(()).unwrap();
+                let _ = release.recv_timeout(Duration::from_secs(5));
+            }
+            let mut command = Command::new("python3");
+            command.arg(&script).arg("runtime").arg("--group-rounds");
+            command
+        });
+        let cancels = CancelRegistry::default();
+        let pool = Arc::new(glass_marble::PrismPool::new(glass_marble::PrismPoolParts {
+            factory,
+            cwd: fixture.root.clone(),
+            sessions: fixture.root.join("prism-sessions"),
+            state: fixture.state.clone(),
+            store: None,
+            live: LiveStore::in_data_dir(&fixture.root),
+            events: fixture.events.clone(),
+            cancels: cancels.clone(),
+            approvals: ApprovalInbox::default(),
+            timeout: Duration::from_secs(10),
+        }));
+        let server = MarbleServer::new(MarbleServerParts {
+            listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+            state: fixture.state.clone(),
+            store: None,
+            approvals: ApprovalInbox::default(),
+            events: fixture.events.clone(),
+            turn_tx: TurnSender::detached(),
+            steer_tx: mpsc::channel().0,
+            policy: AccessPolicy::new(None),
+            cancels: cancels.clone(),
+        })
+        .with_prism(pool);
+        let (status, body) = server.handle(
+            "POST",
+            "/api/threads",
+            r#"{"conversation_id":"group-chats","title":"Waiting","group":{"members":[]}}"#,
+        );
+        assert_eq!(status, 201, "{body}");
+        let created: Value = serde_json::from_str(&body).unwrap();
+        let turn = json!({"threadId":created["thread"]["id"],"text":"Start the work"}).to_string();
+        assert_eq!(server.handle("POST", "/api/turns", &turn).0, 202);
+        entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        if stop {
+            let (_, body) = server.handle("POST", "/api/control/stop", "");
+            let stopped: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(server.handle("POST", "/api/control/resume", "").0, 200);
+            release_tx.send(()).unwrap();
+            assert_eq!(stopped["cancelled"].as_array().unwrap().len(), 1);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !cancels.is_empty() {
+                assert!(
+                    Instant::now() < deadline,
+                    "stopped group round did not finish"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(fixture.state.lock().unwrap().tasks.is_empty());
+        } else {
+            let mut state = fixture.state.lock().unwrap();
+            state
+                .prism
+                .find_mut("lead")
+                .unwrap()
+                .card
+                .as_mut()
+                .unwrap()
+                .tools
+                .allowed
+                .clear();
+            drop(state);
+            release_tx.send(()).unwrap();
+            assert_eq!(fixture.completed("Start the work").marble_id, "lead");
+            let path = fixture
+                .root
+                .join("prism-sessions/lead/fixture-tool-policy.json");
+            let configured: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(configured["toolMode"], "host");
+            assert_eq!(configured["tools"], json!([]));
+        }
+    }
+}
+
+#[test]
 fn prism_roster_is_served_and_editable_without_an_engine() {
     let server = server_with(
         ProductState::default(),
@@ -6355,6 +6995,135 @@ fn named_engines_use_the_host_model_and_keep_tool_rows_after_reload() {
 }
 
 #[test]
+fn clearing_a_named_model_restores_the_chat_default() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::new("cleared-model");
+    fixture.state.lock().unwrap().prism.install_template();
+    let set_model = |model: &str| {
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .prism
+            .find_mut(&fixture.marble_id)
+            .unwrap()
+            .card
+            .as_mut()
+            .unwrap()
+            .model = model.into();
+    };
+    let configured_model = |prompt: &str| {
+        assert_eq!(
+            fixture
+                .post(
+                    "/api/turns",
+                    json!({"text":prompt,"marbleId":fixture.marble_id})
+                )
+                .0,
+            202
+        );
+        fixture.completed(prompt);
+        let path = fixture
+            .root
+            .join("prism-sessions")
+            .join(&fixture.marble_id)
+            .join("fixture-tool-policy.json");
+        serde_json::from_slice::<Value>(&std::fs::read(path).unwrap()).unwrap()["model"].clone()
+    };
+    set_model("agent-choice");
+    assert_eq!(configured_model("Before clearing"), "agent-choice");
+    set_model("");
+    assert_eq!(configured_model("After clearing"), "fixture-default-model");
+}
+
+#[test]
+fn changing_new_chat_model_keeps_the_existing_default_chat_model() {
+    if !python3_available() {
+        return;
+    }
+    let mut fixture = NamedTurnFixture::new("pinned-default-model");
+    fixture.state.lock().unwrap().prism.install_template();
+    fixture.state.lock().unwrap().model = "original-model".into();
+    fixture.install_default_worker();
+    let (status, response) = fixture.post("/api/conversations", json!({}));
+    assert_eq!(status, 201);
+    let original = response["conversation"]["id"].as_str().unwrap();
+    fixture.state.lock().unwrap().model = "new-chat-model".into();
+    let model_for = |id: &str, prompt: &str| {
+        assert!(
+            fixture
+                .post("/api/turns", json!({"text":prompt,"conversationId":id}))
+                .0
+                < 300
+        );
+        fixture.completed(prompt);
+        let path = fixture
+            .root
+            .join("default-sessions/fixture-tool-policy.json");
+        serde_json::from_slice::<Value>(&std::fs::read(path).unwrap()).unwrap()["model"].clone()
+    };
+    assert_eq!(
+        model_for(original, "First send on saved chat"),
+        "original-model"
+    );
+    let (_, fresh) = fixture.post("/api/conversations", json!({}));
+    assert_eq!(
+        model_for(
+            fresh["conversation"]["id"].as_str().unwrap(),
+            "New saved chat"
+        ),
+        "new-chat-model"
+    );
+    assert_eq!(
+        model_for(original, "Back to original chat"),
+        "original-model"
+    );
+}
+
+#[test]
+fn older_chats_pin_the_saved_engine_model_not_the_new_chat_model() {
+    if !python3_available() {
+        return;
+    }
+    let mut fixture = NamedTurnFixture::new("legacy-chat-model");
+    fixture.state.lock().unwrap().model = "saved-engine-model".into();
+    fixture.install_default_worker();
+    let (_, created) = fixture.post("/api/conversations", json!({}));
+    let id = created["conversation"]["id"].as_str().unwrap();
+    let send = |prompt: &str| {
+        let (status, body) = fixture.post("/api/turns", json!({"conversationId":id,"text":prompt}));
+        assert!(status < 300, "{body}");
+        fixture.completed(prompt);
+        let path = fixture
+            .root
+            .join("default-sessions/fixture-tool-policy.json");
+        serde_json::from_slice::<Value>(&std::fs::read(path).unwrap()).unwrap()["model"].clone()
+    };
+    assert_eq!(send("Start on the saved model"), "saved-engine-model");
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.conversation_mut(id).chat_model = None;
+        state.model = "changed-new-chat-model".into();
+    }
+    assert_eq!(
+        send("Continue a chat from before model pinning"),
+        "saved-engine-model"
+    );
+    assert_eq!(
+        fixture
+            .state
+            .lock()
+            .unwrap()
+            .conversation_mut(id)
+            .chat_model
+            .as_deref(),
+        Some("saved-engine-model")
+    );
+}
+
+#[test]
 fn budget_stops_private_tools_and_everyone_time_with_an_agent_reply() {
     if !python3_available() {
         return;
@@ -6596,7 +7365,7 @@ fn private_small_talk_disables_tools_without_changing_the_conversation() {
     let greeting = turn("Hello!");
     assert_eq!(
         fixture_json("fixture-tool-policy.json"),
-        json!({"toolMode":"host","tools":[]})
+        json!({"toolMode":"host","tools":[],"model":"fixture-default-model"})
     );
     assert_eq!(
         fixture_json("fixture-tool-outcome.json"),
@@ -6622,6 +7391,74 @@ fn private_small_talk_disables_tools_without_changing_the_conversation() {
             .iter()
             .any(|row| row.task_id == task.id && row.kind == "tool")
     );
+}
+
+#[test]
+fn agent_card_limits_host_tool_registration_and_execution_in_both_modes() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::new("card-tool-policy");
+    let update = format!("/api/prism/marbles/{}/update", fixture.marble_id);
+    let path = fixture.root.join("prism-sessions").join(&fixture.marble_id);
+    let read_json = |file: &str| -> Value {
+        serde_json::from_slice(&std::fs::read(path.join(file)).unwrap()).unwrap()
+    };
+    for (native, allowed, prompt, mode, denied) in [
+        (
+            false,
+            vec!["glass.workspace.read"],
+            "List the workspace without permission",
+            "host",
+            true,
+        ),
+        (
+            true,
+            vec!["glass.workspace.read"],
+            "List the workspace using mixed mode",
+            "mixed",
+            true,
+        ),
+        (
+            false,
+            vec!["glass.workspace.list"],
+            "List the workspace with permission",
+            "host",
+            false,
+        ),
+    ] {
+        assert_eq!(
+            fixture
+                .post(
+                    &update,
+                    json!({"card":{"tools":{"native":native,"allowed":allowed}}})
+                )
+                .0,
+            200
+        );
+        assert_eq!(
+            fixture
+                .post(
+                    "/api/turns",
+                    json!({"text":prompt,"marbleId":fixture.marble_id})
+                )
+                .0,
+            202
+        );
+        fixture.completed(prompt);
+        let policy = read_json("fixture-tool-policy.json");
+        assert_eq!(policy["toolMode"], mode);
+        assert_eq!(policy["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(policy["tools"][0]["name"], allowed[0]);
+        let outcome = read_json("fixture-tool-outcome.json");
+        assert_eq!(outcome["isError"], denied);
+        if denied {
+            assert_eq!(
+                outcome["text"],
+                "This tool is not on the agent's allowed tools list."
+            );
+        }
+    }
 }
 
 #[test]

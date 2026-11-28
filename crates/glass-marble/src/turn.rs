@@ -34,6 +34,7 @@ pub struct MarbleReply {
     pub reasoning: String,
     pub usage: Option<Value>,
     pub cancelled: bool,
+    pub group_action: Option<crate::threads::GroupAction>,
 }
 
 impl MarbleReply {
@@ -54,6 +55,7 @@ pub type AcceptedHook<'a> = &'a mut dyn FnMut(&str, &str);
 
 /// Per-turn execution controls.
 pub struct TurnOptions<'a> {
+    pub group: bool,
     pub cancel: Option<&'a AtomicBool>,
     pub timeout: Duration,
     /// Called once the durable task id exists, before the model runs.
@@ -66,6 +68,7 @@ pub struct TurnOptions<'a> {
 impl<'a> Default for TurnOptions<'a> {
     fn default() -> Self {
         Self {
+            group: false,
             cancel: None,
             timeout: DEFAULT_TURN_TIMEOUT,
             on_accepted: None,
@@ -230,6 +233,7 @@ fn run_with_retry(
             conversation,
             logical_task.as_deref(),
             TurnOptions {
+                group: options.group,
                 cancel: options.cancel,
                 timeout: options.timeout,
                 on_accepted: Some(&mut on_accepted),
@@ -457,6 +461,14 @@ fn run_attempt(
             "provider_rejected: model returned a generation failure".into(),
         ));
     }
+    let (group_action, text) = if options.group {
+        crate::threads::GroupAction::extract(text)
+    } else {
+        (None, text)
+    };
+    if matches!(group_action, Some(crate::threads::GroupAction::Pass)) {
+        reasoning.clear();
+    }
     if let Some(turn) = live {
         turn.progress(&text, &reasoning);
     }
@@ -467,7 +479,7 @@ fn run_attempt(
         .cancel
         .map(|requested| requested.load(Ordering::Relaxed))
         .unwrap_or(false);
-    if !cancelled && text.trim().is_empty() {
+    if !cancelled && text.trim().is_empty() && group_action.is_none() {
         return Err(MarbleError::Protocol(
             "provider returned an empty reply".into(),
         ));
@@ -479,6 +491,7 @@ fn run_attempt(
         reasoning,
         usage,
         cancelled,
+        group_action,
     };
     conversation.publish(
         "settled",

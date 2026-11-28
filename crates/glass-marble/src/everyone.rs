@@ -322,7 +322,7 @@ fn automatic_targets(roster: &[&PrismMarble], message: &str) -> Vec<String> {
             ranked.push((score, &agent.id));
         }
     }
-    ranked.sort_by(|left, right| right.0.cmp(&left.0));
+    ranked.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     let Some((best, _)) = ranked.first() else {
         return vec![DEFAULT_SPEAKER.into()];
     };

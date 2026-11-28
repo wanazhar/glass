@@ -276,6 +276,7 @@ struct SavedKnowledgeView: View {
                 .scrollContentBackground(.hidden)
                 .background(MarbleTheme.paper)
                 .navigationTitle("Share skill")
+                .navigationBarTitleDisplayMode(.inline)
             }
         }
     }

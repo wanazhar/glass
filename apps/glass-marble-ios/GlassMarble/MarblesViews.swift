@@ -404,6 +404,7 @@ struct NewMarbleView: View {
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
         .navigationTitle(duplicate != nil ? "Duplicate agent" : importing ? "Import agent" : "New agent")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }

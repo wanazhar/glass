@@ -14,15 +14,15 @@ The item 17 and 18 baseline is [c12b589](https://github.com/wanazhar/glass/commi
 
 ### Layout retest
 
-The first-audit fixes were retested at `63afc126`. The default text size captures include the roster, agent detail, chat, Everyone, Activity, onboarding, pairing, and the first-level Settings destinations.
+The first-audit fixes were retested at `63afc126`. The broad captures include the roster, agent detail, chat, Everyone, Activity, onboarding, pairing, and the first-level Settings destinations.
 
-| Simulator | Default, light |
-| --- | --- |
-| iPhone 14 Pro Max | [55 screenshots](screenshots/retest-63afc126/a63-14pm-light-default) |
-| iPhone SE (3rd generation) | [54 screenshots](screenshots/retest-63afc126/a63-se3-light-default) |
-| 13-inch iPad Pro | [55 screenshots](screenshots/retest-63afc126/a63-ipad-light-default) |
+| Simulator | Light | Dark |
+| --- | --- | --- |
+| iPhone 14 Pro Max | [Default](screenshots/retest-63afc126/a63-14pm-light-default) | [Default](screenshots/retest-63afc126/a63-14pm-dark-default), [AX1](screenshots/retest-63afc126/a63-14pm-dark-ax1) |
+| iPhone SE (3rd generation) | [Default](screenshots/retest-63afc126/a63-se3-light-default), [AX1](screenshots/retest-63afc126/a63-se3-light-ax1), [Settings tail](screenshots/retest-63afc126/a63-se3-light-tail) | [Settings tail](screenshots/retest-63afc126/a63-se3-dark-tail) |
+| 13-inch iPad Pro | [Default](screenshots/retest-63afc126/a63-ipad-light-default), [XXXL](screenshots/retest-63afc126/a63-ipad-light-xxxl) | [Default](screenshots/retest-63afc126/a63-ipad-dark-default) |
 
-[Before and after in light mode](comparisons/final-layout-light.png) shows the pairing background, Private chat contrast, Stop confirmation and iPad Connection view with the host-build notice.
+The before-and-after comparisons show the pairing background, Private chat contrast, Stop confirmation, and iPad Connection view with the host-build notice. [Light](comparisons/final-layout-light.png) · [Dark](comparisons/final-layout-dark.png)
 
 [iPhone SE chat title](comparisons/audit-se-chat-header.png), [AX1 composer](comparisons/audit-ax1-chat-composer.png), [agent detail](comparisons/audit-se-agent-detail.png), [Everyone thread](comparisons/audit-everyone-thread.png), [Settings labels](comparisons/audit-settings-label-wrap.png), [Connection toggle](comparisons/audit-connection-toggle.png), and [Activity spacing](comparisons/audit-activity-spacing.png) show the first audit fixes.
 
@@ -33,7 +33,7 @@ The first-audit fixes were retested at `63afc126`. The default text size capture
 | Agents | [Before and after](comparisons/typography-light-agents.png) | [Before and after](comparisons/typography-dark-agents.png) |
 | Chat | [Before and after](comparisons/typography-light-chat-reply.png) | [Before and after](comparisons/typography-dark-chat-reply.png) |
 | Everyone | [Before and after](comparisons/typography-light-everyone.png) | [Before and after](comparisons/typography-dark-everyone.png) |
-| Settings | [Before and retest](comparisons/typography-final-light-settings.png) | [Before and first audit pass](comparisons/typography-dark-settings.png) |
+| Settings | [Before and retest](comparisons/typography-final-light-settings.png) | [Before and retest](comparisons/typography-final-dark-settings.png) |
 
 ## P5 feature and behavior captures
 

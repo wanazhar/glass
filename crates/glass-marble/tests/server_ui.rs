@@ -4083,11 +4083,13 @@ fn fixture_prism_pool_with_store(
     extra_args: Vec<String>,
     store: Option<Arc<StateStore>>,
 ) -> Arc<glass_marble::PrismPool> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let script = script.to_path_buf();
     let sequence = std::sync::atomic::AtomicUsize::new(0);
     let factory: Arc<dyn Fn() -> Command + Send + Sync> = Arc::new(move || {
-        let mut command = Command::new("python3");
-        command.arg(&script).arg("runtime");
+        let mut command = Command::new(&script);
+        command.arg("runtime");
         if !extra_args.iter().any(|arg| arg == "--id-prefix") {
             command.arg("--id-prefix").arg(format!(
                 "prism-{}-",

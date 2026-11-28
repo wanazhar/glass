@@ -11,7 +11,6 @@ struct MarbleAvatar: View {
     var settledAt: Date? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
     @State private var appeared = false
     @State private var inViewport = false
 
@@ -20,20 +19,20 @@ struct MarbleAvatar: View {
         Group {
             if let isWorking, !reduceMotion {
                 AvatarLayer(glyph: glyph, color: color, working: isWorking,
-                            enabled: appeared && inViewport && scenePhase == .active,
+                            enabled: appeared && inViewport,
                             settledAt: settledAt)
-                    .onGeometryChange(for: Bool.self) { geometry in
-                        guard let viewport = geometry.bounds(of: .scrollView) else { return true }
-                        return viewport.intersects(CGRect(origin: .zero, size: geometry.size))
-                    } action: { inViewport = $0 }
-                    .onAppear { appeared = true }
-                    .onDisappear { appeared = false }
             } else {
                 MarbleSilhouette(glyph: glyph).fill(color)
                     .padding(isWorking == nil ? 0 : size * 0.075)
             }
         }
         .frame(width: size, height: size)
+        .onGeometryChange(for: Bool.self) { geometry in
+            guard let viewport = geometry.bounds(of: .scrollView) else { return true }
+            return CGRect(origin: .zero, size: viewport.size).intersects(geometry.frame(in: .scrollView))
+        } action: { inViewport = $0 }
+        .onAppear { appeared = true }
+        .onDisappear { appeared = false }
         .accessibilityHidden(true)
     }
 }
@@ -60,6 +59,7 @@ private final class AvatarLayerView: UIView {
     private var color = UIColor.clear
     private var working = false
     private var enabled = false
+    private var sceneActive = false
     private var settledAt: Date?
     private var playingWork: Bool?
 
@@ -67,6 +67,10 @@ private final class AvatarLayerView: UIView {
         super.init(frame: frame)
         isUserInteractionEnabled = false
         layer.addSublayer(shape)
+        NotificationCenter.default.addObserver(self, selector: #selector(sceneActivated(_:)),
+                                               name: UIScene.didActivateNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(sceneDeactivating(_:)),
+                                               name: UIScene.willDeactivateNotification, object: nil)
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: AvatarLayerView, _: UITraitCollection) in
             view.updateFill()
         }
@@ -84,10 +88,24 @@ private final class AvatarLayerView: UIView {
         let inset = min(bounds.width, bounds.height) * 0.075
         shape.path = MarbleSilhouette(glyph: glyph).path(in: shape.bounds.insetBy(dx: inset, dy: inset)).cgPath
         CATransaction.commit()
+        reconcile()
     }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        sceneActive = window?.windowScene?.activationState == .foregroundActive
+        reconcile()
+    }
+
+    @objc private func sceneActivated(_ notification: Notification) {
+        guard let scene = window?.windowScene, notification.object as? UIScene === scene else { return }
+        sceneActive = true
+        reconcile()
+    }
+
+    @objc private func sceneDeactivating(_ notification: Notification) {
+        guard let scene = window?.windowScene, notification.object as? UIScene === scene else { return }
+        sceneActive = false
         reconcile()
     }
 
@@ -114,7 +132,7 @@ private final class AvatarLayerView: UIView {
     }
 
     private func reconcile() {
-        guard enabled, window != nil else {
+        guard enabled, sceneActive, !bounds.isEmpty else {
             if playingWork != nil {
                 shape.removeAllAnimations()
                 playingWork = nil

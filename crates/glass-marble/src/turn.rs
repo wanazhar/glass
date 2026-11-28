@@ -35,6 +35,7 @@ pub struct MarbleReply {
     pub usage: Option<Value>,
     pub cancelled: bool,
     pub group_action: Option<crate::threads::GroupAction>,
+    pub knowledge_action: Option<crate::memory::AgentKnowledgeAction>,
 }
 
 impl MarbleReply {
@@ -466,6 +467,7 @@ fn run_attempt(
     } else {
         (None, text)
     };
+    let (knowledge_action, text) = crate::memory::extract_action(text);
     if matches!(group_action, Some(crate::threads::GroupAction::Pass)) {
         reasoning.clear();
     }
@@ -492,6 +494,7 @@ fn run_attempt(
         usage,
         cancelled,
         group_action,
+        knowledge_action,
     };
     conversation.publish(
         "settled",

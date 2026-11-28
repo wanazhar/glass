@@ -336,7 +336,11 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     // An unreadable document is refused here, not replaced: load() restores the
     // newest backup when it can, and otherwise leaves the file for the operator.
     let mut loaded = store.load()?;
-    if loaded.prism.install_template() {
+    let recently_deleted = loaded.memory.recently_deleted.len();
+    loaded
+        .memory
+        .expire_deleted(glass_marble::worker::now_millis());
+    if loaded.prism.install_template() || loaded.memory.recently_deleted.len() != recently_deleted {
         loaded.bump();
         store.save(&loaded)?;
     }

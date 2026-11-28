@@ -852,6 +852,13 @@ impl MarbleServer {
                 return self.dismiss_suggestion(&decode_path_segment(id));
             }
         }
+        if head.method == "POST"
+            && let Some((id, action)) = path
+                .strip_prefix("/api/knowledge/")
+                .and_then(|path| path.split_once('/'))
+        {
+            return self.update_knowledge(&decode_path_segment(id), action, body);
+        }
         if head.method == "GET" && path == "/api/routines" {
             return self.routines_response();
         }
@@ -2600,6 +2607,105 @@ impl MarbleServer {
     fn memory_response(&self) -> Response {
         let guard = self.lock_state();
         Response::json(200, guard.memory.document())
+    }
+
+    fn update_knowledge(&self, id: &str, action: &str, body: &str) -> Response {
+        let data = if body.trim().is_empty() {
+            Value::Null
+        } else {
+            match serde_json::from_str::<Value>(body) {
+                Ok(data) => data,
+                Err(_) => return Response::error(400, "invalid_json"),
+            }
+        };
+        let strings = |value: &Value| serde_json::from_value::<Vec<String>>(value.clone()).ok();
+        let text = |key: &str| data[key].as_str().unwrap_or_default().to_owned();
+        let mut state = self.lock_state();
+        let updated = match action {
+            "delete" => state.memory.delete(id),
+            "restore" => state.memory.restore(id),
+            "share-memory" => {
+                let Some(shared) = data["shared"].as_bool() else {
+                    return Response::error(400, "invalid_sharing");
+                };
+                if let Some(fact) = state.memory.facts.iter_mut().find(|fact| fact.id == id) {
+                    fact.shared = shared;
+                    true
+                } else {
+                    false
+                }
+            }
+            "edit-skill" => {
+                let Some(steps) = strings(&data["steps"]) else {
+                    return Response::error(400, "invalid_steps");
+                };
+                match state
+                    .memory
+                    .update_skill(id, text("name"), text("whenToUse"), steps)
+                {
+                    Ok(()) => true,
+                    Err("unknown_skill") => false,
+                    Err(crate::memory::SKILL_CONTAINS_PRIVATE_MEMORY) => {
+                        return Response::error(409, crate::memory::SKILL_CONTAINS_PRIVATE_MEMORY);
+                    }
+                    Err(reason) => {
+                        return Response::json(
+                            400,
+                            json!({"error":"invalid_skill","message":reason}),
+                        );
+                    }
+                }
+            }
+            "share-skill" => {
+                let Some(mut agents) = strings(&data["agents"]) else {
+                    return Response::error(400, "invalid_agents");
+                };
+                let Some(skill) = state.memory.skills.iter().find(|skill| skill.id == id) else {
+                    return Response::error(404, "unknown_skill");
+                };
+                agents.retain(|agent| {
+                    agent != &skill.owner && (agent == "marble" || state.prism.get(agent).is_some())
+                });
+                agents.sort_unstable();
+                agents.dedup();
+                if !agents.is_empty() && state.memory.skill_contains_private_fact(skill) {
+                    return Response::error(409, crate::memory::SKILL_CONTAINS_PRIVATE_MEMORY);
+                }
+                state
+                    .memory
+                    .skills
+                    .iter_mut()
+                    .find(|skill| skill.id == id)
+                    .unwrap()
+                    .shared_with = agents;
+                true
+            }
+            "confirm-pruning" => {
+                let Some(selected) = strings(&data["selected"]) else {
+                    return Response::error(400, "invalid_selection");
+                };
+                state.memory.resolve_pruning(id, &selected)
+            }
+            "resolve-consent" => {
+                let fact = match &data["factId"] {
+                    Value::Null => None,
+                    Value::String(id) => Some(id.as_str()),
+                    _ => return Response::error(400, "invalid_memory"),
+                };
+                state.memory.resolve_consent(id, fact)
+            }
+            _ => return Response::error(404, "unknown_knowledge_action"),
+        };
+        if !updated {
+            return Response::error(404, "unknown_saved_item");
+        }
+        state.bump();
+        let document = state.memory.document();
+        drop(state);
+        self.save_state();
+        self.events
+            .publish("", "", "memory", json!({"action":action,"id":id}));
+        Response::json(200, json!({"ok":true,"memory":document}))
     }
 
     /// `POST /api/memory` — remember one statement explicitly.
@@ -4479,6 +4585,27 @@ impl MarbleServer {
 
     pub fn serve(self) -> std::io::Result<()> {
         let server = Arc::new(self);
+        let weak = Arc::downgrade(&server);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::park_timeout(Duration::from_secs(60));
+                let Some(server) = weak.upgrade() else { return };
+                let changed = {
+                    let mut state = server.lock_state();
+                    let count = state.memory.recently_deleted.len();
+                    state.memory.expire_deleted(now_millis());
+                    if state.memory.recently_deleted.len() != count {
+                        state.bump();
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if changed {
+                    server.save_state();
+                }
+            }
+        });
         let active = Arc::new(AtomicUsize::new(0));
         loop {
             let next = server.listener.incoming().next();

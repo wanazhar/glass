@@ -629,6 +629,79 @@ impl ProductState {
         }
     }
 
+    pub(crate) fn settle_knowledge(
+        &mut self,
+        reply: &crate::MarbleReply,
+        owner: &str,
+        prompt: &str,
+    ) {
+        let Some(action) = reply.knowledge_action.clone().filter(|_| !reply.cancelled) else {
+            return;
+        };
+        let recipient = self.teaching_recipient(owner, prompt);
+        let entry_id = self
+            .transcript
+            .iter()
+            .rev()
+            .find(|entry| entry.task_id == reply.task_id && entry.kind == "assistant")
+            .map(|entry| entry.id.clone());
+        self.memory.apply_agent_action(
+            action,
+            crate::memory::KnowledgeTurn {
+                owner,
+                conversation: &reply.conversation_id,
+                thread: self.task_threads.get(&reply.task_id).map(String::as_str),
+                task_id: &reply.task_id,
+                source_entry_id: entry_id,
+                recipient: recipient.as_deref(),
+            },
+        );
+    }
+
+    pub(crate) fn teaching_recipient(&self, owner: &str, prompt: &str) -> Option<String> {
+        prompt
+            .trim_start()
+            .to_lowercase()
+            .split_once("teach ")
+            .and_then(|(address, request)| {
+                let speaker = self
+                    .prism
+                    .get(owner)
+                    .map_or("Marble", |agent| agent.name.as_str());
+                let address = address
+                    .trim()
+                    .trim_start_matches('@')
+                    .trim_end_matches(',')
+                    .trim();
+                if !address.is_empty() && !address.eq_ignore_ascii_case(speaker) {
+                    return None;
+                }
+                let request = request.trim_start().trim_start_matches('@');
+                self.prism
+                    .marbles
+                    .iter()
+                    .flat_map(|agent| {
+                        [
+                            (agent.name.to_lowercase(), agent.id.as_str()),
+                            (agent.id.clone(), agent.id.as_str()),
+                        ]
+                    })
+                    .chain(std::iter::once(("marble".to_owned(), "marble")))
+                    .filter(|(name, _)| {
+                        request
+                            .strip_prefix(name)
+                            .and_then(|tail| tail.strip_prefix(char::is_whitespace))
+                            .is_some_and(|tail| {
+                                let tail = tail.trim_start();
+                                tail.starts_with("how ") || tail.starts_with("to ")
+                            })
+                    })
+                    .max_by_key(|(name, _)| name.len())
+                    .map(|(_, id)| id.to_owned())
+            })
+            .filter(|recipient| recipient != owner)
+    }
+
     /// Append one transcript entry.
     pub fn push_transcript(&mut self, mut entry: TranscriptEntry) {
         let pending = matches!(entry.kind.as_str(), "assistant" | "failure" | "system")
@@ -1102,6 +1175,41 @@ impl ProductState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn review_teaching_matches_roster_before_parsing_the_request() {
+        let mut state = super::ProductState::default();
+        let ada = state
+            .prism
+            .add("Ada", "Designer", "circle", 20, "", "")
+            .unwrap()
+            .id
+            .clone();
+        let dietrich = state
+            .prism
+            .add("Dietrich Braun", "Engineer", "circle", 20, "", "")
+            .unwrap()
+            .id
+            .clone();
+        assert_eq!(
+            state.teaching_recipient(
+                &ada,
+                "@Ada, teach @Dietrich Braun to explain how the workflow works"
+            ),
+            Some(dietrich)
+        );
+        assert_eq!(
+            state
+                .teaching_recipient(&ada, "Teach Marble how you did that")
+                .as_deref(),
+            Some("marble")
+        );
+        assert_eq!(
+            state.teaching_recipient(&ada, "Teach Dietrich Braunson to explain"),
+            None
+        );
+        assert_eq!(state.teaching_recipient(&ada, "Teach Ada to explain"), None);
+    }
+
     #[test]
     fn agent_presence_only_counts_the_owning_agents_running_tasks() {
         let mut state = super::ProductState::default();

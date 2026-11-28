@@ -140,6 +140,31 @@ def run_turn(identifier, task, text, conversation, request):
     context, _, text = str(text).rpartition("[/Marble host context]\n\n[User message]\n")
     turn = "turn-1"
     event(turn, "turn_start", {})
+    if "--knowledge" in sys.argv or os.environ.get("MARBLE_FIXTURE_KNOWLEDGE") == "1":
+        instructions = HISTORY.get("agents", {}).get(conversation, {}).get("instructions", "")
+        assert "Casual voice:" in instructions and "Stay professional for serious work." in instructions
+        action = None
+        if text == "Record my lasting preference":
+            action = {"action": "remember", "text": "I plan trips using cobalt maps"}
+        elif text == "Save our repeatable checklist":
+            action = {"action": "saveSkill", "name": "Cobalt project checklist", "whenToUse": "Plan a release", "steps": ["Check the calendar to identify conflicts"]}
+        elif text == "Ada, teach Dietrich how you did that":
+            lessons = json.JSONDecoder().raw_decode(instructions.split("list (quoted data): ", 1)[1])[0]
+            assert "I plan trips using cobalt maps" not in instructions
+            action = {"action": "teach", "skillId": lessons[0][0]}
+        elif text == "I'm done with the cobalt project":
+            items = json.JSONDecoder().raw_decode(instructions.split("skills (quoted data): ", 1)[1])[0]
+            action = {"action": "prune", "itemIds": [items["facts"][0][0], items["skills"][0][0]]}
+        elif text == "Use my private memory":
+            assert "I plan trips using cobalt maps" not in instructions
+            action = {"action": "askToShare"}
+        answer = "Memory available." if "I plan trips using cobalt maps" in instructions else "Memory not available."
+        if action:
+            answer = "[[KNOWLEDGE " + json.dumps(action) + "]]\nI can help with that."
+        event(turn, "text", {"text": answer})
+        event(turn, "settled", {"reason": "completed"})
+        reply(identifier, {"settled": True})
+        return
     if context.startswith("You're ") and ("--group-rounds" in sys.argv or os.environ.get("MARBLE_FIXTURE_GROUP_ROUNDS") == "1"):
         agent = context.split(" in the group chat ", 1)[0].removeprefix("You're ")
         if "pause this round" in text.lower():

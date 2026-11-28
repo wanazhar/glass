@@ -256,7 +256,7 @@ struct MarblesView: View {
                     navigation.selectTab(.everyone)
                 } label: {
                     HStack {
-                        Text("Pick a Marble to talk one to one, or meet in Everyone.")
+                        Text("Pick a Marble to talk one to one, or meet in \(Text("Everyone").underline()).")
                         Spacer(minLength: 0)
                         Image(systemName: "chevron.right")
                     }
@@ -322,7 +322,7 @@ struct MarblesView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(marble.name).font(.headline).foregroundStyle(MarbleTheme.ink)
                 if !marble.role.isEmpty {
-                    Text(marble.role)
+                    Text(marble.displayRole)
                         .font(.subheadline).foregroundStyle(MarbleTheme.muted)
                 }
                 if store.isAgentWorking(marble) {
@@ -740,7 +740,7 @@ struct MarbleInfoView: View {
                             MarbleAvatar(glyph: glyph, hue: hue, size: 88)
                             Text(marble.name).font(.largeTitle.weight(.semibold))
                             if !marble.role.isEmpty {
-                                Text(marble.role).foregroundStyle(MarbleTheme.muted)
+                                Text(marble.displayRole).foregroundStyle(MarbleTheme.muted)
                             }
                         }
                         Spacer()

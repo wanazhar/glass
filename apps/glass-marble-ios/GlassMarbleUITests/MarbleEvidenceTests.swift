@@ -97,6 +97,134 @@ final class MarbleEvidenceTests: XCTestCase {
         shot("find")
     }
 
+    func testHostedKnowledge() throws {
+        guard let address = ProcessInfo.processInfo.environment["MARBLE_KNOWLEDGE_EVIDENCE_URL"] else {
+            throw XCTSkip("Requires the local knowledge fixture")
+        }
+        try start(address: address, expectedAgent: "Marble")
+        shot("p3-agents")
+        let ada = app.staticTexts["Ada"].firstMatch
+        for _ in 0..<4 where !ada.isHittable { app.swipeUp() }
+        XCTAssertTrue(ada.isHittable)
+        shot("p3-peach-avatar")
+        ada.tap()
+        let composer = app.descendants(matching: .any)["composer.field"].firstMatch
+        func send(_ prompt: String) {
+            check(composer)
+            composer.tap()
+            composer.typeText(prompt)
+            button("Send").tap()
+            let tutorial = button("Continue")
+            if tutorial.exists { tutorial.tap() }
+        }
+        let remembered = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Remembered")).firstMatch
+        let skillSaved = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Skill saved")).firstMatch
+        send("Record my lasting preference")
+        check(remembered, timeout: 15)
+        shot("p3-remembered")
+        remembered.tap()
+        check(app.navigationBars["Remembered"])
+        shot("p3-memory-source")
+        let memory = app.textFields["knowledge.memory.text"].firstMatch
+        check(memory)
+        memory.tap()
+        memory.tap(withNumberOfTaps: 3, numberOfTouches: 1)
+        memory.typeText(XCUIKeyboardKey.delete.rawValue)
+        XCTAssertFalse(button("Save").isEnabled)
+        shot("p3-blank-memory-save-disabled")
+        memory.typeText("New wording")
+        XCTAssertTrue(button("Save").isEnabled)
+        button("Cancel").tap()
+        send("Save our repeatable checklist")
+        check(skillSaved, timeout: 15)
+        shot("p3-skill-saved")
+        send("Ada, teach Dietrich how you did that")
+        check(app.staticTexts["I can help with that."].firstMatch, timeout: 15)
+        send("I'm done with the cobalt project")
+        check(app.staticTexts["Suggested cleanup"], timeout: 15)
+        let keepSkill = button("Cobalt project checklist — Plan a release")
+        check(keepSkill)
+        XCTAssertTrue(keepSkill.isSelected)
+        keepSkill.tap()
+        XCTAssertFalse(keepSkill.isSelected)
+        shot("p3-pruning")
+        button("Delete selected").tap()
+        XCTAssertTrue(app.staticTexts["Suggested cleanup"].waitForNonExistence(timeout: 10))
+        button("About this Marble").tap()
+        button("Memory").tap()
+        let deleted = button("Recently Deleted")
+        for _ in 0..<3 where !deleted.isHittable { app.swipeUp() }
+        deleted.tap()
+        check(button("Restore"))
+        shot("p3-recently-deleted")
+        button("Restore").tap()
+        check(app.staticTexts["Nothing recently deleted."])
+    }
+
+    func testHostedLearnedSkillAndSharing() throws {
+        guard let address = ProcessInfo.processInfo.environment["MARBLE_LEARNED_SKILL_EVIDENCE_URL"] else {
+            throw XCTSkip("Requires a local host seeded with Dietrich's learned skill")
+        }
+        try start(address: address, expectedAgent: "Marble")
+        let everyoneLink = button("Pick a Marble to talk one to one, or meet in Everyone.")
+        check(everyoneLink)
+        everyoneLink.tap()
+        check(app.navigationBars["Everyone"])
+        app.tabBars.buttons["Marbles"].tap()
+        let dietrich = app.staticTexts["Dietrich"].firstMatch
+        for _ in 0..<4 where !dietrich.isHittable { app.swipeUp() }
+        XCTAssertTrue(dietrich.isHittable)
+        dietrich.tap()
+        button("About this Marble").tap()
+        button("Memory").tap()
+        let attribution = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Learned from Ada, ")).firstMatch
+        check(attribution)
+        shot("p3-learned-skill")
+        app.staticTexts["Cobalt project checklist"].firstMatch.tap()
+        let name = app.textFields["Name"]
+        check(name)
+        name.tap()
+        name.typeText(" for launch")
+        button("Share with agents").tap()
+        let engineer = app.switches["Engineer"]
+        check(engineer)
+        engineer.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        XCTAssertEqual(engineer.value as? String, "1")
+        shot("p3-share-skill")
+        back()
+        button("Save").tap()
+        check(app.staticTexts["Cobalt project checklist for launch"])
+    }
+
+    func testHostedPrivateMemoryConsent() throws {
+        guard let address = ProcessInfo.processInfo.environment["MARBLE_MEMORY_CONSENT_EVIDENCE_URL"] else {
+            throw XCTSkip("Requires a local group with a pending private memory request")
+        }
+        try start(address: address, expectedAgent: "Marble")
+        app.staticTexts["Marble"].firstMatch.tap()
+        let thread = app.staticTexts["Cobalt group"]
+        check(thread)
+        thread.tap()
+        let choose = app.buttons.matching(NSPredicate(format: "label == %@ AND enabled == YES", "Choose memory")).firstMatch
+        check(choose)
+        XCTAssertFalse(app.staticTexts["I plan trips using cobalt maps"].exists)
+        shot("p3-memory-consent")
+        choose.tap()
+        check(app.navigationBars["Allow in this chat"])
+        let fact = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "I plan trips using cobalt maps")).firstMatch
+        check(fact)
+        shot("p3-choose-memory")
+        fact.tap()
+        let field = app.descendants(matching: .any)["composer.field"].firstMatch
+        let readyToType = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == YES"), object: field)
+        XCTAssertEqual(XCTWaiter.wait(for: [readyToType], timeout: 5), .completed)
+        field.tap()
+        field.typeText("Which facts are in my saved memories?")
+        button("Send").tap()
+        check(app.staticTexts["Memory available."], timeout: 15)
+        shot("p3-memory-consent-granted")
+    }
+
     func testHostedAgentCards() throws {
         try start(address: "http://127.0.0.1:4785", expectedAgent: "Engineer")
         let engineer = app.staticTexts["Engineer"].firstMatch

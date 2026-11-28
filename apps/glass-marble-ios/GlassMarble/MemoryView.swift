@@ -6,6 +6,7 @@ struct MemoryView: View {
     @State private var draft = ""
     @State private var editing: MarbleMemoryFact?
     @State private var forgetting: MarbleMemoryFact?
+    @State private var skill: MarbleSkill?
 
     var body: some View {
         List {
@@ -19,6 +20,30 @@ struct MemoryView: View {
                 }
             }
             factSection(owner: "", facts: store.memory.facts.filter { $0.owner.isEmpty })
+            Section("Skills") {
+                let skills = (store.memory.skills ?? []).filter { marbleId == nil || $0.owner == marbleId || $0.sharedWith.contains(marbleId ?? "") }
+                if skills.isEmpty {
+                    Text("No skills saved yet.").foregroundStyle(MarbleTheme.muted)
+                }
+                ForEach(skills) { item in
+                    Button { skill = item } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item.name).foregroundStyle(MarbleTheme.ink)
+                            Text(item.whenToUse).font(.subheadline).foregroundStyle(MarbleTheme.muted)
+                            if let teacher = item.learnedFrom {
+                                Text("Learned from \(store.knowledgeAgentName(teacher)), \(knowledgeDate(item.createdAt))")
+                                    .font(.caption).foregroundStyle(MarbleTheme.muted)
+                            }
+                        }
+                        .frame(minHeight: 44, alignment: .leading)
+                    }
+                }
+            }
+            .listRowBackground(MarbleTheme.card)
+            Section {
+                NavigationLink("Recently Deleted") { RecentlyDeletedView(owner: marbleId) }
+            }
+            .listRowBackground(MarbleTheme.card)
             Section("Suggestions · Not saved") {
                 let suggestions = store.memory.suggestions.filter {
                     marbleId == nil || store.owner(of: $0) == marbleId
@@ -44,13 +69,12 @@ struct MemoryView: View {
         }
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
-        .navigationTitle("Memory")
+        .navigationTitle("Memory & Skills")
         .task { await store.refresh() }
         .sheet(item: $editing) { fact in
-            MemoryDecisionView(title: "Edit memory", scope: store.memoryScope(fact.owner), text: fact.text, editable: true) {
-                await store.update(fact, text: $0)
-            }
+            SavedKnowledgeView(item: .memory(fact), titleOverride: "Edit memory")
         }
+        .sheet(item: $skill) { item in SavedKnowledgeView(item: .skill(item), readOnly: marbleId != nil && item.owner != marbleId) }
         .confirmationDialog("Forget this memory?", isPresented: Binding(
             get: { forgetting != nil }, set: { if !$0 { forgetting = nil } }
         ), titleVisibility: .visible, presenting: forgetting) { fact in
@@ -70,7 +94,11 @@ struct MemoryView: View {
                     editing = fact
                 } label: {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(fact.text).foregroundStyle(MarbleTheme.ink)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(fact.text).foregroundStyle(MarbleTheme.ink)
+                            Text(store.knowledgeSource(conversationId: fact.conversationId, threadId: fact.threadId, date: fact.createdAt))
+                                .font(.caption).foregroundStyle(MarbleTheme.muted)
+                        }
                         Spacer()
                         Image(systemName: "pencil").foregroundStyle(MarbleTheme.tint)
                     }
@@ -84,6 +112,317 @@ struct MemoryView: View {
             }
         }
         .listRowBackground(MarbleTheme.card)
+    }
+}
+
+func knowledgeDate(_ milliseconds: UInt64) -> String {
+    Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
+        .formatted(.dateTime.day().month(.abbreviated).year())
+}
+
+private struct RecentlyDeletedView: View {
+    @EnvironmentObject private var store: MarbleStore
+    var owner: String?
+
+    var body: some View {
+        List {
+            Section {
+                let deleted = (store.memory.recentlyDeleted ?? []).filter { owner == nil || $0.saved.owner == owner }
+                if deleted.isEmpty { Text("Nothing recently deleted.").foregroundStyle(MarbleTheme.muted) }
+                ForEach(deleted) { entry in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(entry.saved.title)
+                        Text("Deleted \(knowledgeDate(entry.deletedAt))").font(.caption).foregroundStyle(MarbleTheme.muted)
+                        Button("Restore") { Task { await store.updateKnowledge(id: entry.id, .restore) } }
+                            .frame(minHeight: 44)
+                    }
+                }
+            } footer: {
+                Text("Items can be restored for seven days.")
+            }
+            .listRowBackground(MarbleTheme.card)
+        }
+        .scrollContentBackground(.hidden)
+        .background(MarbleTheme.paper)
+        .navigationTitle("Recently Deleted")
+    }
+}
+
+struct SavedKnowledgeView: View {
+    @EnvironmentObject private var store: MarbleStore
+    @Environment(\.dismiss) private var dismiss
+    var item: MarbleSavedItem
+    var readOnly = false
+    var titleOverride: String? = nil
+    @State private var text = ""
+    @State private var name = ""
+    @State private var use = ""
+    @State private var steps = ""
+    @State private var shared = false
+    @State private var recipients: Set<String> = []
+    @State private var showsSharing = false
+
+    init(item: MarbleSavedItem, readOnly: Bool = false, titleOverride: String? = nil) {
+        self.item = item
+        self.readOnly = readOnly
+        self.titleOverride = titleOverride
+        switch item {
+        case let .memory(fact):
+            _text = State(initialValue: fact.text)
+            _shared = State(initialValue: fact.shared)
+        case let .skill(skill):
+            _name = State(initialValue: skill.name)
+            _use = State(initialValue: skill.whenToUse)
+            _steps = State(initialValue: skill.steps.joined(separator: "\n"))
+            _recipients = State(initialValue: Set(skill.sharedWith))
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                switch item {
+                case let .memory(fact):
+                    Section("Memory") {
+                        TextField("Memory", text: $text, axis: .vertical)
+                            .accessibilityIdentifier("knowledge.memory.text")
+                        Text(store.knowledgeSource(conversationId: fact.conversationId, threadId: fact.threadId, date: fact.createdAt))
+                            .font(.caption).foregroundStyle(MarbleTheme.muted)
+                    }
+                    Section("Who can use this") {
+                        if fact.owner.isEmpty {
+                            Text("Shared with all agents")
+                        } else {
+                            Toggle("Share with all agents", isOn: $shared)
+                            Text("Private memories still need permission before use in a group.")
+                                .font(.caption).foregroundStyle(MarbleTheme.muted)
+                        }
+                    }
+                case let .skill(skill):
+                    Section("Skill") {
+                        TextField("Name", text: $name)
+                        TextField("When to use it", text: $use, axis: .vertical)
+                        TextField("Steps, one per line", text: $steps, axis: .vertical)
+                            .lineLimit(3...10)
+                        if let teacher = skill.learnedFrom {
+                            Text("Learned from \(store.knowledgeAgentName(teacher)), \(knowledgeDate(skill.createdAt))")
+                                .font(.caption).foregroundStyle(MarbleTheme.muted)
+                        }
+                    }
+                    if !readOnly {
+                        Section("Sharing") {
+                            Button(recipients.isEmpty ? "Share with agents" : "Share with \(recipients.count) agents") {
+                                showsSharing = true
+                            }
+                            .frame(minHeight: 44)
+                        }
+                    }
+                }
+                if !readOnly {
+                    Section {
+                        Button("Move to Recently Deleted", role: .destructive) {
+                            Task {
+                                await store.updateKnowledge(id: item.id, .delete)
+                                if store.errorMessage == nil { dismiss() }
+                            }
+                        }
+                        .frame(minHeight: 44)
+                    }
+                }
+                if let error = store.errorMessage { Text(error).foregroundStyle(MarbleTheme.problem) }
+            }
+            .disabled(readOnly)
+            .scrollContentBackground(.hidden)
+            .background(MarbleTheme.paper)
+            .navigationTitle(titleOverride ?? title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button(readOnly ? "Done" : "Cancel") { dismiss() } }
+                if !readOnly {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            Task {
+                                await save()
+                                if store.errorMessage == nil { dismiss() }
+                            }
+                        }
+                        .disabled(!canSave)
+                    }
+                }
+            }
+            .navigationDestination(isPresented: $showsSharing) {
+                List(store.prism.marbles.filter { $0.id != item.owner }) { agent in
+                    Toggle(agent.name, isOn: Binding(
+                        get: { recipients.contains(agent.id) },
+                        set: { selected in
+                            if selected { recipients.insert(agent.id) } else { recipients.remove(agent.id) }
+                        }
+                    ))
+                    .frame(minHeight: 44)
+                }
+                .navigationTitle("Share skill")
+            }
+        }
+    }
+
+    private var title: String {
+        switch item { case .memory: "Remembered"; case .skill: "Skill saved" }
+    }
+
+    private var canSave: Bool {
+        if case .memory = item { return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return true
+    }
+
+    private func save() async {
+        switch item {
+        case let .memory(fact):
+            if text != fact.text { await store.update(fact, text: text) }
+            if store.errorMessage == nil && shared != fact.shared {
+                await store.updateKnowledge(id: fact.id, .shareMemory, .init(shared: shared))
+            }
+        case let .skill(skill):
+            let lines = steps.split(whereSeparator: \.isNewline).map(String.init)
+            if name != skill.name || use != skill.whenToUse || lines != skill.steps {
+                await store.updateKnowledge(id: skill.id, .editSkill, .init(name: name, whenToUse: use, steps: lines))
+            }
+            if store.errorMessage == nil && recipients != Set(skill.sharedWith) {
+                await store.updateKnowledge(id: skill.id, .shareSkill, .init(agents: recipients.sorted()))
+            }
+        }
+    }
+}
+
+struct MarbleKnowledgeCards: View {
+    @EnvironmentObject private var store: MarbleStore
+    var entry: MarbleEntry
+    var chooseMemory: ((MarbleMemoryConsent) -> Void)?
+    @State private var item: MarbleSavedItem?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            cards
+        }
+        .sheet(item: $item) { saved in SavedKnowledgeView(item: saved) }
+    }
+
+    @ViewBuilder private var cards: some View {
+        ForEach(store.savedKnowledge(for: entry)) { saved in
+            Button { item = saved } label: {
+                Label(chipTitle(saved), systemImage: "bookmark")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(MarbleTheme.wash, in: Capsule())
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(minHeight: 44, alignment: .leading)
+        }
+        ForEach((store.memory.pruningProposals ?? []).filter { $0.taskId == entry.taskId }) { proposal in
+            MarblePruningCard(proposal: proposal)
+        }
+        if let chooseMemory {
+            consentCards(chooseMemory: chooseMemory)
+        }
+    }
+
+    private func consentCards(chooseMemory: @escaping (MarbleMemoryConsent) -> Void) -> some View {
+        ForEach((store.memory.consentRequests ?? []).filter { $0.taskId == entry.taskId && $0.threadId == entry.threadId }) { request in
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Use a private memory here?").font(.subheadline.weight(.semibold))
+                Text("Only the memory you choose can be used in this chat.")
+                    .font(.footnote).foregroundStyle(MarbleTheme.muted)
+                VStack(alignment: .leading, spacing: 0) {
+                    Button("Choose memory") { chooseMemory(request) }
+                        .disabled(!store.memory.facts.contains { $0.owner == request.owner })
+                        .frame(minHeight: 44)
+                    Button("Not now") { Task { await store.updateKnowledge(id: request.id, .resolveConsent) } }
+                        .frame(minHeight: 44)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(MarbleTheme.wash, in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    private func chipTitle(_ item: MarbleSavedItem) -> String {
+        switch item { case .memory: "Remembered"; case .skill: "Skill saved" }
+    }
+}
+
+struct MarbleMemoryConsentPicker: View {
+    @EnvironmentObject private var store: MarbleStore
+    @Environment(\.dismiss) private var dismiss
+    let request: MarbleMemoryConsent
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            List(store.memory.facts.filter { $0.owner == request.owner }) { fact in
+                Button {
+                    onSelect(fact.id)
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(fact.text)
+                        Text(store.knowledgeSource(conversationId: fact.conversationId, threadId: fact.threadId, date: fact.createdAt))
+                            .font(.caption).foregroundStyle(MarbleTheme.muted)
+                    }
+                    .frame(minHeight: 44)
+                }
+            }
+            .navigationTitle("Allow in this chat")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }
+    }
+}
+
+private struct MarblePruningCard: View {
+    @EnvironmentObject private var store: MarbleStore
+    var proposal: MarblePruningProposal
+    @State private var unchecked: Set<String> = []
+    private var items: [MarbleSavedItem] {
+        store.memory.savedItems.filter { proposal.itemIds.contains($0.id) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Suggested cleanup").font(.subheadline.weight(.semibold))
+            ForEach(items) { item in
+                let selected = !unchecked.contains(item.id)
+                Button {
+                    if selected { unchecked.insert(item.id) } else { unchecked.remove(item.id) }
+                } label: {
+                    Label(item.summary, systemImage: selected ? "checkmark.square.fill" : "square")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+            ViewThatFits {
+                HStack { actions }
+                VStack(alignment: .leading) { actions }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(MarbleTheme.wash, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    @ViewBuilder private var actions: some View {
+        let selected = items.map(\.id).filter { !unchecked.contains($0) }
+        Button("Delete selected", role: .destructive) { resolve(selected) }
+            .disabled(selected.isEmpty)
+            .frame(minHeight: 44)
+        Button("Keep all") { resolve([]) }.frame(minHeight: 44)
+    }
+
+    private func resolve(_ selected: [String]) {
+        Task { await store.updateKnowledge(id: proposal.id, .confirmPruning, .init(selected: selected)) }
     }
 }
 

@@ -62,9 +62,6 @@ pub(crate) fn engine_input(
     }) {
         context.push("Host note: the earlier unanswered request was withdrawn. Do not answer it; answer only the newest message.".into());
     }
-    if !everyone && let Some(text) = state.memory.context_block_for(owner) {
-        context.push(text);
-    }
     input.text = format!(
         "[Marble host context]\n{}\n[/Marble host context]\n\n[User message]\n{text}",
         context.join("\n\n")
@@ -261,7 +258,13 @@ mod tests {
             assert_eq!(wire.as_object().unwrap().len(), 1);
             assert!(wire.get("context").is_none());
             assert!(wire.get("images").is_none());
-            assert!(input.text.contains("Shared fact"));
+            assert!(!input.text.contains("Shared fact"));
+            assert!(
+                state
+                    .memory
+                    .turn_instructions("marble", None, false, text)
+                    .contains("Shared fact")
+            );
             assert!(input.text.contains("withdrawn"));
             assert!(input.text.ends_with(&format!("[User message]\n{text}")));
             assert!(state.transcript.is_empty());

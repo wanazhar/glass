@@ -1203,6 +1203,7 @@ fn run_command(
                 }
                 guard.routines.note_settled(&reply.task_id, status);
                 crate::everyone::mirror_settlement(&mut guard, &reply.task_id, &reply.text, status);
+                guard.settle_knowledge(&reply, "marble", &prompt);
                 // A durable detail is offered, never memorized silently.
                 let suggestion = memory::detect(&prompt).and_then(|(text, kind, reason)| {
                     guard
@@ -1616,9 +1617,13 @@ mod tests {
             .memory
             .remember("my name is Azhar", "role", "c1", true, "")
             .unwrap();
+        let instructions = product
+            .memory
+            .turn_instructions("marble", None, false, "hello");
+        assert!(instructions.contains("my name is Azhar"));
         let with_memory = turn_input(&Arc::new(Mutex::new(product)), "hello");
         assert!(with_memory.context.is_empty());
         assert!(with_memory.text.ends_with("[User message]\nhello"));
-        assert!(with_memory.text.contains("my name is Azhar"));
+        assert!(!with_memory.text.contains("my name is Azhar"));
     }
 }

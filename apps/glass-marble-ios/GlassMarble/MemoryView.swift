@@ -70,6 +70,7 @@ struct MemoryView: View {
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
         .navigationTitle("Memory & Skills")
+        .navigationBarTitleDisplayMode(.inline)
         .task { await store.refresh() }
         .sheet(item: $editing) { fact in
             SavedKnowledgeView(item: .memory(fact), titleOverride: "Edit memory")
@@ -97,11 +98,13 @@ struct MemoryView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(fact.text).foregroundStyle(MarbleTheme.ink)
                             Text(store.knowledgeSource(conversationId: fact.conversationId, threadId: fact.threadId, date: fact.createdAt))
-                                .font(.caption).foregroundStyle(MarbleTheme.muted)
+                                .font(.footnote).foregroundStyle(MarbleTheme.muted)
                         }
+                        .fixedSize(horizontal: false, vertical: true)
                         Spacer()
                         Image(systemName: "pencil").foregroundStyle(MarbleTheme.tint)
                     }
+                    .frame(minHeight: 44)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -153,6 +156,7 @@ struct RecentlyDeletedView: View {
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
         .navigationTitle("Recently Deleted")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -321,7 +325,7 @@ struct MarbleKnowledgeCards: View {
         ForEach(store.savedKnowledge(for: entry)) { saved in
             Button { item = saved } label: {
                 Label(chipTitle(saved), systemImage: "bookmark")
-                    .font(.caption.weight(.semibold))
+                    .font(.footnote)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(MarbleTheme.wash, in: Capsule())
@@ -346,9 +350,8 @@ struct MarbleKnowledgeCards: View {
                 Text("Use a private memory here?").font(.subheadline.weight(.semibold))
                 Text(hasMemory ? "Only the memory you choose can be used in this chat." : "There are no saved memories to choose from.")
                     .font(.footnote).foregroundStyle(MarbleTheme.muted)
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) { consentActions(request, hasMemory: hasMemory, chooseMemory: chooseMemory) }
-                    VStack(spacing: 8) { consentActions(request, hasMemory: hasMemory, chooseMemory: chooseMemory) }
+                MarbleAdaptiveRow {
+                    consentActions(request, hasMemory: hasMemory, chooseMemory: chooseMemory)
                 }
             }
             .padding(12)
@@ -423,6 +426,8 @@ private struct MarblePruningCard: View {
                 } label: {
                     HStack {
                         Text(item.summary)
+                            .font(.subheadline)
+                            .fixedSize(horizontal: false, vertical: true)
                         Spacer()
                         if selected {
                             Image(systemName: "checkmark").font(.body.weight(.semibold))
@@ -436,10 +441,7 @@ private struct MarblePruningCard: View {
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
-            ViewThatFits {
-                HStack { actions }
-                VStack(alignment: .leading) { actions }
-            }
+            MarbleAdaptiveRow { actions }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -515,14 +517,11 @@ struct SuggestionCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(store.memoryScope(store.owner(of: suggestion)))
-                .font(.caption)
+                .font(.footnote)
                 .foregroundStyle(MarbleTheme.muted)
             Text(suggestion.text)
                 .fixedSize(horizontal: false, vertical: true)
-            ViewThatFits {
-                HStack { actions }
-                VStack(alignment: .leading) { actions }
-            }
+            MarbleAdaptiveRow { actions }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -534,8 +533,8 @@ struct SuggestionCard: View {
     }
 
     @ViewBuilder private var actions: some View {
-        MarbleInlineButton(title: "Not now") { Task { await store.dismiss(suggestion) } }
-        MarbleInlineButton(title: "Review", prominent: true) { review = true }
+        MarbleInlineButton(title: "Not now", expands: true) { Task { await store.dismiss(suggestion) } }
+        MarbleInlineButton(title: "Review", prominent: true, expands: true) { review = true }
     }
 }
 

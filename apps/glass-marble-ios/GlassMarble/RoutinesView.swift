@@ -19,25 +19,27 @@ struct ScheduledView: View {
                     Button {
                         editing = routine
                     } label: {
-                        HStack {
+                        MarbleAdaptiveRow {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(routine.title.isEmpty ? routine.prompt : routine.title)
-                                    .font(.callout)
+                                    .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(.primary)
-                                    .lineLimit(1)
                                 Text(scheduleSummary(routine))
-                                    .font(.caption)
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
                                 if let next = routine.nextRunLabel {
                                     Text(next)
-                                        .font(.caption2)
+                                        .font(.footnote)
                                         .foregroundStyle(.secondary)
                                 }
                             }
-                            Spacer()
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             Toggle("", isOn: enabledBinding(routine))
                                 .labelsHidden()
+                                .accessibilityLabel("Schedule enabled")
                         }
+                        .frame(minHeight: 44)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -70,6 +72,7 @@ struct ScheduledView: View {
             }
         }
         .navigationTitle("Scheduled")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { adding = true } label: {
@@ -214,6 +217,7 @@ struct ScheduleEditor: View {
             }
         }
         .navigationTitle(routine == nil ? "Add schedule" : "Edit schedule")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }

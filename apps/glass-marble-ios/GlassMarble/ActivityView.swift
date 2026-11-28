@@ -42,16 +42,16 @@ struct ActivityView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(runningTasks) { task in
-                    HStack {
+                    MarbleAdaptiveRow {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(task.prompt.isEmpty ? task.id : task.prompt)
-                                .font(.callout)
-                                .lineLimit(2)
+                                .font(.subheadline)
                             Text(chatTitle(task.conversationId))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(.footnote)
+                                .foregroundStyle(MarbleTheme.muted)
                         }
-                        Spacer()
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         MarbleInlineButton(title: "Stop", role: .destructive) {
                             Task { await store.cancel(task) }
                         }
@@ -128,14 +128,13 @@ private struct DecisionRow: View {
                 .imageScale(.large)
             VStack(alignment: .leading, spacing: 2) {
                 Text(MarbleDecisionWords.action(tool: entry.tool))
-                    .font(.callout)
-                    .lineLimit(1)
+                    .font(.subheadline)
                 Text(MarbleDecisionWords.outcome(decision: entry.decision, reason: entry.reason)
                      + " · " + decisionDate(entry.at).formatted(.relative(presentation: .named)))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .font(.footnote)
+                    .foregroundStyle(MarbleTheme.muted)
             }
+            .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)
     }
@@ -149,11 +148,11 @@ private struct DecisionDetailView: View {
     var body: some View {
         Form {
             Section {
-                LabeledContent("What", value: MarbleDecisionWords.action(tool: entry.tool))
-                LabeledContent("Outcome", value: MarbleDecisionWords.outcome(decision: entry.decision, reason: entry.reason))
-                LabeledContent("When", value: decisionDate(entry.at).formatted(date: .abbreviated, time: .shortened))
-                if let chat { LabeledContent("Chat", value: chat) }
-                if !entry.path.isEmpty { LabeledContent("Path", value: entry.path) }
+                MarbleValueRow("What", value: MarbleDecisionWords.action(tool: entry.tool))
+                MarbleValueRow("Outcome", value: MarbleDecisionWords.outcome(decision: entry.decision, reason: entry.reason))
+                MarbleValueRow("When", value: decisionDate(entry.at).formatted(date: .abbreviated, time: .shortened))
+                if let chat { MarbleValueRow("Chat", value: chat) }
+                if !entry.path.isEmpty { MarbleValueRow("Path", value: entry.path) }
             }
             Section {
                 if !entry.reason.isEmpty { detail("Host's reason", entry.reason) }
@@ -171,10 +170,11 @@ private struct DecisionDetailView: View {
     private func detail(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.caption)
+                .font(.footnote)
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.callout.monospaced())
+                .font(.subheadline.monospaced())
+                .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
     }

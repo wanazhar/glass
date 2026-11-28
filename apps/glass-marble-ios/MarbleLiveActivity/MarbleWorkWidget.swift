@@ -7,53 +7,44 @@ struct MarbleWorkWidget: Widget {
 
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: MarbleWorkActivityAttributes.self) { context in
-            HStack(spacing: 12) {
-                avatar(context, size: 36).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(context.state.agentName)
-                        .font(.headline)
-                        .lineLimit(1)
-                    status(context)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    elapsed(context)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    lockScreenDetails(context)
+                    Spacer(minLength: 0)
+                    stop(context)
                 }
-                Spacer(minLength: 0)
-                stop(context)
+                VStack(alignment: .leading, spacing: 6) {
+                    lockScreenDetails(context)
+                    stop(context).frame(maxWidth: .infinity, alignment: .trailing)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    HStack(spacing: 8) {
-                        avatar(context, size: 24).accessibilityHidden(true)
-                        Text(context.state.agentName)
-                            .font(.headline)
-                            .lineLimit(1)
-                    }
+                    avatar(context, size: 24).accessibilityHidden(true)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     elapsed(context)
-                        .font(.subheadline)
+                        .font(.footnote)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    HStack {
-                        status(context)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
+                    HStack(spacing: 12) {
+                        details(context)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         stop(context)
                     }
                 }
             } compactLeading: {
-                HStack(spacing: 4) {
-                    avatar(context, size: 14)
-                    Text(context.state.agentName)
-                        .font(.caption2)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 4) {
+                        avatar(context, size: 14)
+                        Text(context.state.agentName)
+                            .font(.caption2)
+                            .fixedSize()
+                    }
+                    avatar(context, size: 17)
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(context.state.agentName)
@@ -64,7 +55,7 @@ struct MarbleWorkWidget: Widget {
                 } else {
                     elapsed(context)
                         .font(.caption2)
-                        .frame(maxWidth: 46)
+                        .minimumScaleFactor(0.8)
                 }
             } minimal: {
                 avatar(context, size: 17)
@@ -74,6 +65,29 @@ struct MarbleWorkWidget: Widget {
             }
             .keylineTint(MarbleAvatarAppearance.fill(for: context.state.hue))
         }
+    }
+
+    private func lockScreenDetails(_ context: Context) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            avatar(context, size: 32).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                details(context)
+                elapsed(context)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func details(_ context: Context) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(context.state.agentName)
+                .font(.subheadline.weight(.semibold))
+            status(context)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func avatar(_ context: Context, size: CGFloat) -> some View {
@@ -111,10 +125,12 @@ struct MarbleWorkWidget: Widget {
     private func stop(_ context: Context) -> some View {
         Button(intent: MarbleStopTurnIntent(taskID: context.state.taskID, hostID: context.attributes.hostID)) {
             Text("Stop")
-                .font(.subheadline.weight(.semibold))
-                .frame(minWidth: 44, minHeight: 44)
+                .font(.footnote)
+                .frame(minWidth: 44, minHeight: 36)
         }
         .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .buttonBorderShape(.capsule)
         .tint(.red)
         .disabled(context.state.phase == .stopping && !context.isStale)
     }

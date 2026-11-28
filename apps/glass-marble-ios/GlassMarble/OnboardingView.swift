@@ -27,14 +27,15 @@ struct MarbleOnboardingView: View {
             if !showsForm && !expiredToken {
                 ScrollView {
                     VStack(spacing: 16) {
-                        PocketPair().frame(width: 86, height: 86)
-                        Text("Not connected").font(.largeTitle.weight(.semibold))
+                        PocketPair().frame(width: 64, height: 64)
+                        Text("Not connected").font(.body.weight(.semibold))
                         Text("Connect to your Marble host to see your conversations and memories.")
+                            .font(.subheadline)
                             .foregroundStyle(MarbleTheme.muted)
                         MarbleInlineButton(title: "Connect to host", prominent: true) { showsForm = true }
                     }
                     .multilineTextAlignment(.center)
-                    .padding(28)
+                    .padding(16)
                     .frame(maxWidth: 500)
                     .frame(maxWidth: .infinity)
                 }
@@ -60,22 +61,24 @@ struct MarbleOnboardingView: View {
         Form {
             Section {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Host").font(.headline)
+                    Text("Host").font(.subheadline.weight(.semibold))
                     TextField("Host URL", text: $address, prompt: Text(verbatim: "http://100.x.y.z:4783"))
                         .focused($focusedField, equals: .host)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .frame(minHeight: 44)
                     pairingError(for: .host)
                 }
                 .padding(.vertical, 6)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Access token").font(.headline)
+                    Text("Access token").font(.subheadline.weight(.semibold))
                     SecureField("Paste your token", text: $token)
                         .accessibilityLabel("Access token")
                         .focused($focusedField, equals: .token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .frame(minHeight: 44)
                     pairingError(for: .token)
                     if expiredToken, verdict == nil, MarbleToken.normalize(token).isEmpty {
                         Label("Access token expired", systemImage: "key.slash")
@@ -102,6 +105,7 @@ struct MarbleOnboardingView: View {
                             checkTask?.cancel()
                             checkTask = nil
                         }
+                        .frame(minHeight: 44)
                     }
                     .frame(maxWidth: .infinity)
                 } else {
@@ -120,7 +124,7 @@ struct MarbleOnboardingView: View {
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
         .navigationTitle(expiredToken ? "Replace access token" : "Pair your host")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
         .onChange(of: address) { verdict = nil }
         .onChange(of: token) {
             if errorField == .token { verdict = nil }

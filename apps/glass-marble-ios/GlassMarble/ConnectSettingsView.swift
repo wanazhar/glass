@@ -52,39 +52,19 @@ struct SettingsView: View {
         List {
             Section {
                 NavigationLink(value: MarbleSettingsRoute.connection) {
-                    LabeledContent {
-                        Text(store.statusLabel)
-                    } label: {
-                        Label {
-                            Text(store.endpoint?.displayHost ?? "Host")
-                                .lineLimit(1)
-                        } icon: {
-                            Image(systemName: MarbleSettingsRoute.connection.systemImage)
-                        }
-                    }
+                    rowLabel(.connection, title: store.endpoint?.displayHost ?? "Host", detail: Text(store.statusLabel))
                 }
                 .accessibilityIdentifier("settings.connection")
                 link(.marbles)
             }
             Section {
                 NavigationLink(value: MarbleSettingsRoute.activity) {
-                    LabeledContent {
-                        if waiting > 0 {
-                            Text("\(waiting) waiting")
-                                .foregroundStyle(Color.accentColor)
-                        }
-                    } label: {
-                        Label(MarbleSettingsRoute.activity.title, systemImage: MarbleSettingsRoute.activity.systemImage)
-                    }
+                    rowLabel(.activity, detail: waiting > 0 ? Text("\(waiting) waiting") : nil)
                 }
                 .accessibilityIdentifier("settings.activity")
                 NavigationLink(value: MarbleSettingsRoute.scheduled) {
-                    LabeledContent {
-                        let count = store.routines.routines.count
-                        if count > 0 { Text("\(count)") }
-                    } label: {
-                        Label(MarbleSettingsRoute.scheduled.title, systemImage: MarbleSettingsRoute.scheduled.systemImage)
-                    }
+                    let count = store.routines.routines.count
+                    rowLabel(.scheduled, detail: count > 0 ? Text("\(count)") : nil)
                 }
                 .accessibilityIdentifier("settings.scheduled")
             }
@@ -100,6 +80,7 @@ struct SettingsView: View {
                     confirmStop = true
                 } label: {
                     Label("Stop everything", systemImage: "stop.circle")
+                        .font(.subheadline)
                         .foregroundStyle(.red)
                         .frame(minHeight: 44)
                 }
@@ -128,9 +109,25 @@ struct SettingsView: View {
 
     private func link(_ route: MarbleSettingsRoute) -> some View {
         NavigationLink(value: route) {
-            Label(route.title, systemImage: route.systemImage)
+            rowLabel(route)
         }
         .accessibilityIdentifier("settings.\(route.rawValue)")
+    }
+
+    private func rowLabel(_ route: MarbleSettingsRoute, title: String? = nil, detail: Text? = nil) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title ?? route.title).font(.subheadline)
+                if let detail {
+                    detail.font(.footnote).foregroundStyle(MarbleTheme.muted)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: route.systemImage)
+                .font(.subheadline)
+        }
+        .frame(minHeight: 44, alignment: .leading)
     }
 }
 
@@ -142,8 +139,8 @@ struct ConnectionSettingsView: View {
     var body: some View {
         Form {
             Section {
-                LabeledContent("Host", value: store.endpoint?.displayHost ?? "not connected")
-                LabeledContent("Status", value: store.statusLabel)
+                MarbleValueRow("Host", value: store.endpoint?.displayHost ?? "not connected")
+                MarbleValueRow("Status", value: store.statusLabel)
                 Button(store.connectionPaused ? "Connect" : "Reconnect now") { store.reconnect(force: true) }
             }
             Section {
@@ -168,6 +165,7 @@ struct ConnectionSettingsView: View {
             }
         }
         .navigationTitle("Connection")
+        .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showsChangeHost) {
             NavigationStack { ChangeHostView() }
         }
@@ -190,6 +188,7 @@ struct MarblesModelsSettingsView: View {
             }
         }
         .navigationTitle("Agents and models")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -213,6 +212,7 @@ struct NotificationSettingsView: View {
             }
         }
         .navigationTitle("Notifications")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -243,6 +243,7 @@ struct DataSettingsView: View {
             }
         }
         .navigationTitle("Chats and data")
+        .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
             "Clear the Everyone chat?",
             isPresented: $confirmClearEveryone,
@@ -268,14 +269,15 @@ struct AboutSettingsView: View {
             }
         }
         .navigationTitle("About")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
 private struct MarbleAppVersionRows: View {
     var body: some View {
-        LabeledContent("App version", value: versionLabel)
+        MarbleValueRow("App version", value: versionLabel)
         if let commit = MarbleStore.appCommit, !commit.isEmpty, !commit.hasPrefix("$(") {
-            LabeledContent("App commit", value: String(commit.prefix(12)))
+            MarbleValueRow("App commit", value: String(commit.prefix(12)))
         }
     }
 
@@ -292,7 +294,7 @@ private struct MarbleHostVersionRow: View {
 
     var body: some View {
         if let build = store.hostBuild {
-            LabeledContent("Host version", value: "\(build.version) · \(build.gitCommitShort)")
+            MarbleValueRow("Host version", value: "\(build.version) · \(build.gitCommitShort)")
         } else {
             Text("Host version unknown (older host — update it)")
                 .foregroundStyle(.secondary)
@@ -316,9 +318,11 @@ struct ChangeHostView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
+                    .frame(minHeight: 44)
                 SecureField("Access token", text: $token)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .frame(minHeight: 44)
             }
             Section {
                 Button(checking ? "Checking…" : "Save") { changeHost() }
@@ -333,6 +337,7 @@ struct ChangeHostView: View {
             }
         }
         .navigationTitle("Change host")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
@@ -382,11 +387,12 @@ struct PermissionsView: View {
                 ForEach(store.control.grants) { grant in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(grant.tool)
-                            .font(.callout)
+                            .font(.subheadline)
                         Text(grant.scopeLabel)
-                            .font(.caption)
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                    .fixedSize(horizontal: false, vertical: true)
                     .swipeActions(edge: .trailing) {
                         Button("Remove", role: .destructive) {
                             Task { await store.revokeGrant(grant.id) }
@@ -402,11 +408,12 @@ struct PermissionsView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(store.control.deniedPaths, id: \.self) { path in
-                    Text(path).font(.callout)
+                    Text(path).font(.subheadline).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
         .navigationTitle("Permissions")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private var footer: String {
@@ -439,6 +446,7 @@ struct ModelSettingsView: View {
             Section { ModelPickerRow() }
         }
         .navigationTitle("Model")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -449,15 +457,16 @@ struct AboutHostView: View {
     var body: some View {
         Form {
             Section(header: Text("Host")) {
-                LabeledContent("Address", value: store.endpoint?.displayHost ?? "not connected")
+                MarbleValueRow("Address", value: store.endpoint?.displayHost ?? "not connected")
                 MarbleHostVersionRow()
-                LabeledContent("Engine", value: store.engineHealth?.health ?? "unknown")
+                MarbleValueRow("Engine", value: store.engineHealth?.health ?? "unknown")
             }
             Section {
                 NavigationLink("What Marble can use") { WhatMarbleCanUseView() }
             }
         }
         .navigationTitle("About this host")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 /// Free-text model choice: empty means the host uses its engine default.
@@ -471,20 +480,20 @@ private struct ModelPickerRow: View {
             TextField("engine default", text: $draft)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            HStack {
-                Text(store.model.isEmpty ? "using engine default" : "using \(store.model)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Apply") {
+                .frame(minHeight: 44)
+            Text(store.model.isEmpty ? "Using engine default" : "Using \(store.model)")
+                .font(.footnote)
+                .foregroundStyle(MarbleTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            MarbleAdaptiveRow {
+                MarbleInlineButton(title: "Apply", expands: true) {
                     Task { await store.setModel(draft.isEmpty ? nil : draft) }
                 }
-                Button("Use engine default") {
+                MarbleInlineButton(title: "Use engine default", expands: true) {
                     draft = ""
                     Task { await store.setModel(nil) }
                 }
             }
-            .font(.caption.weight(.semibold))
         }
         .onAppear {
             guard !loaded else { return }

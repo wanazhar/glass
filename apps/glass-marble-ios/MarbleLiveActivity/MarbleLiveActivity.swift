@@ -14,32 +14,38 @@ struct MarbleConnectionWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: MarbleConnectionActivityAttributes.self) { context in
             atExpiry(context) { date in
-                HStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label("Marble", systemImage: "bubble.left.and.text.bubble.right.fill")
-                            .font(.headline)
-                        Text(context.attributes.host)
-                            .lineLimit(1)
-                            .foregroundStyle(.secondary)
-                        status(context, at: date)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        connectionDetails(context, at: date)
+                        Spacer(minLength: 0)
+                        disconnectButton(context, at: date)
                     }
-                    Spacer(minLength: 0)
-                    disconnectButton(context, at: date)
+                    VStack(alignment: .leading, spacing: 8) {
+                        connectionDetails(context, at: date)
+                        disconnectButton(context, at: date)
+                    }
                 }
-                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
             }
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     Label("Marble", systemImage: "bubble.left.and.text.bubble.right.fill")
-                        .font(.headline)
+                        .font(.subheadline.weight(.semibold))
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     atExpiry(context) { date in
-                        HStack {
-                            status(context, at: date)
-                            Spacer()
-                            disconnectButton(context, at: date)
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 8) {
+                                status(context, at: date)
+                                Spacer(minLength: 0)
+                                disconnectButton(context, at: date)
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                status(context, at: date)
+                                disconnectButton(context, at: date)
+                            }
                         }
                     }
                 }
@@ -52,6 +58,20 @@ struct MarbleConnectionWidget: Widget {
                 atExpiry(context) { connectionIcon(context, at: $0) }
             }
         }
+    }
+
+    private func connectionDetails(
+        _ context: ActivityViewContext<MarbleConnectionActivityAttributes>, at date: Date
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("Marble", systemImage: "bubble.left.and.text.bubble.right.fill")
+                .font(.subheadline.weight(.semibold))
+            Text(context.attributes.host)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            status(context, at: date)
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func atExpiry<Content: View>(
@@ -79,13 +99,18 @@ struct MarbleConnectionWidget: Widget {
     @ViewBuilder
     private func disconnectButton(_ context: ActivityViewContext<MarbleConnectionActivityAttributes>, at date: Date) -> some View {
         if !isExpired(context, at: date) {
-            Button("Disconnect", intent: MarbleDisconnectIntent())
-                .buttonStyle(.bordered)
+            Button(intent: MarbleDisconnectIntent()) {
+                Text("Disconnect")
+                    .font(.footnote)
+                    .frame(minHeight: 36)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
         }
     }
 
     private func status(_ context: ActivityViewContext<MarbleConnectionActivityAttributes>, at date: Date) -> some View {
-        HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 2) {
             if isExpired(context, at: date) {
                 Text("Disconnected")
             } else if context.state.connectedAt != nil, let expiresAt = context.state.expiresAt {
@@ -98,6 +123,6 @@ struct MarbleConnectionWidget: Widget {
                 Text("Reconnecting")
             }
         }
-        .font(.subheadline)
+        .font(.footnote)
     }
 }

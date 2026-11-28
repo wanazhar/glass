@@ -17,7 +17,7 @@ struct WhatMarbleCanUseView: View {
                 if let error = store.errorMessage {
                     Section {
                         Text(error)
-                            .font(.caption)
+                            .font(.footnote)
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -70,17 +70,17 @@ private struct ToolRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
+            MarbleAdaptiveRow(spacing: 4) {
                 Text(tag)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(tone)
                 Text(title)
-                    .font(.body.monospaced())
-                Spacer(minLength: 0)
+                    .font(.subheadline.monospaced())
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if !detail.isEmpty {
                 Text(detail)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

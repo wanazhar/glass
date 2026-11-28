@@ -182,6 +182,8 @@ struct ConnectionSettingsView: View {
         .marbleFormBackground()
         .navigationTitle("Connection")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(MarbleTheme.paper, for: .navigationBar)
+        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
         .sheet(isPresented: $showsChangeHost) {
             NavigationStack { ChangeHostView() }
         }

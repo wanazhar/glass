@@ -1583,13 +1583,22 @@ impl PrismPool {
     }
 
     pub fn resume_held(self: &Arc<Self>) -> usize {
+        self.resume_held_turns(None)
+    }
+
+    pub(crate) fn resume_held_private(self: &Arc<Self>, chat: &str) -> usize {
+        self.resume_held_turns(Some(chat))
+    }
+
+    fn resume_held_turns(self: &Arc<Self>, chat: Option<&str>) -> usize {
         let queued = self.lock_state().control.queue.clone();
         let mut seen = HashSet::new();
         let mut seen_threads = HashSet::new();
         let mut dispatched = 0;
         for entry in queued {
             if entry.everyone_round {
-                if let Some(thread) = entry.thread_id
+                if chat.is_none()
+                    && let Some(thread) = entry.thread_id
                     && seen_threads.insert(thread.clone())
                     && self.resume_held_everyone(&thread)
                 {
@@ -1598,7 +1607,9 @@ impl PrismPool {
                 continue;
             }
             let Some(id) = entry.marble_id else { continue };
-            if !seen.insert(id.clone()) {
+            if !seen.insert(id.clone())
+                || chat.is_some_and(|chat| entry.conversation_id.as_deref() != Some(chat))
+            {
                 continue;
             }
             match self.dispatch_inner(

@@ -3067,6 +3067,74 @@ fn restoring_a_deleted_everyone_thread_recovers_its_held_rounds() {
 }
 
 #[test]
+fn deleted_private_chat_restores_held_messages_until_expiry() {
+    if !python3_available() {
+        return;
+    }
+    for agent in [false, true] {
+        for restore_while_paused in [false, true] {
+            let mut fixture = NamedTurnFixture::with_persistence(
+                &format!("private-deleted-held-{agent}-{restore_while_paused}"),
+                vec![],
+                true,
+            );
+            fixture.install_default_worker();
+            let (_, body) = fixture.post(
+                "/api/conversations",
+                json!({"marbleId":agent.then_some(&fixture.marble_id)}),
+            );
+            let chat = body["conversation"]["id"].as_str().unwrap();
+            assert_eq!(fixture.post("/api/control/pause", json!({})).0, 200);
+            let prompt = "Restore this private message";
+            let (status, held) = fixture.post(
+                "/api/turns",
+                json!({"conversationId":chat,"text":prompt,"client_message_id":"private-held"}),
+            );
+            assert_eq!(status, 202, "{held}");
+            assert_eq!(held["paused"], true, "{held}");
+            let store = fixture.store.as_ref().unwrap();
+            let queued = store.load().unwrap().control.queue;
+            assert_eq!(queued.len(), 1);
+            let delete = format!("/api/conversations/{chat}/delete");
+            let restore = format!("/api/conversations/{chat}/restore");
+            assert_eq!(fixture.post(&delete, json!({})).0, 200);
+            let mut deleted = store.load().unwrap();
+            assert!(deleted.control.queue.is_empty());
+            assert_eq!(
+                deleted.encode()["deletedChats"][0]["heldTurns"],
+                json!(queued)
+            );
+            if !restore_while_paused {
+                assert_eq!(
+                    fixture.post("/api/control/resume", json!({})).1["dispatched"],
+                    0
+                );
+            }
+            assert_eq!(fixture.post(&restore, json!({})).0, 200);
+            if restore_while_paused {
+                assert_eq!(store.load().unwrap().control.queue, queued);
+                assert_eq!(
+                    fixture.post("/api/control/resume", json!({})).1["dispatched"],
+                    1
+                );
+            }
+            assert_eq!(fixture.completed(prompt).conversation_id, chat);
+            assert!(fixture.state.lock().unwrap().control.queue.is_empty());
+
+            assert!(deleted.expire_deleted_chats(u64::MAX));
+            assert!(deleted.control.queue.is_empty());
+            let expired = server_with(
+                deleted,
+                ApprovalInbox::default(),
+                EventBus::default(),
+                AccessPolicy::new(None),
+            );
+            assert_eq!(expired.handle("POST", &restore, "{}").0, 404);
+        }
+    }
+}
+
+#[test]
 fn group_threads_keep_lead_and_stay_out_of_everyone() {
     let mut state = ProductState::default();
     state.prism.install_template();

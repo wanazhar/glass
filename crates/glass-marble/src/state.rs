@@ -417,9 +417,15 @@ impl ProductState {
         let held_turns = self
             .control
             .queue
-            .extract_if(.., |entry| {
-                entry.everyone_round
-                    && thread.is_some_and(|id| entry.thread_id.as_deref() == Some(id))
+            .extract_if(.., |entry| match thread {
+                Some(id) => entry.everyone_round && entry.thread_id.as_deref() == Some(id),
+                None => {
+                    !entry.everyone_round
+                        && entry
+                            .conversation_id
+                            .as_ref()
+                            .is_some_and(|id| records.contains(id))
+                }
             })
             .collect();
         self.deleted_chats.push(DeletedChat {

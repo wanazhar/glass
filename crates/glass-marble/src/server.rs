@@ -5,7 +5,7 @@
 //! cancellation, approvals, and one server-sent event stream.
 
 use crate::Approval;
-use crate::control::ControlProfile;
+use crate::control::{ControlProfile, QueuedTurn};
 use crate::conversation::{ApprovalInbox, SteerRequest};
 use crate::crates::CrateMap;
 use crate::events::{EventBus, TurnEvent};
@@ -2376,12 +2376,15 @@ impl MarbleServer {
         {
             return Response::error(503, "state_save_failed");
         }
+        let queued = Self::take_held_host_turns(&mut restored, Some(id));
         self.commit_removed_chat(&mut state, restored);
         drop(state);
         self.events
             .publish(id, "", "conversation", json!({"restored": id}));
+        self.dispatch_held_host_turns(queued);
         if let Some(pool) = &self.prism {
             pool.resume_held_everyone(id);
+            pool.resume_held_private(id);
         }
         Response::json(200, json!({"ok": true}))
     }
@@ -3685,19 +3688,46 @@ impl MarbleServer {
                 },
             );
             guard.bump();
-            if paused {
-                Vec::new()
-            } else {
-                let (held, queued) = guard
-                    .control
-                    .take_queue()
-                    .into_iter()
-                    .partition(|entry| entry.marble_id.is_some() || entry.everyone_round);
-                guard.control.queue = held;
-                queued
-            }
+            Self::take_held_host_turns(&mut guard, None)
         };
         self.save_state();
+        let mut dispatched = self.dispatch_held_host_turns(queued);
+        if !paused && let Some(pool) = &self.prism {
+            dispatched += pool.resume_held();
+        }
+        self.events.publish(
+            "",
+            "",
+            "control",
+            json!({"paused": paused, "dispatched": dispatched}),
+        );
+        Response::json(
+            200,
+            json!({
+                "ok": true,
+                "paused": paused,
+                "dispatched": dispatched,
+                "control": self.control_document(),
+            }),
+        )
+    }
+
+    fn take_held_host_turns(state: &mut ProductState, chat: Option<&str>) -> Vec<QueuedTurn> {
+        if state.control.paused {
+            return Vec::new();
+        }
+        state
+            .control
+            .queue
+            .extract_if(.., |entry| {
+                entry.marble_id.is_none()
+                    && !entry.everyone_round
+                    && chat.is_none_or(|id| entry.conversation_id.as_deref() == Some(id))
+            })
+            .collect()
+    }
+
+    fn dispatch_held_host_turns(&self, queued: Vec<QueuedTurn>) -> usize {
         // An idle worker takes the first thing offered, so hand over typed
         // messages first: a resume keeps the priority the lanes promise instead
         // of admitting whichever entry happened to be held first.
@@ -3779,24 +3809,7 @@ impl MarbleServer {
                 }
             }
         }
-        if !paused && let Some(pool) = &self.prism {
-            dispatched += pool.resume_held();
-        }
-        self.events.publish(
-            "",
-            "",
-            "control",
-            json!({"paused": paused, "dispatched": dispatched}),
-        );
-        Response::json(
-            200,
-            json!({
-                "ok": true,
-                "paused": paused,
-                "dispatched": dispatched,
-                "control": self.control_document(),
-            }),
-        )
+        dispatched
     }
 
     /// `POST /api/routines/quiet` — hold scheduled routines inside a window.

@@ -178,8 +178,9 @@ struct EveryoneHistoryView: View {
                 let names = ids.compactMap { id in members.first { $0.id == id }?.name }
                 if !names.isEmpty {
                     Text("To: \(names.formatted(.list(type: .and)))")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(MarbleTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
                         .padding(.top, 8)
@@ -190,16 +191,16 @@ struct EveryoneHistoryView: View {
                 names: members.map(\.name)
             )
             if !suggestions.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
+                ScrollView(.horizontal) {
                     HStack(spacing: 8) {
                         ForEach(suggestions, id: \.self) { name in
                             Button {
                                 draft = MarbleMentions.applying(name, to: draft)
                             } label: {
                                 Text("@\(name)")
-                                    .font(.callout)
+                                    .font(.footnote)
                                     .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
+                                    .frame(minWidth: 44, minHeight: 44)
                                     .background(
                                         MarbleTheme.card,
                                         in: Capsule()
@@ -209,7 +210,7 @@ struct EveryoneHistoryView: View {
                             .foregroundStyle(MarbleTheme.tint)
                         }
                     }
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 16)
                     .padding(.top, 8)
                 }
             }
@@ -490,26 +491,33 @@ private struct MarbleAgentCardFields: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .frame(minHeight: 44)
-            Picker("When to speak", selection: $card.whenToSpeak) {
-                ForEach(MarbleAgentCard.Speaking.allCases, id: \.self) { choice in
-                    Text(choice.label).tag(choice)
+            MarbleAdaptiveRow {
+                Text("When to speak")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Picker("When to speak", selection: $card.whenToSpeak) {
+                    ForEach(MarbleAgentCard.Speaking.allCases, id: \.self) { choice in
+                        Text(choice.label).tag(choice)
+                    }
                 }
+                .labelsHidden()
             }
             .frame(minHeight: 44)
-            LabeledContent("Tool call limit") {
+            MarbleAdaptiveRow {
+                Text("Tool call limit")
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 TextField("Default", value: $card.toolCallLimit, format: .number)
                     .accessibilityLabel("Tool call limit")
-                    .multilineTextAlignment(.trailing)
                     .keyboardType(.numberPad)
+                    .frame(minWidth: 88, maxWidth: 120, minHeight: 44)
             }
-            .frame(minHeight: 44)
-            LabeledContent("Time limit (seconds)") {
+            MarbleAdaptiveRow {
+                Text("Time limit (seconds)")
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 TextField("Default", value: $card.turnTimeoutSecs, format: .number)
                     .accessibilityLabel("Time limit in seconds")
-                    .multilineTextAlignment(.trailing)
                     .keyboardType(.numberPad)
+                    .frame(minWidth: 88, maxWidth: 120, minHeight: 44)
             }
-            .frame(minHeight: 44)
         }
         Section {
             Toggle("Native tools (all as a group)", isOn: $card.tools.native)

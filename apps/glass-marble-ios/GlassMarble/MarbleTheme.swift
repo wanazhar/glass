@@ -114,6 +114,7 @@ struct MarbleValueRow: View {
                 valueLabel
             }
         }
+        .font(.subheadline)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
     }

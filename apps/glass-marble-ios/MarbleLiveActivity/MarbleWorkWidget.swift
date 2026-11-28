@@ -114,7 +114,7 @@ struct MarbleWorkWidget: Widget {
                 .font(.subheadline.weight(.semibold))
                 .frame(minWidth: 44, minHeight: 44)
         }
-        .buttonStyle(.glass)
+        .buttonStyle(.borderedProminent)
         .tint(.red)
         .disabled(context.state.phase == .stopping && !context.isStale)
     }

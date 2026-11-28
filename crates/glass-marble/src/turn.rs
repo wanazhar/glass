@@ -330,6 +330,7 @@ fn run_attempt(
     let deadline = Instant::now() + options.timeout;
     let mut text = String::new();
     let mut reasoning = String::new();
+    let mut announced_replying = false;
     let mut reasoning_boundary = false;
     let mut splitter = ThinkSplitter::default();
     let mut working_line = None;
@@ -365,6 +366,15 @@ fn run_attempt(
                         // Providers may inline `<think>` blocks inside ordinary text
                         // deltas; split them out so reasoning never lands in replies.
                         let (visible, thought) = splitter.feed(delta);
+                        if !announced_replying && !visible.trim().is_empty() {
+                            events.publish(
+                                &conversation_id,
+                                &task_id,
+                                "replying",
+                                serde_json::json!({}),
+                            );
+                            announced_replying = true;
+                        }
                         publish_reasoning(&append_reasoning(
                             &mut reasoning,
                             &mut reasoning_boundary,
@@ -389,6 +399,9 @@ fn run_attempt(
                     }
                 }
                 "text_block_start" | "tool_start" => {
+                    if event.kind == "tool_start" {
+                        announced_replying = false;
+                    }
                     if event.kind == "text_block_start"
                         && (!text_block_boundaries
                             || event

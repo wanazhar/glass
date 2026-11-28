@@ -200,6 +200,19 @@ def run_turn(identifier, task, text, conversation, request):
         reply(identifier, {"settled": True})
         return
     if os.environ.get("MARBLE_FIXTURE_TURN_EVIDENCE") == "1":
+        if "Show the Live Activity" in text:
+            delay = float(os.environ.get("MARBLE_FIXTURE_LIVE_ACTIVITY_STEP_SECONDS", "8"))
+            event(turn, "reasoning", {"text": "Plan the check."})
+            time.sleep(delay)
+            event(turn, "tool_start", {"callId": "activity-check", "name": "bash"})
+            time.sleep(delay)
+            event(turn, "tool_end", {"callId": "activity-check", "text": "Checked.", "isError": False})
+            event(turn, "text", {"text": "The Live Activity "})
+            time.sleep(delay)
+            event(turn, "text", {"text": "can finish now."})
+            event(turn, "settled", {"reason": "completed"})
+            reply(identifier, {"settled": True})
+            return
         if "Show the avatar motion" in text:
             event(turn, "text", {"text": "<working>Checking the details…</working>\n"})
             time.sleep(4)

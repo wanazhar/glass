@@ -3,7 +3,14 @@ import SwiftUI
 import WidgetKit
 
 @main
-struct MarbleLiveActivity: Widget {
+struct MarbleLiveActivities: WidgetBundle {
+    var body: some Widget {
+        MarbleWorkWidget()
+        MarbleConnectionWidget()
+    }
+}
+
+struct MarbleConnectionWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: MarbleConnectionActivityAttributes.self) { context in
             atExpiry(context) { date in

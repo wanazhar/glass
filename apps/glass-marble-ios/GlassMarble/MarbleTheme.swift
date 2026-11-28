@@ -24,19 +24,7 @@ enum MarbleTheme {
         })
     }
 
-    static let hues: [(degrees: Int, name: String, fill: Color)] = [
-        (0, "Red", adaptive(0xDC6469, 0xF48388)),
-        (105, "Green", adaptive(0x88B35D, 0xA6CB76)),
-        (180, "Teal", adaptive(0x59ABAB, 0x7AC5C4)),
-        (210, "Blue", adaptive(0x639AD1, 0x82B4E4)),
-        (15, "Clay", clay), (27, "Peach", adaptive(0xF6C8AE, 0xE9AD92)),
-        (85, "Moss", moss), (280, "Plum", adaptive(0xA98ACC, 0xBA9CDD)),
-        (42, "Honey", adaptive(0xD7AB54, 0xECC275)), (230, "Iris", adaptive(0xC5C9E9, 0xADB4DD)),
-        (329, "Rose", adaptive(0xDA81AE, 0xEBA0C6)),
-        (152, "Mint", adaptive(0x6ABF9C, 0x8AD2AF)),
-        (196, "Sky", adaptive(0xA7D6E7, 0x94C9DF)),
-        (56, "Lemon", adaptive(0xEDE3A0, 0xD9CE87))
-    ]
+    static let hues = MarbleAvatarAppearance.hues
 
     static func paletteIndex(for hue: Int) -> Int {
         let normalized = (hue % 360 + 360) % 360

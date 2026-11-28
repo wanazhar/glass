@@ -3,6 +3,7 @@ import Foundation
 import Network
 import OSLog
 import SwiftUI
+import UIKit
 import UserNotifications
 
 /// Observable product store shared by every iOS surface.
@@ -141,6 +142,12 @@ final class MarbleStore: ObservableObject {
     private var activityStartedForTransition = false
     private var streamConnectedAt: Date?
     private let backgroundConnection = MarbleBackgroundConnection()
+    private let workActivity = MarbleWorkActivity()
+    private var workProgress = MarbleWorkProgress()
+    private var workBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var canStreamInBackground: Bool {
+        backgroundConnection.isKeepingAlive || workBackgroundTask != .invalid
+    }
     private static let streamLog = Logger(subsystem: "com.wanazhar.glassmarble", category: "stream")
     private static let backgroundConnectionKey = "marble.backgroundConnection"
     private static let connectionPausedKey = "marble.connectionPaused"
@@ -356,7 +363,7 @@ final class MarbleStore: ObservableObject {
     }
 
     func appWillResignActive() {
-        guard backgroundConnectionEnabled, let streamConnectedAt, let endpoint else { return }
+        guard !workActivity.hasActivity, backgroundConnectionEnabled, let streamConnectedAt, let endpoint else { return }
         activityStartedForTransition = backgroundConnection.startActivity(
             connectedAt: streamConnectedAt, host: endpoint.displayHost
         )
@@ -365,6 +372,7 @@ final class MarbleStore: ObservableObject {
     func appBecameActive() {
         let wasBackgrounded = appInBackground
         appInBackground = false
+        endWorkBackgroundTask()
         if activityStartedForTransition, !wasBackgrounded {
             backgroundConnection.endActivity()
         }
@@ -377,7 +385,13 @@ final class MarbleStore: ObservableObject {
 
     func appDidEnterBackground() {
         appInBackground = true
-        if !backgroundConnection.isKeepingAlive {
+        if workActivity.hasActivity, !backgroundConnection.isKeepingAlive {
+            // Give the active turn a bounded window to deliver its settlement to ActivityKit.
+            workBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Marble turn activity") { [weak self] in
+                Task { @MainActor in self?.endWorkBackgroundTask() }
+            }
+        }
+        if !canStreamInBackground {
             status.suspend()
             stopStreaming()
         }
@@ -387,6 +401,7 @@ final class MarbleStore: ObservableObject {
 
     func sceneDisconnected() {
         appInBackground = true
+        endWorkBackgroundTask()
         status.suspend()
         stopStreaming()
         saveCursor()
@@ -406,6 +421,75 @@ final class MarbleStore: ObservableObject {
         store.status = MarbleConnectionStatus()
     }
 
+    private func endWorkBackgroundTask() {
+        guard workBackgroundTask != .invalid else { return }
+        let task = workBackgroundTask
+        workBackgroundTask = .invalid
+        if appInBackground, !canStreamInBackground {
+            status.suspend()
+            stopStreaming()
+        }
+        UIApplication.shared.endBackgroundTask(task)
+    }
+
+    static func stopTurnFromLiveActivity(taskID: String, hostID: String) async throws {
+        let store = liveActivityStore
+        let endpoint = store?.endpoint ?? MarblePreferences.baseURL.map {
+            MarbleEndpoint(baseURL: $0, token: MarblePreferences.token)
+        }
+        guard let endpoint, MarbleWorkActivity.hostID(endpoint.baseURL) == hostID,
+              let activity = Activity<MarbleWorkActivityAttributes>.activities.first(where: {
+                  $0.attributes.hostID == hostID && $0.content.state.taskID == taskID
+              }) else { return }
+        let client = store?.client ?? MarbleClient(endpoint: endpoint)
+        do {
+            try await client.cancel(taskId: taskID)
+            if let store, store.streamConnectedAt != nil { return }
+        } catch MarbleClientError.conflict("turn_settled") {
+            // The turn finished between displaying the button and receiving the tap.
+        } catch MarbleClientError.notFound {
+            // The host no longer has this turn.
+        }
+        if activity.content.state.taskID == taskID {
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
+    }
+
+    private func syncWorkActivity() {
+        guard let endpoint, !needsToken, !connectionPaused else { return }
+        let current = workActivity.taskID
+        let running = state.tasks.filter { $0.isRunning && !workProgress.isFinished($0.id) }
+        let task = running.first { $0.id == current } ?? running.max { $0.at < $1.at }
+        let content = task.map { task -> MarbleWorkActivity.State in
+            let agent = prism.marbles.first { $0.id == task.marbleId || activeTaskIds(for: $0).contains(task.id) }
+                ?? prism.marbles.first(where: \.isDefault)
+            let style = agent.map(rosterStyle(for:))
+            let now = Date.now
+            return .init(
+                taskID: task.id, agentName: agent?.name ?? "Marble",
+                glyph: style?.glyph ?? "circle", hue: style?.hue ?? MarbleSpeakerStyle.defaultHue,
+                isEveryone: task.conversationId == everyoneConversationId
+                    || task.conversationId.hasPrefix("everyone-session-")
+                    || everyoneTaskIds.contains(task.id),
+                phase: workProgress.phase(for: task.id),
+                startedAt: task.at == 0 ? now : min(now, Date(timeIntervalSince1970: Double(task.at) / 1_000))
+            )
+        }
+        workActivity.present(content, hostID: MarbleWorkActivity.hostID(endpoint.baseURL),
+                             canStart: !appInBackground, streamIsLive: streamConnectedAt != nil)
+        if workActivity.hasActivity {
+            backgroundConnection.endActivity()
+        } else if content == nil, workBackgroundTask != .invalid {
+            let backgroundTask = workBackgroundTask
+            Task {
+                await workActivity.waitForChanges()
+                if workBackgroundTask == backgroundTask, !workActivity.hasActivity {
+                    endWorkBackgroundTask()
+                }
+            }
+        }
+    }
+
     private func setConnectionPaused(_ paused: Bool) {
         connectionPaused = paused
         UserDefaults.standard.set(paused, forKey: Self.connectionPausedKey)
@@ -418,7 +502,7 @@ final class MarbleStore: ObservableObject {
         locationPermissionDenied = backgroundConnectionEnabled && backgroundConnection.permissionDenied
         if !backgroundConnection.isKeepingAlive {
             backgroundConnection.endActivity()
-            if appInBackground, streamTask != nil {
+            if appInBackground, !canStreamInBackground, streamTask != nil {
                 status.suspend()
                 stopStreaming()
             }
@@ -599,6 +683,7 @@ final class MarbleStore: ObservableObject {
             let finished = Set(snapshot.tasks.filter { !$0.isRunning && $0.status != "queued" }.map(\.id))
             if !everyoneTaskIds.isDisjoint(with: finished) { everyoneTaskIds.subtract(finished) }
             needsToken = false
+            syncWorkActivity()
             errorMessage = nil
             status.refreshSucceeded()
             if let health = try? await healthFetch {
@@ -677,6 +762,8 @@ final class MarbleStore: ObservableObject {
     }
 
     private func resetChatActivity() {
+        workActivity.end()
+        workProgress = MarbleWorkProgress()
         workingLines.removeAll()
         everyoneTaskIds = []
         toolsByTurn = [:]
@@ -2082,6 +2169,7 @@ final class MarbleStore: ObservableObject {
                             }
                         case .activity:
                             self.status.streamEvent()
+                            if self.workActivity.hasActivity { self.syncWorkActivity() }
                         case .baseline(let cursor):
                             // A restart can land between /healthz and /api/events.
                             if cursor < self.sequence { break stream }
@@ -2112,7 +2200,7 @@ final class MarbleStore: ObservableObject {
                 self.streamDisconnected(keepingAlive: keepingAlive)
                 self.status.streamEnded(endedReason)
                 self.loaded = true
-                if self.appInBackground && !keepingAlive {
+                if self.appInBackground && !self.canStreamInBackground {
                     self.streamTask = nil
                     return
                 }
@@ -2312,6 +2400,7 @@ final class MarbleStore: ObservableObject {
             scheduleEventRefresh()
             return
         }
+        if workProgress.apply(event) { syncWorkActivity() }
         if ["settled", "reply", "error"].contains(event.kind) { finishTools(for: event.taskId) }
         if ["tool_start", "tool_end"].contains(event.kind) { recordTool(event) }
         if event.kind == "text_reset" || event.kind == "error" {
@@ -2446,6 +2535,7 @@ final class MarbleStore: ObservableObject {
 
     private func markUnauthorized() {
         needsToken = true
+        workActivity.end()
         stopStreaming()
     }
 

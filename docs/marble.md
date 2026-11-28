@@ -840,6 +840,15 @@ same target without a per-machine scheme. Pass
 release. The app compares that bundled commit with `/healthz` and shows a
 notice when the two builds differ.
 
+When an agent is working, the iPhone shows its name, shape, phase, and elapsed
+time on the Lock Screen and in the Dynamic Island. Stop on the Lock Screen
+or expanded island cancels the displayed turn on the host. The app starts the
+activity in the foreground and sends local ActivityKit updates from the event
+stream. The optional Background connection setting keeps the stream open
+through the app's existing background location session. Otherwise iOS grants
+a short window for an already-running turn to settle. If the app stops
+receiving events, the activity marks the status unavailable after 45 seconds.
+
 ### Shell commands
 
 Shell tools run on the connected host. On iOS, the app sends messages and

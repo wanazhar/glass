@@ -9,6 +9,9 @@
 /* Begin PBXBuildFile section */
 		A1B2C3D40000000000000030 /* MarbleLiveActivity.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000031 /* MarbleLiveActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A1B2C3D40000000000000032 /* MarbleConnectionActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000033 /* MarbleConnectionActivityAttributes.swift */; };
+		A1B2C3D40000000000000040 /* MarbleWorkActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000041 /* MarbleWorkActivityAttributes.swift */; };
+		A1B2C3D40000000000000042 /* MarbleAvatarAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000043 /* MarbleAvatarAppearance.swift */; };
+		A1B2C3D40000000000000044 /* MarbleWorkPhase.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000045 /* MarbleWorkPhase.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -29,6 +32,9 @@
 		A1B2C3D40000000000000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config/Info.plist; sourceTree = "<group>"; };
 		A1B2C3D40000000000000031 /* MarbleLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MarbleLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1B2C3D40000000000000033 /* MarbleConnectionActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassMarble/MarbleConnectionActivityAttributes.swift; sourceTree = SOURCE_ROOT; };
+		A1B2C3D40000000000000041 /* MarbleWorkActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassMarble/MarbleWorkActivityAttributes.swift; sourceTree = SOURCE_ROOT; };
+		A1B2C3D40000000000000043 /* MarbleAvatarAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassMarble/MarbleAvatarAppearance.swift; sourceTree = SOURCE_ROOT; };
+		A1B2C3D40000000000000045 /* MarbleWorkPhase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassMarble/Core/MarbleWorkPhase.swift; sourceTree = SOURCE_ROOT; };
 		A1B2C3D40000000000000035 /* LiveActivity-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config/LiveActivity-Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -247,7 +253,12 @@
 		A1B2C3D4000000000000003B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A1B2C3D40000000000000032 /* MarbleConnectionActivityAttributes.swift in Sources */, );
+			files = (
+				A1B2C3D40000000000000032 /* MarbleConnectionActivityAttributes.swift in Sources */,
+				A1B2C3D40000000000000040 /* MarbleWorkActivityAttributes.swift in Sources */,
+				A1B2C3D40000000000000042 /* MarbleAvatarAppearance.swift in Sources */,
+				A1B2C3D40000000000000044 /* MarbleWorkPhase.swift in Sources */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */

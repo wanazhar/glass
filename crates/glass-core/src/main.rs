@@ -1547,7 +1547,7 @@ fn headless(
         let scratch = scratch.clone();
         let parent_prompt = headless_parent_prompt.clone();
         Box::new(
-            move |tasks: &[ext::protocol::SubagentTask]| -> Vec<String> {
+            move |tasks: &[ext::protocol::SubagentTask], _| -> Vec<String> {
                 let make = |model: Option<&str>| -> Result<Box<dyn provider::Provider>, String> {
                     match model {
                         Some(m) => (factory_for(m))(),
@@ -2162,7 +2162,7 @@ fn repl(
         let scratch = subagent_scratch.clone();
         let parent_prompt = subagent_parent_prompt.clone();
         Box::new(
-            move |tasks: &[ext::protocol::SubagentTask]| -> Vec<String> {
+            move |tasks: &[ext::protocol::SubagentTask], _| -> Vec<String> {
                 let make = |model: Option<&str>| -> Result<Box<dyn provider::Provider>, String> {
                     match model {
                         Some(m) => (factory_for(m))(),

@@ -32,7 +32,8 @@ struct ConnectionLiveActivity: Widget {
             } compactLeading: {
                 mark(context, size: 22, onIsland: true)
             } compactTrailing: {
-                Text(context.isStale ? "Closed" : "Live")
+                let count = context.isStale ? nil : context.state.workingAgents
+                Text(count.map { "\($0) \($0 == 1 ? "agent" : "agents")" } ?? (context.isStale ? "Closed" : "Live"))
                     .font(.caption.weight(.semibold))
             } minimal: {
                 mark(context, size: 22, onIsland: true)
@@ -51,17 +52,36 @@ struct ConnectionLiveActivity: Widget {
             VStack(alignment: .leading, spacing: 2) {
                 Text(context.isStale ? "Closed" : "Connected").font(.headline)
                 Text(context.attributes.host).font(.subheadline).foregroundStyle(.secondary)
+                if !context.isStale, let count = context.state.workingAgents {
+                    HStack(spacing: 4) {
+                        Text("\(count) \(count == 1 ? "agent" : "agents") working")
+                            .fixedSize()
+                        if let oldest = context.state.longestAgentStart {
+                            Text("· Longest").fixedSize()
+                            Text(timerInterval: oldest ... .distantFuture, countsDown: false)
+                                .monospacedDigit()
+                                .frame(width: 54, alignment: .leading)
+                        }
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                }
             }
             .lineLimit(1)
             Spacer(minLength: 4)
             if !context.isStale {
                 Button(intent: DisconnectIntent()) {
-                    Label("Disconnect", systemImage: "xmark")
-                        .font(.footnote.weight(.semibold))
+                    HStack(spacing: 5) {
+                        Image(systemName: "xmark").accessibilityHidden(true)
+                        Text("Disconnect")
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .fixedSize(horizontal: true, vertical: false)
                 }
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
                 .tint(.red)
+                .layoutPriority(1)
             }
         }
     }

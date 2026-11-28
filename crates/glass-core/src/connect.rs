@@ -441,6 +441,7 @@ const CONNECT_CAPABILITIES: &[&str] = &[
     "owner-capability",
     "events-resume",
     "agent-events",
+    "agent-control",
     "secret-submission",
     "uploads",
     "artifacts",
@@ -1327,6 +1328,59 @@ fn readable_thread_path(app: &App, id: &str, source_ref: &str) -> Result<PathBuf
     shared_thread_path(app, id, source_ref)
 }
 
+fn agent_owner_path(app: &App, id: &str, source_ref: &str) -> Result<PathBuf, String> {
+    let path = shared_thread_path(app, id, source_ref)?;
+    if path.parent() != crate::config::data_dir().canonicalize().ok().as_deref()
+        && crate::config::data_dir()
+            .join(format!("{id}.jsonl"))
+            .is_file()
+    {
+        return Err("Teammate state is ambiguous for this shared session reference".into());
+    }
+    Ok(path)
+}
+
+fn agent_control(app: &App, path: &str, body: &[u8]) -> Result<Value, String> {
+    let request: Value = serde_json::from_slice(body).map_err(|_| "Invalid agent request")?;
+    let id = request["id"].as_str().ok_or("Missing thread")?;
+    let source_ref = request["sourceRef"].as_str().unwrap_or("");
+    let owner_path = agent_owner_path(app, id, source_ref)?;
+    let agent = match request.get("agent") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or("Invalid agent")?,
+        ),
+    };
+    let bridge = bridge_for_path(app, id, Some(&owner_path))?;
+    if bridge
+        .feed
+        .lock()
+        .map_err(|_| "Session state unavailable")?
+        .snapshot["can_write"]
+        != true
+    {
+        return Err("Take control before changing agent work".into());
+    }
+    match (path, agent) {
+        ("/api/agent/stop", Some(agent)) => crate::team::client(
+            id,
+            &json!({"action":"stop-child","from":"human","id":agent}),
+        ),
+        ("/api/agent/stop", None) => {
+            bridge.send(&json!({"t":"cancel"}))?;
+            Ok(json!({"sent":true}))
+        }
+        ("/api/agent/send", agent) => crate::team::client(
+            id,
+            &json!({"action":"send","from":"human","id":agent.ok_or("Missing agent")?,"text":request["text"].as_str().ok_or("Missing message")?}),
+        ),
+        _ => Err("Unsupported agent action".into()),
+    }
+}
+
 fn shared_metadata(app: &App, path: &Path) -> Result<crate::polish::Metadata, String> {
     let sidecar = path.with_extension("meta.json");
     if sidecar.exists() {
@@ -1785,10 +1839,17 @@ fn secret_submission_allowed(
 /// The mobile transcript walks complete lines from the cursor backwards. A
 /// short page should not deserialize or serialize an entire byte window.
 pub(crate) fn chat_history(path: &Path, before: usize) -> Result<Value, String> {
+    chat_history_page(path, before, 40)
+}
+
+pub(crate) fn chat_history_page(
+    path: &Path,
+    before: usize,
+    page_records: usize,
+) -> Result<Value, String> {
     const CHUNK: usize = 16 * 1024;
     const INLINE_LINE: usize = 512 * 1024;
     const PAGE_BYTES: usize = 96 * 1024;
-    const PAGE_RECORDS: usize = 40;
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let length =
         usize::try_from(file.metadata().map_err(|e| e.to_string())?.len()).unwrap_or(usize::MAX);
@@ -1809,7 +1870,7 @@ pub(crate) fn chat_history(path: &Path, before: usize) -> Result<Value, String> 
             if crate::reasoning::private_at(path, start as u64)? {
                 return Ok(true);
             }
-            if records.len() + omitted.len() >= PAGE_RECORDS {
+            if records.len() + omitted.len() >= page_records {
                 return Ok(false);
             }
             omitted
@@ -1830,7 +1891,7 @@ pub(crate) fn chat_history(path: &Path, before: usize) -> Result<Value, String> 
             } else {
                 serde_json::to_vec(&item).map_err(|e| e.to_string())?.len()
             };
-            if records.len() + omitted.len() >= PAGE_RECORDS
+            if records.len() + omitted.len() >= page_records
                 || (!records.is_empty() && bytes + size > PAGE_BYTES)
             {
                 return Ok(false);
@@ -2977,7 +3038,10 @@ fn handle_with_transport(
         .map_err(|e| e.to_string());
     }
     if (path.starts_with("/api/desktop/")
-        || matches!(path, "/api/settings" | "/api/thread-preferences"))
+        || matches!(
+            path,
+            "/api/settings" | "/api/thread-preferences" | "/api/agent/stop" | "/api/agent/send"
+        ))
         && !same_origin_desktop_mutation(&app.settings, &r)
     {
         if path == "/api/settings" {
@@ -2989,6 +3053,7 @@ fn handle_with_transport(
             json!({"error":match path {
                 "/api/settings" => "Settings changes require the same authenticated origin",
                 "/api/thread-preferences" => "Conversation changes require the same authenticated origin",
+                "/api/agent/stop" | "/api/agent/send" => "Agent actions require the same authenticated origin",
                 _ => "Desktop actions require the same authenticated origin",
             }}),
         )
@@ -3481,39 +3546,26 @@ fn handle_with_transport(
         }
         ("GET", "/api/agents") => {
             let id = query.get("id").ok_or("Missing thread")?;
-            let source_path = shared_thread_path(
+            agent_owner_path(
                 &app,
                 id,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),
             )?;
-            if source_path.parent() != crate::config::data_dir().canonicalize().ok().as_deref()
-                && crate::config::data_dir()
-                    .join(format!("{id}.jsonl"))
-                    .is_file()
-            {
-                return Err("Teammate state is ambiguous for this shared session reference".into());
-            }
             crate::team::client(id, &json!({"action":"list"}))
         }
         ("GET", "/api/agent") => {
             let id = query.get("id").ok_or("Missing thread")?;
-            let source_path = shared_thread_path(
+            agent_owner_path(
                 &app,
                 id,
                 query.get("sourceRef").map(String::as_str).unwrap_or(""),
             )?;
-            if source_path.parent() != crate::config::data_dir().canonicalize().ok().as_deref()
-                && crate::config::data_dir()
-                    .join(format!("{id}.jsonl"))
-                    .is_file()
-            {
-                return Err("Teammate state is ambiguous for this shared session reference".into());
-            }
             crate::team::client(
                 id,
-                &json!({"action":"transcript","id":query.get("agent").ok_or("Missing agent")?,"before":query.get("before").and_then(|v|v.parse::<u64>().ok())}),
+                &json!({"action":"transcript","id":query.get("agent").ok_or("Missing agent")?,"before":query.get("before").and_then(|v|v.parse::<u64>().ok()),"view":query.get("view")}),
             )
         }
+        ("POST", "/api/agent/stop" | "/api/agent/send") => agent_control(&app, path, &r.body),
         ("GET", "/api/activity-location") => activity_location(
             &readable_thread_path(
                 &app,
@@ -4433,6 +4485,145 @@ mod tests {
             clients: AtomicUsize::new(0),
         });
         (app, reader, session_path)
+    }
+
+    fn post_agent(app: Arc<App>, path: &str, body: Value) -> String {
+        std::fs::create_dir_all(crate::config::data_dir()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handler = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_with_transport(stream, app, false, false, false).unwrap();
+        });
+        let mut stream = TcpStream::connect(address).unwrap();
+        let body = body.to_string();
+        write!(stream, "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nOrigin: http://127.0.0.1:8765\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", "a".repeat(64), body.len()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        handler.join().unwrap();
+        response
+    }
+
+    #[test]
+    fn agent_stop_routes_root_cancel_and_does_not_fall_back_for_invalid_child() {
+        let mut local = settings();
+        local.local = true;
+        let (app, reader, session) = secret_test_app(local, true);
+        let mut body = json!({"id":"test-thread","sourceRef":session});
+        body["agent"] = json!(42);
+        assert!(post_agent(app.clone(), "/api/agent/stop", body.clone()).contains("Invalid agent"));
+        body.as_object_mut().unwrap().remove("agent");
+        assert!(post_agent(app.clone(), "/api/agent/stop", body).starts_with("HTTP/1.1 200"));
+        let mut line = String::new();
+        reader
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        BufReader::new(reader).read_line(&mut line).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&line).unwrap(),
+            json!({"t":"cancel"})
+        );
+        std::fs::remove_dir_all(&app.settings.workspace).unwrap();
+    }
+
+    #[test]
+    fn agent_send_requires_a_child_and_explicit_message() {
+        let mut local = settings();
+        local.local = true;
+        let (app, _, session) = secret_test_app(local, true);
+        let mut body = json!({"id":"test-thread","sourceRef":session,"text":"Continue"});
+        assert!(post_agent(app.clone(), "/api/agent/send", body.clone()).contains("Missing agent"));
+        body["agent"] = json!("worker");
+        body.as_object_mut().unwrap().remove("text");
+        assert!(post_agent(app.clone(), "/api/agent/send", body).contains("Missing message"));
+        std::fs::remove_dir_all(&app.settings.workspace).unwrap();
+    }
+
+    #[test]
+    fn agent_child_routes_stop_one_worker_and_deliver_human_followup() {
+        let mut local = settings();
+        local.local = true;
+        let (app, _reader, path) = secret_test_app(local, false);
+        let owner = app
+            .settings
+            .workspace
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let session = path.with_file_name(format!("{owner}.jsonl"));
+        std::fs::rename(&path, &session).unwrap();
+        let bridge = {
+            let mut bridges = app.bridges.lock().unwrap();
+            let bridge = bridges.remove(path.to_str().unwrap()).unwrap();
+            bridges.insert(session.to_str().unwrap().into(), bridge.clone());
+            bridge
+        };
+        let factory: crate::warmer::ProviderFactory =
+            Arc::new(|| Err("fixture provider unavailable".into()));
+        let models: crate::warmer::ProviderForModel = Arc::new(move |_| factory.clone());
+        let hub = crate::team::start(
+            owner,
+            &app.settings.workspace,
+            models("test"),
+            models,
+            "test",
+        )
+        .unwrap();
+        let child = |name| {
+            let result = crate::team::client(
+                owner,
+                &json!({"action":"create","name":name,"text":"Please review."}),
+            )
+            .unwrap();
+            result["id"].as_str().unwrap().to_string()
+        };
+        let first = child("first");
+        let second = child("second");
+        let wait_until_blocked = |agent: &str| {
+            for _ in 0..100 {
+                if crate::team::client(owner, &json!({"action":"inspect","id":agent})).unwrap()["agent"]
+                    ["status"]
+                    == "blocked"
+                {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("fixture agent did not finish");
+        };
+        wait_until_blocked(&first);
+        wait_until_blocked(&second);
+        let body = json!({"id":owner,"sourceRef":session,"agent":first});
+        assert!(post_agent(app.clone(), "/api/agent/stop", body.clone()).contains("Take control"));
+        let mut followup = body.clone();
+        followup["text"] = json!("Try again with the same scope.");
+        assert!(
+            post_agent(app.clone(), "/api/agent/send", followup.clone()).contains("Take control")
+        );
+        assert_eq!(
+            crate::team::client(owner, &json!({"action":"inspect","id":first})).unwrap()["agent"]["status"],
+            "blocked"
+        );
+        bridge.feed.lock().unwrap().snapshot["can_write"] = json!(true);
+        let response = post_agent(app.clone(), "/api/agent/stop", body.clone());
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains(r#""status":"parked""#), "{response}");
+        assert_eq!(
+            crate::team::client(owner, &json!({"action":"inspect","id":second})).unwrap()["agent"]
+                ["status"],
+            "blocked"
+        );
+        let response = post_agent(app.clone(), "/api/agent/send", followup);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(
+            response.contains(r#"["human","Try again with the same scope."]"#),
+            "{response}"
+        );
+        wait_until_blocked(&first);
+        drop(hub);
+        std::fs::remove_dir_all(crate::config::data_dir().join("agents").join(owner)).unwrap();
+        std::fs::remove_dir_all(&app.settings.workspace).unwrap();
     }
 
     fn post_secret(

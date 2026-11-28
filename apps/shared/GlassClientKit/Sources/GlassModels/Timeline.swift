@@ -84,6 +84,27 @@ public struct Timeline: Sendable, Hashable {
         olderBefore = page.before
     }
 
+    /// Merges a newer transcript window without changing the cursor for older history.
+    public mutating func appendHistory(_ page: HistoryPage) {
+        let newer = Self.entries(from: page, skipping: &seenRecords, outputs: &savedOutputs)
+        rememberToolDurations(page)
+        largeRecordOmitted = largeRecordOmitted || (page.omittedLargeRecord ?? false)
+        for entry in newer {
+            if case .tool(let id, _, _, let output, let failed) = entry,
+               let index = entries.lastIndex(where: { $0.id == id }),
+               case .tool(_, let name, let summary, _, _) = entries[index] {
+                if failed != nil {
+                    entries[index] = .tool(id: id, name: name, summary: summary, output: output, failed: failed)
+                }
+            } else if case .reasoning(_, let suffix) = entry,
+                      case .reasoning(let id, let prefix) = entries.last {
+                entries[entries.count - 1] = .reasoning(id: id, text: prefix + suffix)
+            } else {
+                entries.append(entry)
+            }
+        }
+    }
+
     /// Applies a reset snapshot: fresh history then the in-flight turn's live events.
     public mutating func reset(history: HistoryPage, frame: EventFrame) {
         replaceHistory(history)

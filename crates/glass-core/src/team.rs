@@ -169,6 +169,8 @@ pub struct Info {
     #[serde(default)]
     pub pending_activation: bool,
     pub name: String,
+    #[serde(default)]
+    pub task: String,
     pub model: String,
     pub session: String,
     pub status: String,
@@ -203,6 +205,8 @@ pub struct Info {
     pub usage_known: bool,
     pub turns: u64,
     pub updated: u64,
+    #[serde(default)]
+    pub started_at: u64,
     pub result: String,
     #[serde(default)]
     pub cost_usd: Option<f64>,
@@ -776,6 +780,7 @@ impl Hub {
                     auto_wakes: 0,
                     pending_activation: false,
                     name: name.into(),
+                    task: task.clone(),
                     model: req["model"]
                         .as_str()
                         .unwrap_or_else(|| {
@@ -806,6 +811,7 @@ impl Hub {
                     estimated_tokens: 0,
                     turns: 0,
                     updated: crate::loops::now(),
+                    started_at: crate::loops::now(),
                     result: String::new(),
                     cost_usd: None,
                     cost_complete: true,
@@ -862,7 +868,7 @@ impl Hub {
             .values()
             .filter(|w| w.info.status == "working")
             .count();
-        if action == "interrupt" {
+        if matches!(action, "interrupt" | "stop-child") {
             let descendants: Vec<_> = state
                 .agents
                 .values()
@@ -883,10 +889,14 @@ impl Hub {
             for id in descendants {
                 let w = state.agents.get_mut(&id).unwrap();
                 w.interrupt = true;
-                w.queue.clear();
                 w.info.pending_activation = false;
-                w.info.pending_messages.clear();
-                if w.info.status != "working" {
+                if action == "interrupt" {
+                    w.queue.clear();
+                    w.info.pending_messages.clear();
+                }
+                if w.info.status != "working"
+                    && (action == "interrupt" || w.info.status != "archived")
+                {
                     w.info.status = "parked".into();
                 }
                 self.persist(&w.info)?;
@@ -907,15 +917,15 @@ impl Hub {
                 );
             }
             "transcript" => {
-                return window(
+                return transcript(
                     &self
                         .dir
                         .join("sessions")
                         .join(format!("{}.jsonl", worker.info.session)),
-                    req["before"].as_u64(),
+                    req,
                 );
             }
-            "interrupt" => {
+            "interrupt" | "stop-child" => {
                 worker.interrupt = true;
                 worker.queue.clear();
                 worker.info.pending_activation = false;
@@ -992,6 +1002,7 @@ impl Hub {
                 info.pending_messages.push((from.into(), text.clone()));
                 if launch {
                     info.status = "working".into();
+                    info.started_at = crate::loops::now();
                 }
                 self.persist(&info)?;
                 worker.info = info.clone();
@@ -1617,6 +1628,21 @@ fn message(req: &Value) -> Result<String, String> {
     }
     Ok(t.into())
 }
+fn transcript(path: &Path, req: &Value) -> Result<Value, String> {
+    let before = req["before"].as_u64();
+    if req["view"] == "chat" {
+        crate::connect::chat_history_page(
+            path,
+            before
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(usize::MAX),
+            20,
+        )
+    } else {
+        window(path, before)
+    }
+}
+
 fn window(path: &Path, before: Option<u64>) -> Result<Value, String> {
     let mut file = match File::open(path) {
         Ok(f) => f,
@@ -2047,9 +2073,9 @@ fn offline(owner: &str, req: &Value) -> Result<Value, String> {
         .or_else(|| infos.iter().find(|i| i.name == id))
         .ok_or("unknown agent")?;
     if req["action"] == "transcript" {
-        window(
+        transcript(
             &dir.join("sessions").join(format!("{}.jsonl", info.session)),
-            req["before"].as_u64(),
+            req,
         )
     } else {
         Ok(
@@ -3019,6 +3045,46 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     static IDS: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn stopping_a_child_pauses_its_descendants_without_discarding_their_mailboxes() {
+        let (g, dir, _) = fixture();
+        let create = |name, from| {
+            let receipt = g
+                .hub
+                .request(&json!({"action":"create","from":from,"name":name,"text":"inspect"}))
+                .unwrap();
+            settled(&g.hub);
+            receipt["id"].as_str().unwrap().to_owned()
+        };
+        let selected = create("selected", "main");
+        let descendant = create("descendant", selected.as_str());
+        let sibling = create("sibling", "main");
+        let queued = (selected.clone(), "Check the final result".into());
+        {
+            let mut state = g.hub.state.lock().unwrap();
+            let w = state.agents.get_mut(&descendant).unwrap();
+            w.queue.push_back(queued.clone());
+            w.info.pending_messages.push(queued.clone());
+            w.info.pending_activation = true;
+        }
+        g.hub
+            .request(&json!({"action":"stop-child","from":"human","id":selected}))
+            .unwrap();
+        {
+            let state = g.hub.state.lock().unwrap();
+            assert!(state.agents[&selected].interrupt);
+            let w = &state.agents[&descendant];
+            assert!(w.interrupt);
+            assert_eq!(w.info.status, "parked");
+            assert!(!w.info.pending_activation);
+            assert_eq!(w.info.pending_messages, [queued.clone()]);
+            assert_eq!(w.queue.front(), Some(&queued));
+            assert!(!state.agents[&sibling].interrupt);
+        }
+        drop(g);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

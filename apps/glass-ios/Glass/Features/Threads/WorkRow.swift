@@ -4,23 +4,27 @@ import SwiftUI
 enum ChatRow: Identifiable {
     case message(TimelineEntry)
     case work(WorkGroup)
+    case agents(TimelineEntry)
 
     var id: String {
         switch self {
         case .message(let entry): entry.id
         case .work(let group): group.id
+        case .agents(let entry): "agents-" + entry.id
         }
     }
 
-    static func make(from timeline: Timeline) -> [Self] {
+    static func make(from timeline: Timeline, agentCallIDs: Set<String> = []) -> [Self] {
         var result: [Self] = []
         var messages: [TimelineEntry] = []
         var steps: [TimelineEntry] = []
         var turn = "continued"
+        var workPart = 0
         var seconds: Int?
         func flush(activity: String? = nil) {
             if !steps.isEmpty || activity != nil {
-                result.append(.work(WorkGroup(id: "work-" + turn, steps: steps, activity: activity,
+                let id = workPart == 0 ? "work-" + turn : "work-" + turn + "-\(workPart)"
+                result.append(.work(WorkGroup(id: id, steps: steps, activity: activity,
                                               seconds: seconds)))
             }
             result.append(contentsOf: messages.map(Self.message))
@@ -34,17 +38,24 @@ enum ChatRow: Identifiable {
                 flush()
                 result.append(.message(entry))
                 turn = entry.id
+                workPart = 0
             case .assistant, .image:
                 messages.append(entry)
             case .turnTiming(_, let elapsed):
                 seconds = elapsed
             case .tool(_, let name, _, _, false) where name == "display_image":
                 messages.append(entry)
+            case .tool(let id, let name, _, _, _)
+                where agentCallIDs.contains(id) && (name == "subagent" || name == "run_subagents" || name == "teammate"):
+                flush()
+                result.append(.agents(entry))
+                workPart += 1
             default:
                 steps.append(entry)
             }
         }
-        flush(activity: timeline.isActive ? timeline.activity ?? "Working…" : nil)
+        let delegated = result.last.map { if case .agents = $0 { true } else { false } } ?? false
+        flush(activity: timeline.isActive && !(delegated && steps.isEmpty) ? timeline.activity ?? "Working…" : nil)
         return result
     }
 }

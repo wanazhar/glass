@@ -23,21 +23,26 @@ private struct HiddenUnderSidebar: ViewModifier {
 
 struct ChatToolbar<Title: View>: View {
     let menu: () -> Void
-    let newChat: () -> Void
+    let newChat: (() -> Void)?
     @ViewBuilder let title: () -> Title
 
     var body: some View {
         LensTitleBar {
             LensBarGroup {
-                control("line.3.horizontal", label: "Threads", action: menu)
+                control(newChat == nil ? "chevron.left" : "line.3.horizontal",
+                        label: newChat == nil ? "Back to parent" : "Threads", action: menu)
                     .accessibilityIdentifier("conversation.back")
             }
         } title: {
             title()
         } trailing: {
-            LensBarGroup {
-                control("square.and.pencil", label: "New chat", action: newChat)
+            if let newChat {
+                LensBarGroup {
+                    control("square.and.pencil", label: "New chat", action: newChat)
                     .accessibilityIdentifier("conversation.new")
+                }
+            } else {
+                Color.clear.frame(width: Design.control, height: Design.control).accessibilityHidden(true)
             }
         }
         .frame(maxWidth: Design.readingWidth)
@@ -63,12 +68,17 @@ private struct HeaderFade: View {
     var body: some View {
         VStack(spacing: 0) {
             Design.background
-            // Blur first, then fade, so text passing under the title is softened rather than half-visible.
             ZStack {
-                Rectangle().fill(.ultraThinMaterial)
-                    .mask(LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom))
-                LinearGradient(stops: [.init(color: Design.background, location: 0), .init(color: Design.background, location: 0.25),
-                                       .init(color: Design.background.opacity(0), location: 0.7)],
+                Rectangle().fill(.regularMaterial)
+                    .mask(LinearGradient(stops: [.init(color: .clear, location: 0),
+                                                 .init(color: .black.opacity(0.55), location: 0.30),
+                                                 .init(color: .black.opacity(0.20), location: 0.65),
+                                                 .init(color: .clear, location: 1)],
+                                         startPoint: .top, endPoint: .bottom))
+                LinearGradient(stops: [.init(color: Design.background, location: 0),
+                                       .init(color: Design.background.opacity(0.63), location: 0.28),
+                                       .init(color: Design.background.opacity(0.13), location: 0.67),
+                                       .init(color: Design.background.opacity(0), location: 1)],
                                startPoint: .top, endPoint: .bottom)
             }
             .frame(height: Self.fade)

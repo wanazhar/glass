@@ -438,6 +438,7 @@ current user instructions.
 
 - [Glass iOS round 6 review](../apps/glass-ios/PR-round6.md) — Lens consistency pass, simulator evidence, and unsigned build.
 - [Glass iOS round 7 review](../apps/glass-ios/PR-round7.md) — Live Activity schema fix, single-panel sidebar, steady streaming, simulator evidence, and unsigned build.
+- [Glass iOS round 8 review](../apps/glass-ios/PR-round8.md) — Native agent cards, child conversations, simulator evidence, and unsigned build.
 
 - [Glass iOS round 4 design proposal](../design/round4/README.md) — Lens identity, SF Pro typography,
   component prototypes, and visual acceptance criteria; not shipped behavior.

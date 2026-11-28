@@ -1553,7 +1553,7 @@ pub fn serve(
                     json!({"t": "done", "request_id":message.get("request_id"), "cursor":crate::export::raw_records(&session).len(), "stop": stop, "text": text}),
                 );
             }
-            Some("cancel") => { /* no turn running: nothing to cancel */ }
+            Some("cancel") => crate::team::cancel_root(&session.id),
             Some("stop") => {
                 if message["idle_only"] == true
                     && (sender_id != owner.get()

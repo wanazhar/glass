@@ -30,6 +30,7 @@ final class KeepAlive: NSObject {
     @ObservationIgnored private let manager = CLLocationManager()
     @ObservationIgnored private var session: CLBackgroundActivitySession?
     private var holds: [String: @MainActor () -> Void] = [:]
+    private var workingAgents: [String: (count: Int, oldest: Date?)] = [:]
     private(set) var activity: Activity<LensConnectionAttributes>?
     @ObservationIgnored private var authorizing: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var enablement: Task<Void, Never>?
@@ -118,6 +119,7 @@ final class KeepAlive: NSObject {
     }
 
     func release(_ key: String) {
+        workingAgents.removeValue(forKey: key)
         guard holds.removeValue(forKey: key) != nil else { return }
         update()
     }
@@ -125,6 +127,7 @@ final class KeepAlive: NSObject {
     func disconnect() {
         let stops = Array(holds.values)
         holds.removeAll()
+        workingAgents.removeAll()
         stops.forEach { $0() }
         update()
     }
@@ -161,13 +164,26 @@ final class KeepAlive: NSObject {
         }
     }
 
+    func updateAgents(_ key: String, count: Int, oldest: Date?) {
+        if count > 0 { workingAgents[key] = (count, oldest) }
+        else { workingAgents.removeValue(forKey: key) }
+        refreshActivity()
+    }
+
+    private func activityState(pulse: Bool) -> LensConnectionAttributes.ContentState {
+        let active = holds.keys.compactMap { workingAgents[$0] }
+        let count = active.reduce(0) { $0 + $1.count }
+        return .init(status: status, pulse: pulse, workingAgents: count == 0 ? nil : count,
+                     longestAgentStart: active.compactMap(\.oldest).min())
+    }
+
     /// iOS only accepts a new Live Activity while Glass is in the foreground, so this runs both when a
     /// connection opens and as Glass is on its way out.
     private func startActivity() {
         activitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
         guard running, activity == nil, activitiesEnabled,
               UIApplication.shared.applicationState != .background else { return }
-        let state = LensConnectionAttributes.ContentState(status: status, pulse: false)
+        let state = activityState(pulse: false)
         do {
             activity = try Activity.request(attributes: LensConnectionAttributes(host: hostName),
                                             content: Self.content(state), pushType: nil)
@@ -194,8 +210,10 @@ final class KeepAlive: NSObject {
     private func refreshActivity(renew: Bool = false) {
         guard let activity else { return }
         let previous = activity.content.state
-        guard renew || previous.status != status else { return }
-        let state = LensConnectionAttributes.ContentState(status: status, pulse: !previous.pulse)
+        let next = activityState(pulse: previous.pulse)
+        guard renew || previous != next else { return }
+        var state = next
+        state.pulse.toggle()
         let id = activity.id
         let content = Self.content(state)
         Task.detached {
@@ -210,7 +228,8 @@ final class KeepAlive: NSObject {
         guard activity == nil, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         do {
             activity = try Activity.request(attributes: LensConnectionAttributes(host: "Studio Mac"),
-                                            content: ActivityContent(state: .init(status: "Connected", pulse: false), staleDate: nil),
+                                            content: ActivityContent(state: .init(status: "Connected", pulse: false, workingAgents: 3,
+                                                                                 longestAgentStart: .now.addingTimeInterval(-121)), staleDate: nil),
                                             pushType: nil)
         } catch {
             Self.log.error("Live Activity preview not started: \(error.localizedDescription, privacy: .public)")

@@ -49,6 +49,27 @@ extension GlassClient {
         return try await decode(TeammateTranscript.self, from: .get("/api/agent", query: query))
     }
 
+    public func agentHistory(_ agent: String, thread id: String, sourceRef: String? = nil, before: Int? = nil) async throws(GlassError) -> HistoryPage {
+        var query = Self.threadQuery(id, sourceRef)
+        query.append(URLQueryItem(name: "agent", value: agent))
+        query.append(URLQueryItem(name: "view", value: "chat"))
+        if let before { query.append(URLQueryItem(name: "before", value: String(before))) }
+        return try await decode(HistoryPage.self, from: .get("/api/agent", query: query))
+    }
+
+    public func stopAgent(_ agent: String? = nil, thread id: String, sourceRef: String? = nil) async throws(GlassError) {
+        var body = Self.threadBody(id, sourceRef)
+        if let agent { body["agent"] = .string(agent) }
+        _ = try await data(for: Self.post("/api/agent/stop", body))
+    }
+
+    public func sendToAgent(_ agent: String, text: String, thread id: String, sourceRef: String? = nil) async throws(GlassError) {
+        var body = Self.threadBody(id, sourceRef)
+        body["agent"] = .string(agent)
+        body["text"] = .string(text)
+        _ = try await data(for: Self.post("/api/agent/send", body))
+    }
+
     /// `GET /api/activity-text`: a page of a large saved activity record.
     public func activityText(record: Int, offset: Int = 0, expected: String? = nil, thread id: String, sourceRef: String? = nil) async throws(GlassError) -> ActivityTextPage {
         var query = Self.threadQuery(id, sourceRef)

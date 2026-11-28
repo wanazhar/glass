@@ -173,16 +173,22 @@ public struct Teammate: Sendable, Hashable, Decodable, Identifiable {
     public var status: String?
     public var activity: String?
     public var parentID: String?
+    public var parentCallID: String?
+    public var session: String?
     public var depth: Int?
     public var task: String?
     public var model: String?
     public var terminalEvents: Int?
     public var pendingActivation: Bool?
     public var offline: Bool?
+    public var result: String?
+    public var startedAt: Double?
+    public var updated: Double?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, status, activity, depth, task, prompt, model, offline
+        case id, name, status, activity, depth, task, prompt, model, offline, result, session, updated
         case parentID = "parent_id", terminalEvents = "terminal_events", pendingActivation = "pending_activation"
+        case parentCallID = "parent_call_id", startedAt = "started_at"
     }
 
     public init(id: String, name: String? = nil, status: String? = nil, activity: String? = nil, parentID: String? = nil,
@@ -204,6 +210,11 @@ public struct Teammate: Sendable, Hashable, Decodable, Identifiable {
         terminalEvents = try? c.decodeIfPresent(Int.self, forKey: .terminalEvents)
         pendingActivation = try? c.decodeIfPresent(Bool.self, forKey: .pendingActivation)
         offline = try? c.decodeIfPresent(Bool.self, forKey: .offline)
+        parentCallID = try? c.decodeIfPresent(String.self, forKey: .parentCallID)
+        session = try? c.decodeIfPresent(String.self, forKey: .session)
+        result = try? c.decodeIfPresent(String.self, forKey: .result)
+        startedAt = try? c.decodeIfPresent(Double.self, forKey: .startedAt)
+        updated = try? c.decodeIfPresent(Double.self, forKey: .updated)
     }
 
     public var title: String { name ?? id }

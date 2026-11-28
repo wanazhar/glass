@@ -18,6 +18,11 @@ final class ConversationModel {
 
     let thread: ThreadSummary
     let composer: ComposerModel
+    let parent: ConversationModel?
+    let agentID: String?
+    private(set) var agents: [Teammate] = []
+    private var agentHistory: [String: HistoryPage] = [:]
+    private var fetchingAgents: [String: Task<HistoryPage?, Never>] = [:]
     private(set) var timeline = Timeline()
     private(set) var connection: Connection = .idle
     private(set) var originLabel: String?
@@ -49,11 +54,18 @@ final class ConversationModel {
     private var drawTask: Task<Void, Never>?
     private static let frameInterval = Duration.milliseconds(100)
 
-    init(app: AppModel, thread: ThreadSummary) {
+    init(app: AppModel, thread: ThreadSummary, parent: ConversationModel? = nil,
+         agentID: String? = nil, seed: HistoryPage? = nil) {
         self.app = app
         self.thread = thread
+        self.parent = parent
+        self.agentID = agentID
         composer = ComposerModel(app: app, thread: thread)
         originLabel = thread.originLabel
+        if let seed {
+            timeline.replaceHistory(seed)
+            loadedHistory = true
+        }
         foregroundWatch = Task { [weak self] in
             for await _ in NotificationCenter.default.notifications(named: UIApplication.willEnterForegroundNotification) {
                 guard let self else { return }
@@ -64,6 +76,95 @@ final class ConversationModel {
     }
 
     var title: String { thread.displayTitle }
+    var agent: Teammate? { parent?.agents.first { $0.id == agentID } }
+
+    func watchAgents() async {
+        guard let api = app.api, parent == nil else { return }
+        while !Task.isCancelled {
+            await refreshAgents()
+            do {
+                for try await signal in try await api.teammateSignals(thread: thread.id, sourceRef: thread.sourceRef) {
+                    if case .offline = signal { break }
+                    await refreshAgents()
+                }
+            } catch {}
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+        }
+    }
+
+    func refreshAgents() async {
+        guard let api = app.api else { return }
+        if let roster = try? await api.teammates(thread: thread.id, sourceRef: thread.sourceRef), !Task.isCancelled {
+            agents = roster
+            publishAgentCount()
+        }
+    }
+
+    func prefetchAgent(_ agent: Teammate) async {
+        guard let api = app.api, agentHistory[agent.id] == nil else { return }
+        if let pending = fetchingAgents[agent.id] {
+            agentHistory[agent.id] = await pending.value
+            return
+        }
+        let pending = Task { [thread] in
+            try? await api.agentHistory(agent.id, thread: thread.id, sourceRef: thread.sourceRef)
+        }
+        fetchingAgents[agent.id] = pending
+        agentHistory[agent.id] = await pending.value
+        fetchingAgents.removeValue(forKey: agent.id)
+    }
+
+    func child(_ agent: Teammate) -> ConversationModel {
+        var child = ThreadSummary(session: agent.session ?? agent.id, title: agent.title, workspace: thread.workspace)
+        child.model = agent.model
+        return ConversationModel(app: app, thread: child, parent: self, agentID: agent.id, seed: agentHistory[agent.id])
+    }
+
+    func controlAgent(_ agent: Teammate, retry: Bool = false) async throws {
+        guard let api = app.api else { return }
+        if retry {
+            let original = agent.task?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let instruction = original.isEmpty ? "Retry your last assignment." : "Retry this assignment:\n\n" + original
+            try await api.sendToAgent(agent.id, text: instruction, thread: thread.id, sourceRef: thread.sourceRef)
+        } else {
+            try await api.stopAgent(agent.id, thread: thread.id, sourceRef: thread.sourceRef)
+        }
+        await refreshAgents()
+    }
+
+    func watchChild() async {
+        guard let api = app.api, let parent, let agentID else { return }
+        repeat {
+            try? await refreshChildHistory(api: api, parent: parent, agentID: agentID)
+            guard agent?.isWorking == true else { return }
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+        } while !Task.isCancelled
+    }
+
+    private func refreshChildHistory(api: GlassClient, parent: ConversationModel, agentID: String) async throws {
+        let page = try await api.agentHistory(agentID, thread: parent.thread.id, sourceRef: parent.thread.sourceRef)
+        let previous = parent.agentHistory[agentID]
+        guard page != previous || !loadedHistory else { return }
+        var pages = [page]
+        if loadedHistory, let end = previous?.totalBytes {
+            var before = page.before
+            while before > end {
+                let intermediate = try await api.agentHistory(agentID, thread: parent.thread.id,
+                                                              sourceRef: parent.thread.sourceRef, before: before)
+                guard intermediate.before < before else { return }
+                pages.append(intermediate)
+                before = intermediate.before
+            }
+        }
+        try Task.checkCancellation()
+        if loadedHistory {
+            for window in pages.reversed() { timeline.appendHistory(window) }
+        } else {
+            timeline.replaceHistory(page)
+        }
+        parent.agentHistory[agentID] = page
+        loadedHistory = true
+    }
 
     /// The first message that asks for something, skipping greetings and commands; nil until the start is loaded.
     var firstRequest: String? {
@@ -135,6 +236,12 @@ final class ConversationModel {
             }
         }
         KeepAlive.shared.hold(keepAliveKey) { [weak self] in self?.stop() }
+        publishAgentCount()
+    }
+
+    private func publishAgentCount() {
+        let active = agents.filter(\.isWorking)
+        KeepAlive.shared.updateAgents(keepAliveKey, count: active.count, oldest: active.compactMap(\.startDate).min())
     }
 
     private var keepAliveKey: String { "conversation:" + thread.id }
@@ -201,7 +308,12 @@ final class ConversationModel {
         loadingOlder = true
         defer { loadingOlder = false }
         do {
-            let page = try await api.history(thread.id, sourceRef: thread.sourceRef, before: before)
+            let page: HistoryPage
+            if let parent, let agentID {
+                page = try await api.agentHistory(agentID, thread: parent.thread.id, sourceRef: parent.thread.sourceRef, before: before)
+            } else {
+                page = try await api.history(thread.id, sourceRef: thread.sourceRef, before: before)
+            }
             timeline.prependOlder(page)
         } catch {
             fail(error)

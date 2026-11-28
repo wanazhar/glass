@@ -149,6 +149,26 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         #expect(!timeline.hasOlder)
     }
 
+    @Test func refreshedTailKeepsOlderMessagesAndTheirCursor() throws {
+        var timeline = Timeline()
+        let call = #"{"k":"call","id":"t1","name":"read","args":"{\"path\":\"report.txt\"}"}"#
+        timeline.replaceHistory(try Self.page([
+            (200, call), (300, #"{"k":"reasoning","t":"Check"}"#),
+        ], before: 200))
+        timeline.prependOlder(try Self.page([(100, #"{"k":"user","t":"Open the report"}"#)], before: 100))
+        timeline.appendHistory(try Self.page([
+            (300, #"{"k":"reasoning","t":"Check"}"#),
+            (400, #"{"k":"reasoning","t":" the path"}"#),
+            (500, #"{"k":"tool","id":"t1","name":"read","t":"Found it"}"#),
+        ], before: 300))
+        #expect(timeline.olderBefore == 100)
+        #expect(timeline.entries == [
+            .user(id: "rec-100", text: "Open the report"),
+            .tool(id: "t1", name: "read", summary: "report.txt", output: "Found it", failed: false),
+            .reasoning(id: "rec-300", text: "Check the path"),
+        ])
+    }
+
     @Test func liveEventsStreamAndFinish() {
         var timeline = Timeline()
         timeline.apply(.turnStart(requestID: "r", text: "go", alreadyRecorded: false))

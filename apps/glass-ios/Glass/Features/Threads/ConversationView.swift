@@ -5,6 +5,7 @@ struct ConversationView: View {
     @Bindable var conversation: ConversationModel
     var threads: ThreadsModel
     var goBack: () -> Void
+    var openAgent: (Teammate) -> Void = { _ in }
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var following = true
@@ -39,7 +40,11 @@ struct ConversationView: View {
                         .accessibilityIdentifier("conversation.older")
                     }
                     if conversation.loadedHistory, conversation.timeline.isEmpty {
-                        emptyState
+                        if conversation.parent == nil { emptyState }
+                    }
+                    if conversation.parent != nil, conversation.timeline.isEmpty {
+                        TimelineRow(entry: .user(id: "assignment", text: conversation.agent?.task.flatMap { $0.isEmpty ? nil : $0 }
+                            ?? "Assignment sent to \(conversation.title)."), endsTurn: false)
                     }
                     let rows = rows
                     let turnEnds = Self.turnEnds(rows, active: conversation.timeline.isActive)
@@ -50,6 +55,8 @@ struct ConversationView: View {
                             WorkRow(group: group, durations: conversation.timeline.toolDurations, open: { detail in
                                 activityDetail = detail
                             })
+                        case .agents(let entry):
+                            AgentGroupView(entry: entry, conversation: conversation, open: openAgent)
                         }
                     }
                     Color.clear.frame(height: Design.transcriptEnd)
@@ -92,20 +99,24 @@ struct ConversationView: View {
                 guard following else { return }
                 Task { @MainActor in proxy.scrollTo(Self.bottom, anchor: .bottom) }
             }
-            .safeAreaBar(edge: .top, spacing: Design.gap) {
+            .safeAreaInset(edge: .top, spacing: Design.gap) {
                 header
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: Design.gap) {
-                    checklistButton
-                    bottomBar(onFieldFocus: { resume(proxy) })
-                        .overlay(alignment: .top) { jumpToLatest(proxy) }
+                    if conversation.parent != nil {
+                        agentFooter
+                    } else {
+                        checklistButton
+                        bottomBar(onFieldFocus: { resume(proxy) })
+                            .overlay(alignment: .top) { jumpToLatest(proxy) }
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .hiddenUnderSidebar()
             }
             .onChange(of: conversation.firstRequest) { _, request in
-                guard let request else { return }
+                guard conversation.parent == nil, let request else { return }
                 Task { await threads.retitle(conversation.thread.id, from: request) }
             }
         }
@@ -126,7 +137,12 @@ struct ConversationView: View {
                 })
             }
         }
-        .sheet(isPresented: $showingDetails) { DetailsView(conversation: conversation) }
+        .sheet(isPresented: $showingDetails) {
+            DetailsView(conversation: conversation) { agent in
+                showingDetails = false
+                openAgent(agent)
+            }
+        }
         .sheet(item: $savedRecord) { SavedActivityView(conversation: conversation, record: $0.id) }
         .environment(\.openSavedActivity) { savedRecord = SavedRecord(id: $0) }
         .environment(\.messageAction) { entry, action in Task { await perform(action, on: entry) } }
@@ -174,7 +190,10 @@ struct ConversationView: View {
             .accessibilityHidden(true)
         }
         .environment(\.attachmentLoader) { [composer = conversation.composer] id in await composer.attachment(id) }
-        .task { await conversation.start() }
+        .task { if conversation.parent == nil { await conversation.start() } }
+        .task(id: conversation.agent?.status) {
+            if conversation.parent != nil { await conversation.watchChild() }
+        }
         #if DEBUG
         .onChange(of: conversation.canWrite, initial: true) { _, writable in
             guard writable, let preview = LensPreview.current else { return }
@@ -184,6 +203,7 @@ struct ConversationView: View {
         }
         #endif
         .onChange(of: scenePhase) { _, phase in
+            guard conversation.parent == nil else { return }
             // iOS suspends sockets in the background. The cached chat stays on screen and a fresh
             // stream resumes from the last event id the moment Glass is active again.
             switch phase {
@@ -282,6 +302,8 @@ struct ConversationView: View {
             case .message(let entry):
                 if case .user = entry { break }
                 continue
+            case .agents:
+                continue
             }
             break
         }
@@ -339,8 +361,54 @@ struct ConversationView: View {
         return nil
     }
 
+    @ViewBuilder
     private var header: some View {
-        ChatToolbar(menu: goBack, newChat: { Task { await threads.newThread() } }) { titleButton }
+        if conversation.parent != nil {
+            ChatToolbar(menu: goBack, newChat: nil) {
+                VStack(spacing: 1) {
+                    Text(conversation.title).font(Design.headline).lineLimit(1)
+                    if let model = conversation.agent?.friendlyModel {
+                        Text(model).font(.caption2).foregroundStyle(Design.muted)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: Design.control)
+                .accessibilityIdentifier("agent.title")
+            }
+        } else {
+            ChatToolbar(menu: goBack, newChat: { Task { await threads.newThread() } }) { titleButton }
+        }
+    }
+
+    private var agentFooter: some View {
+        HStack(spacing: Design.padding) {
+            Button(action: goBack) {
+                Label("Back to parent", systemImage: "chevron.left")
+                    .frame(minHeight: Design.control)
+                    .contentShape(.capsule)
+            }
+            .accessibilityIdentifier("agent.parent")
+            Spacer(minLength: 0)
+            Button {
+                guard let parent = conversation.parent, let agent = conversation.agent else { return }
+                Task {
+                    do { try await parent.controlAgent(agent) }
+                    catch { actionError = error.localizedDescription }
+                }
+            } label: {
+                Label("Stop", systemImage: "stop.fill")
+                    .frame(minWidth: Design.control, minHeight: Design.control)
+                    .contentShape(.capsule)
+            }
+            .foregroundStyle(Design.failure)
+            .disabled(conversation.agent?.isWorking != true)
+            .accessibilityIdentifier("agent.stop")
+        }
+        .font(.subheadline.weight(.semibold))
+        .buttonStyle(.plain)
+        .padding(.horizontal, Design.padding)
+        .glassEffect(.regular, in: Capsule())
+        .padding(.horizontal, Design.padding)
+        .padding(.bottom, Design.gap)
     }
 
     private var titleButton: some View {
@@ -373,7 +441,8 @@ struct ConversationView: View {
     }
 
     private var rows: [ChatRow] {
-        ChatRow.make(from: conversation.timeline)
+        let agentCallIDs = Set(conversation.agents.filter { $0.parentID == nil }.compactMap(\.parentCallID))
+        return ChatRow.make(from: conversation.timeline, agentCallIDs: agentCallIDs)
     }
 
     /// Replies followed by the next request, or ending a finished conversation: the last word of each turn.

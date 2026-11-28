@@ -181,9 +181,10 @@ final class MarbleClient: @unchecked Sendable {
         )
     }
 
-    func createConversation() async throws -> MarbleConversation {
+    func createConversation(marbleId: String? = nil) async throws -> MarbleConversation {
+        struct Body: Encodable { let marbleId: String }
         struct Reply: Decodable { let conversation: MarbleConversation }
-        let reply: Reply = try await postJSON("/api/conversations", body: nil)
+        let reply: Reply = try await postJSON("/api/conversations", body: marbleId.map { Body(marbleId: $0) })
         return reply.conversation
     }
 
@@ -194,6 +195,14 @@ final class MarbleClient: @unchecked Sendable {
 
     func deleteConversation(id: String) async throws {
         try await post("/api/conversations/\(encoded(id))/delete", acceptsNotFound: true)
+    }
+
+    func archiveConversation(id: String, archived: Bool) async throws {
+        try await post("/api/conversations/\(encoded(id))/\(archived ? "archive" : "unarchive")")
+    }
+
+    func restoreDeletedChat(id: String) async throws {
+        try await post("/api/conversations/\(encoded(id))/restore")
     }
 
     func cancel(taskId: String) async throws {

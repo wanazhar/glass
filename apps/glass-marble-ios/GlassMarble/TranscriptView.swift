@@ -25,8 +25,7 @@ struct TranscriptView: View {
                         } description: {
                             Text(store.errorMessage ?? "")
                         } actions: {
-                            Button("Retry") { Task { await store.refresh() } }
-                                .buttonStyle(.borderedProminent)
+                            MarbleInlineButton(title: "Retry", prominent: true) { Task { await store.refresh() } }
                         }
                     } else if entries.isEmpty
                         && store.liveText.isEmpty
@@ -61,6 +60,12 @@ struct TranscriptView: View {
                         MarbleEntryView(entry: .preview(kind: "assistant", text: store.liveText))
                     }
                     MarbleTurnTail(task: store.latestTurn(in: conversationId), entries: entries)
+                    ForEach(store.memory.suggestions) { SuggestionCard(suggestion: $0) }
+                    ForEach(store.state.approvals) { approval in
+                        ApprovalCard(approval: approval) { allow, remember in
+                            Task { await store.decide(approval, allow: allow, remember: remember) }
+                        }
+                    }
                     MarbleTranscriptEnd(bottomPadding: 14)
                 }
                 .marbleHistoryScrollTargets()
@@ -101,7 +106,7 @@ struct MarbleHistoryUnavailable: View {
         ContentUnavailableView {
             Label("Couldn’t load messages", systemImage: "network.slash")
         } actions: {
-            Button("Retry") { Task { await retry() } }
+            MarbleInlineButton(title: "Retry") { Task { await retry() } }
         }
     }
 }
@@ -155,16 +160,18 @@ struct MarbleEntryView: View {
                 let thought = reasoning ?? store.reasoning(for: entry.taskId)
                 let author = speaker?.name ?? store.agentName(for: entry.taskId) ?? "Marble"
                 if !thought.isEmpty { MarbleReasoningRow(text: thought, speaker: author) }
-                let tools = toolRows.compactMap(store.toolActivity(for:))
-                if !tools.isEmpty {
-                    MarbleToolTimeline(tools: tools)
-                } else if entry.kind != "pending", entry.threadId == nil,
+                if entry.kind != "pending", entry.threadId == nil,
                           !store.hasTranscriptToolRows(in: entry.conversationId, taskId: entry.taskId),
                           !store.tools(for: entry.taskId).isEmpty {
                     MarbleToolTimeline(tools: store.tools(for: entry.taskId))
                 }
             }
-            entryContent(isFailure: failure)
+            let tools = toolRows.compactMap(store.toolActivity(for:))
+            if !tools.isEmpty {
+                MarbleToolTimeline(tools: tools)
+            } else {
+                entryContent(isFailure: failure)
+            }
             if entry.kind == "assistant" && !failure {
                 MarbleKnowledgeCards(entry: entry, chooseMemory: chooseMemory)
             }
@@ -192,7 +199,7 @@ struct MarbleEntryView: View {
                 HStack(spacing: 8) {
                     Text("Couldn’t send")
                         .foregroundStyle(.secondary)
-                    Button("Retry") { store.retrySend(sendId) }
+                    MarbleInlineButton(title: "Retry") { store.retrySend(sendId) }
                         .disabled(store.connectionPaused)
                 }
                 .font(.footnote)
@@ -280,8 +287,7 @@ struct MarbleEntryView: View {
                 .padding(.vertical, 8)
                 .background(
                     MarbleTheme.wash,
-                    in: UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: 20,
-                                               bottomTrailingRadius: 6, topTrailingRadius: 20)
+                    in: MarbleTheme.panel
                 )
                 .padding(.leading, 48)
                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -332,7 +338,7 @@ struct MarbleEntryView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             MarbleTheme.card,
-            in: RoundedRectangle(cornerRadius: 14)
+            in: MarbleTheme.panel
         )
     }
 }
@@ -412,7 +418,7 @@ struct MarbleToolRow: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.headline)
             Text(text.isEmpty ? "Not recorded" : text)
-                .font(.body.monospaced())
+                .font(.body)
                 .textSelection(.enabled)
         }
     }
@@ -420,21 +426,28 @@ struct MarbleToolRow: View {
 
 struct MarbleToolTimeline: View {
     let tools: [MarbleToolActivity]
+    @State private var expanded = false
 
     static func duration(_ milliseconds: UInt64) -> String {
         milliseconds < 1000 ? "<1 s" : "\(milliseconds / 1000) s"
     }
 
     var body: some View {
-        DisclosureGroup {
-            VStack(spacing: 0) {
-                ForEach(tools) { MarbleToolRow(tool: $0) }
-            }
-        } label: {
-            let elapsed = tools.compactMap { $0.details?.elapsedMs }
-            let summary = "Used \(tools.count) \(tools.count == 1 ? "tool" : "tools")"
-            Text(elapsed.isEmpty ? summary : "\(summary) · \(Self.duration(elapsed.reduce(0, +)))")
+        VStack(alignment: .leading, spacing: 0) {
+            Button { expanded.toggle() } label: {
+                HStack {
+                    Text(tools.count == 1 ? tools[0].title : "Used \(tools.count) tools")
+                    Spacer()
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .accessibilityHidden(true)
+                }
                 .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            if expanded { ForEach(tools) { MarbleToolRow(tool: $0) } }
         }
         .font(.footnote)
         .foregroundStyle(.secondary)
@@ -457,6 +470,7 @@ struct MarbleReasoningRow: View {
                     Text(speaker.map { "\($0) thought for a moment" } ?? "Thought for a moment")
                     Spacer()
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold))
                         .accessibilityHidden(true)
                 }
                 .contentShape(Rectangle())
@@ -511,9 +525,7 @@ private struct MarbleFailedTurnRow: View {
             Label(message, systemImage: "exclamationmark.circle")
                 .foregroundStyle(.secondary)
             if let taskId = MarbleTurnFailure.retryID(entry: entry, task: task) {
-                Button("Retry") { Task { await store.retry(taskId: taskId) } }
-                    .buttonStyle(.glass)
-                    .frame(minHeight: 44)
+                MarbleInlineButton(title: "Retry") { Task { await store.retry(taskId: taskId) } }
                     .disabled(store.retryingTurns.contains(taskId))
                 if store.retryFailures.contains(taskId) {
                     Text("Couldn’t retry. Try again in a moment.")
@@ -908,7 +920,7 @@ struct ApprovalCard: View {
             Text(MarbleDecisionWords.action(tool: approval.tool))
                 .font(.headline)
             Text(approval.argumentsSummary)
-                .font(.caption.monospaced())
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
             if let conflict = approval.conflict, !conflict.isEmpty {
@@ -917,21 +929,19 @@ struct ApprovalCard: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            HStack(spacing: 10) {
-                Button("Deny", role: .destructive) { onDecision(false, false) }
-                    .buttonStyle(.bordered)
-                Spacer()
-                Button("Always allow") { onDecision(true, true) }
-                    .buttonStyle(.bordered)
-                Button("Allow") { onDecision(true, false) }
-                    .buttonStyle(.borderedProminent)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { actions }
+                VStack(alignment: .leading, spacing: 8) { actions }
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            Color(.secondarySystemGroupedBackground),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
+        .marbleFloating(in: MarbleTheme.panel)
+    }
+
+    @ViewBuilder private var actions: some View {
+        MarbleInlineButton(title: "Deny", role: .destructive) { onDecision(false, false) }
+        MarbleInlineButton(title: "Always allow") { onDecision(true, true) }
+        MarbleInlineButton(title: "Allow", prominent: true) { onDecision(true, false) }
     }
 }

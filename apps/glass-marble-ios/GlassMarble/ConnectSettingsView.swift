@@ -8,7 +8,7 @@ enum MarbleSettingsRoute: String, Hashable, CaseIterable {
     var title: String {
         switch self {
         case .connection: "Connection"
-        case .marbles: "Marbles and models"
+        case .marbles: "Agents and models"
         case .activity: "Approvals and activity"
         case .scheduled: "Scheduled"
         case .notifications: "Notifications"
@@ -184,10 +184,10 @@ struct MarblesModelsSettingsView: View {
                     Label("What Marble can use", systemImage: "wrench.and.screwdriver")
                 }
             } footer: {
-                Text("Each Marble's own personality and look are in the Marbles tab.")
+                Text("Edit each agent’s personality and appearance in Agents.")
             }
         }
-        .navigationTitle("Marbles and models")
+        .navigationTitle("Agents and models")
     }
 }
 
@@ -237,7 +237,7 @@ struct DataSettingsView: View {
                     confirmClearEveryone = true
                 }
             } footer: {
-                Text("Clearing Everyone erases what was said there, including Marbles' replies; one-to-one chats are untouched.")
+                Text("Clearing Everyone erases what was said there, including agent replies. Private chats are untouched.")
             }
         }
         .navigationTitle("Chats and data")

@@ -20,6 +20,9 @@ final class MarbleNavigationModel: ObservableObject {
     }
     func setEveryonePath(_ path: [ChatRoute]) { state.everyonePath = path }
     func openNewChat(_ id: String?) { state.openNewChat(id) }
+    func openNewAgentChat(_ chat: MarbleConversation, agentId: String) {
+        state.openNewAgentChat(chat, agentId: agentId)
+    }
     func draftResolved(_ id: String) { state.draftResolved(id) }
     func deleted(_ id: String) { state.deleted(id) }
     func notificationTapped(_ id: String) { state.notificationTapped(id) }
@@ -39,7 +42,7 @@ struct MarbleRootView: View {
                 TabView(selection: Binding(
                     get: { navigation.state.tab }, set: { navigation.selectTab($0) }
                 )) {
-                    Tab("Marbles", systemImage: "hexagon", value: MarbleTab.marbles) {
+                    Tab("Agents", systemImage: "person.2", value: MarbleTab.marbles) {
                         MarblesTabView()
                     }
                     .accessibilityIdentifier("tab.marbles")
@@ -114,8 +117,8 @@ struct MarblesTabView: View {
                     stack(root: {
                         VStack(spacing: 12) {
                             PocketPair().frame(width: 80, height: 80)
-                            Text("Who’s on your mind?").font(.largeTitle.weight(.semibold))
-                            Text("Choose a Marble to start a conversation.")
+                            Text("Start a chat").font(.largeTitle.weight(.semibold))
+                            Text("Choose an agent to start a conversation.")
                                 .foregroundStyle(MarbleTheme.muted)
                         }
                         .multilineTextAlignment(.center)
@@ -145,6 +148,8 @@ struct MarblesTabView: View {
                     switch route {
                     case .marbleChats:
                         ConversationListView()
+                    case .archivedChats:
+                        ArchivedChatsView()
                     case .marbleChat(let id):
                         MarbleChatScreen(marbleId: id)
                     case .marbleInfo(let id):
@@ -182,9 +187,6 @@ struct MarbleChatView: View {
 
     var body: some View {
         TranscriptView(conversationId: conversationId)
-        .marbleChatBar(edge: .top) {
-            approvalRail
-        }
         .marbleComposerInset {
             ComposerBar(
                 draft: $draft,
@@ -217,6 +219,12 @@ struct MarbleChatView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Rename") { renameDraft = currentTitle; renaming = true }
+                        if let conversationId {
+                            let archived = store.state.conversation(conversationId)?.archived == true
+                            Button(archived ? "Restore" : "Archive", systemImage: "archivebox") {
+                                Task { await store.archiveConversation(conversationId, archived: !archived) }
+                            }
+                        }
                         Button("Export chat") {
                             Task { if let url = await store.exportFile(conversationId: conversationId) { exportURL = ExportFile(url: url) } }
                         }
@@ -272,34 +280,6 @@ struct MarbleChatView: View {
                     .padding(.bottom, 8)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .allowsHitTesting(false)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var approvalRail: some View {
-        if !store.memory.suggestions.isEmpty || !store.state.approvals.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(store.memory.suggestions) { suggestion in
-                        SuggestionCard(suggestion: suggestion)
-                        .frame(width: 300)
-                    }
-                    ForEach(store.state.approvals) { approval in
-                        ApprovalCard(approval: approval) { allow, remember in
-                            Task {
-                                await store.decide(
-                                    approval,
-                                    allow: allow,
-                                    remember: remember
-                                )
-                            }
-                        }
-                        .frame(width: 300)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
             }
         }
     }

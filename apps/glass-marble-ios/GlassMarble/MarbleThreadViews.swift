@@ -89,9 +89,7 @@ struct EveryoneView: View {
             List(threads.filter(\.archived)) { thread in
                 HStack {
                     row(thread)
-                    Button("Restore") { update(thread, action: "restore") }
-                        .buttonStyle(.borderless)
-                        .frame(minHeight: 44)
+                    MarbleInlineButton(title: "Restore") { update(thread, action: "restore") }
                 }
                 .listRowBackground(MarbleTheme.card)
             }
@@ -164,7 +162,9 @@ struct MarbleThreadInboxLink: View {
 }
 
 struct MarbleChatTools: View {
+    @EnvironmentObject private var store: MarbleStore
     let conversationId: String
+    @State private var confirmDelete = false
 
     var body: some View {
         Menu("Chat options", systemImage: "ellipsis") {
@@ -172,6 +172,19 @@ struct MarbleChatTools: View {
             NavigationLink(value: ChatRoute.find(conversationId)) {
                 Label("Find", systemImage: "magnifyingglass")
             }
+            let archived = store.state.conversation(conversationId)?.archived == true
+            Button(archived ? "Restore" : "Archive", systemImage: "archivebox") {
+                Task { await store.archiveConversation(conversationId, archived: !archived) }
+            }
+            Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete = true }
+        }
+        .confirmationDialog("Delete this chat?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                Task { _ = await store.delete(conversationId: conversationId) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You can restore it from Recently Deleted for seven days.")
         }
     }
 }
@@ -262,7 +275,7 @@ private struct MarbleThreadInbox: View {
             if failed {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Couldn’t load threads.")
-                    Button("Retry") { Task { await load() } }
+                    MarbleInlineButton(title: "Retry") { Task { await load() } }
                 }
             }
         }
@@ -331,7 +344,7 @@ private struct MarbleThreadView: View {
                 ContentUnavailableView {
                     Label("Couldn’t load thread", systemImage: "text.bubble")
                 } actions: {
-                    Button("Retry") { Task { await load() } }
+                    MarbleInlineButton(title: "Retry") { Task { await load() } }
                 }
             } else {
                 ProgressView()
@@ -464,7 +477,9 @@ private struct MarbleThreadView: View {
                 .padding(.vertical, 10)
                 .padding(.horizontal, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.background)
+                .marbleFloating(in: MarbleTheme.panel)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -479,18 +494,15 @@ private struct MarbleThreadView: View {
             Label("\(author) suggests adding \(agent)", systemImage: "person.badge.plus")
                 .font(.subheadline)
             HStack {
-                Button("Add") { respond(to: suggestion, add: true) }
-                    .buttonStyle(.glassProminent)
-                    .controlSize(.large)
-                Button("Not now") { respond(to: suggestion, add: false) }
-                    .buttonStyle(.glass)
-                    .controlSize(.large)
+                MarbleInlineButton(title: "Add", prominent: true) { respond(to: suggestion, add: true) }
+                MarbleInlineButton(title: "Not now") { respond(to: suggestion, add: false) }
             }
             .disabled(respondingToSuggestion)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(.background)
+        .marbleFloating(in: MarbleTheme.panel)
+        .padding(.horizontal, 16)
     }
 
     private func respond(to suggestion: MarbleGroupThread.Suggestion, add: Bool) {
@@ -527,6 +539,8 @@ private struct MarbleGroupInfo: View {
             Form {
                 Section("Members") { MarbleGroupMemberPicker(members: $members) }
             }
+            .scrollContentBackground(.hidden)
+            .background(MarbleTheme.paper)
             .navigationTitle("Thread info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -670,7 +684,7 @@ private struct MarbleJumpTimeline: View {
                         }
                         .padding(.vertical, 3)
                         .background(highlight == entry.id ? Color.accentColor.opacity(0.15) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 8))
+                                    in: MarbleTheme.panel)
                     }
                     ForEach(workingNames, id: \.self) { MarbleThinkingBubble(name: $0) }
                     MarbleTranscriptEnd(bottomPadding: 16)
@@ -718,7 +732,7 @@ private struct MarbleHistoryView: View {
                     ContentUnavailableView {
                         Label("Couldn’t find that message", systemImage: "magnifyingglass")
                     } actions: {
-                        Button("Retry") { Task { await load() } }
+                        MarbleInlineButton(title: "Retry") { Task { await load() } }
                     }
                 } else {
                     ProgressView()

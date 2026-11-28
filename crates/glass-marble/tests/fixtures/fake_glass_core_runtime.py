@@ -170,7 +170,9 @@ def run_turn(identifier, task, text, conversation, request):
         if "pause this round" in text.lower():
             PARKED_RUN["id"] = identifier
             return
-        if "close the task" in text.lower():
+        if "--report-round-history" in sys.argv:
+            answer = context.split("Recent thread messages (quoted): ", 1)[-1].split("\n", 1)[0]
+        elif "close the task" in text.lower():
             answer = "[[CLOSE]]\nThe launch checklist is ready for review."
         elif agent == "Lead":
             answer = "[[SUGGEST: researcher]]\nI’ll coordinate the launch checklist. @engineer, please start."
@@ -178,7 +180,11 @@ def run_turn(identifier, task, text, conversation, request):
             prior = context.split("Earlier replies this round (quoted, in order): ", 1)[-1]
             answer = "I have the checklist from Lead. @reviewer, please verify." if "coordinate the launch checklist" in prior else "Missing Lead context."
         elif agent == "Reviewer":
-            answer = "[[PASS]]"
+            prior = context.split("Earlier replies this round (quoted, in order): ", 1)[-1]
+            if "verify the handoff" in text.lower() and "I have the checklist from Lead" in prior:
+                answer = "I verified Engineer’s checklist."
+            else:
+                answer = "[[PASS]]"
         else:
             answer = "The handoff is ready for the team."
         event(turn, "text", {"text": "<working>Checking the launch plan…</working>\n"})
@@ -194,15 +200,20 @@ def run_turn(identifier, task, text, conversation, request):
         reply(identifier, {"settled": True})
         return
     if os.environ.get("MARBLE_FIXTURE_TURN_EVIDENCE") == "1":
+        if text == "Approve the report draft":
+            attempt_tool(turn, task, "glass.workspace.write", {"path": "report.md", "content": "Draft"})
+            event(turn, "settled", {"reason": "completed"})
+            reply(identifier, {"settled": True})
+            return
         event(turn, "reasoning", {"text": "Check the files before replying."})
         event(turn, "text", {"text": "<working>Checking the report…</working>"})
-        for index, command, output, failed in [
-            (0, "ls -l report.pdf", "-rw-r--r-- report.pdf", False),
-            (1, "ls -l appendix.pdf", "No such file: appendix.pdf", True),
+        for index, name, arguments, output, failed, delay in [
+            (0, "bash", {"command": "ls -l appendix.pdf"}, "No such file: appendix.pdf", True, 3),
+            (1, "web_search", {"query": "marble report"}, "Found the report", False, 12),
         ]:
             call = "evidence-" + str(index)
-            event(turn, "tool_start", {"callId": call, "name": "bash", "title": command})
-            time.sleep(3)
+            event(turn, "tool_start", {"callId": call, "name": name, "arguments": arguments})
+            time.sleep(1 if "failure" in text else delay)
             event(turn, "tool_end", {"callId": call, "text": output, "isError": failed})
         if "failure" in text:
             event(turn, "text", {"text": "[Generation failed] Reason: fixture provider unavailable"})

@@ -13,6 +13,7 @@ enum MarbleTheme {
     static let problem = adaptive(0x913B42, 0xF5ABAF)
     static let clay = adaptive(0xEAB5A5, 0xDEA28F)
     static let moss = adaptive(0xC4D0A3, 0xB3C48C)
+    static let panel = RoundedRectangle(cornerRadius: 24, style: .continuous)
 
     static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {
         Color(uiColor: UIColor { traits in
@@ -26,7 +27,10 @@ enum MarbleTheme {
         (15, "Clay", clay), (27, "Peach", adaptive(0xF6C8AE, 0xE9AD92)),
         (85, "Moss", moss), (280, "Plum", adaptive(0xD8BFDE, 0xC9A8D1)),
         (42, "Honey", adaptive(0xECC988, 0xDDB570)), (230, "Iris", adaptive(0xC5C9E9, 0xADB4DD)),
-        (329, "Rose", adaptive(0xE9BDD0, 0xDDA9C3))
+        (329, "Rose", adaptive(0xE9BDD0, 0xDDA9C3)),
+        (152, "Mint", adaptive(0x9DDEC8, 0x8DCCB5)),
+        (196, "Sky", adaptive(0xA7D6E7, 0x94C9DF)),
+        (56, "Lemon", adaptive(0xEDE3A0, 0xD9CE87))
     ]
 
     static func paletteIndex(for hue: Int) -> Int {
@@ -55,6 +59,28 @@ enum MarbleTheme {
         case "running", "cancelled", "interrupted": return waiting
         default: return muted
         }
+    }
+}
+
+struct MarbleInlineButton: View {
+    let title: LocalizedStringKey
+    var role: ButtonRole? = nil
+    var prominent = false
+    let action: () -> Void
+
+    var body: some View {
+        if prominent {
+            control.buttonStyle(.glassProminent)
+        } else {
+            control.buttonStyle(.glass)
+        }
+    }
+
+    private var control: some View {
+        Button(role: role, action: action) {
+            Text(title).frame(minWidth: 44, minHeight: 44)
+        }
+        .buttonBorderShape(.capsule)
     }
 }
 
@@ -169,7 +195,7 @@ struct MarbleConnectionNotice: View {
                     Label("Marble is offline", systemImage: "wifi.slash")
                     Text("Check that your host is running and reachable.")
                         .foregroundStyle(MarbleTheme.muted)
-                    Button("Retry connection") { store.reconnect(force: true) }
+                    MarbleInlineButton(title: "Retry connection") { store.reconnect(force: true) }
                 } else {
                     ProgressView("Connecting to your host…")
                 }
@@ -178,7 +204,7 @@ struct MarbleConnectionNotice: View {
             .foregroundStyle(MarbleTheme.ink)
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(MarbleTheme.card, in: RoundedRectangle(cornerRadius: 14))
+            .background(MarbleTheme.card, in: MarbleTheme.panel)
             .sheet(isPresented: $replacesToken) {
                 MarbleOnboardingView(expiredToken: true) { replacesToken = false }
             }
@@ -223,8 +249,8 @@ struct MarbleThinkingBubble: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 11)
                 .background(
-                    Color(.secondarySystemBackground),
-                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    MarbleTheme.card,
+                    in: MarbleTheme.panel
                 )
             Text(title)
                 .font(.footnote)

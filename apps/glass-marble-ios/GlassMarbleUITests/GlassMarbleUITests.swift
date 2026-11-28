@@ -92,7 +92,7 @@ final class GlassMarbleUITests: XCTestCase {
     }
 
     func testColdOpenShowsLatestNamedAndDefaultHistoryWithoutScrolling() {
-        app.tabBars.buttons["Marbles"].tap()
+        app.tabBars.buttons["Agents"].tap()
         app.staticTexts["Ada"].tap()
         assertHittable("Hello! Lovely to meet you — what shall we work on?")
         app.navigationBars.buttons.element(boundBy: 0).tap()
@@ -105,7 +105,7 @@ final class GlassMarbleUITests: XCTestCase {
     }
 
     private func openDefaultChats() {
-        app.tabBars.buttons["Marbles"].tap()
+        app.tabBars.buttons["Agents"].tap()
         app.staticTexts["Marble"].tap()
     }
 
@@ -125,14 +125,14 @@ final class GlassMarbleUITests: XCTestCase {
 
     func testLaunchLeavesTheTabsVisibleWithNoChatPushed() {
         XCTAssertTrue(app.tabBars.buttons["Everyone"].exists)
-        XCTAssertTrue(app.tabBars.buttons["Marbles"].exists)
+        XCTAssertTrue(app.tabBars.buttons["Agents"].exists)
         openDefaultChats()
         XCTAssertTrue(app.staticTexts["Fixture conversation 0"].waitForExistence(timeout: 5))
         shot("01-chats-list")
     }
 
     func testEveryTabIsReachable() {
-        for tab in ["Marbles", "Everyone", "Activity", "Settings"] {
+        for tab in ["Agents", "Everyone", "Activity", "Settings"] {
             app.tabBars.buttons[tab].tap()
             XCTAssertTrue(app.tabBars.buttons[tab].isSelected, "\(tab) tab did not select")
             shot("02-tab-" + tab.lowercased())
@@ -191,11 +191,11 @@ final class GlassMarbleUITests: XCTestCase {
     }
 
     func testPickerOpensNewMarbleAndEveryoneIsOneTapAway() {
-        XCTAssertTrue(app.tabBars.buttons["Marbles"].isSelected)
-        let newMarble = app.buttons["New Marble"]
+        XCTAssertTrue(app.tabBars.buttons["Agents"].isSelected)
+        let newMarble = app.buttons["New agent"]
         XCTAssertTrue(newMarble.isHittable)
         newMarble.tap()
-        XCTAssertTrue(app.textFields["Name your Marble"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["Name your agent"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
         app.tabBars.buttons["Everyone"].tap()
         XCTAssertTrue(app.buttons["New Everyone thread"].isHittable)
@@ -317,7 +317,7 @@ final class GlassMarbleUITests: XCTestCase {
         XCTAssertTrue(jump.isHittable)
         XCTAssertFalse(latest.isHittable)
         shot("p1-jump-visible")
-        for _ in 0..<10 where !latest.isHittable {
+        for _ in 0..<10 where !latest.isHittable || jump.exists {
             end.press(forDuration: 0.05, thenDragTo: start)
         }
         assertHittable("Fixture message 299")

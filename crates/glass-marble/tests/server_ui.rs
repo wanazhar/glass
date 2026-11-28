@@ -1792,6 +1792,33 @@ fn transcript_pages_search_and_conversation_lifecycle() {
     let lean: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(lean["conversations"][0]["title"], json!("Deploys"));
 
+    assert_eq!(
+        server.handle("POST", "/api/conversations/c1/archive", "").0,
+        200
+    );
+    let (_, body) = server.handle("GET", "/api/state?lean=1", "");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["conversations"][0]["archived"],
+        true
+    );
+    assert_eq!(
+        server
+            .handle("GET", "/api/transcript?conversationId=c1", "")
+            .0,
+        200
+    );
+    assert_eq!(
+        server
+            .handle("POST", "/api/conversations/c1/unarchive", "")
+            .0,
+        200
+    );
+    let (_, body) = server.handle("GET", "/api/state?lean=1", "");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["conversations"][0]["archived"],
+        Value::Null
+    );
+
     let (status, _) = server.handle("POST", "/api/conversations/%631/delete", "");
     assert_eq!(status, 200);
     let (status, body) = server.handle("GET", "/api/transcript?conversationId=c1", "");
@@ -1820,6 +1847,21 @@ fn transcript_pages_search_and_conversation_lifecycle() {
     assert_eq!(
         server.handle("POST", "/api/conversations/c1/delete", "").0,
         404
+    );
+    let (_, removed) = server.handle("GET", "/api/state?lean=1", "");
+    let removed: Value = serde_json::from_str(&removed).unwrap();
+    assert_eq!(removed["deletedChats"][0]["title"], "Deploys");
+    assert!(removed["deletedChats"][0]["transcript"].is_null());
+    assert_eq!(
+        server.handle("POST", "/api/conversations/c1/restore", "").0,
+        200
+    );
+    let (_, restored) = server.handle("GET", "/api/transcript?conversationId=c1", "");
+    assert_eq!(
+        serde_json::from_str::<Value>(&restored).unwrap()["entries"]
+            .as_array()
+            .map(Vec::len),
+        Some(3)
     );
 }
 
@@ -2628,6 +2670,14 @@ fn group_rounds_handoff_pass_interrupt_and_close_without_leaking_sessions() {
             .0,
         200
     );
+    assert_eq!(post("Verify the handoff").0, 202);
+    wait(&|state| {
+        state.transcript.iter().any(|entry| {
+            entry.thread_id.as_deref() == Some(id)
+                && entry.kind == "assistant"
+                && entry.text == "I verified Engineer’s checklist."
+        })
+    });
     assert_eq!(post("Pause this round").0, 202);
     wait(&|state| {
         state
@@ -2690,6 +2740,398 @@ fn group_rounds_handoff_pass_interrupt_and_close_without_leaking_sessions() {
             .any(|member| member == "engineer")
     );
     assert_eq!(after.thread_entries(saved_thread), entries);
+}
+
+#[test]
+fn everyone_threads_run_sequential_handoffs_in_the_group_round_engine() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_args("everyone-rounds", vec!["--group-rounds".into()]);
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.prism.install_template();
+        for member in ["lead", "engineer", "reviewer"] {
+            let card = state.prism.find_mut(member).unwrap().card.as_mut().unwrap();
+            card.in_everyone = true;
+        }
+        state
+            .prism
+            .find_mut("reviewer")
+            .unwrap()
+            .card
+            .as_mut()
+            .unwrap()
+            .when_to_speak = glass_marble::prism::WhenToSpeak::Mentioned;
+    }
+    let (status, body) = fixture.post(
+        "/api/threads",
+        json!({"conversation_id":"everyone","title":"Launch"}),
+    );
+    assert_eq!(status, 201, "{body}");
+    let id = body["thread"]["id"].as_str().unwrap();
+    let (status, body) = fixture.post(
+        "/api/everyone",
+        json!({"threadId":id,"text":"Verify the handoff"}),
+    );
+    assert_eq!(status, 202, "{body}");
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let entries = everyone_entries(&fixture.state);
+        let replies: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.kind == "assistant" && entry.thread_id.as_deref() == Some(id))
+            .collect();
+        if replies.len() >= 3 {
+            assert_eq!(
+                replies[..3]
+                    .iter()
+                    .map(|entry| entry.speaker.as_str())
+                    .collect::<Vec<_>>(),
+                ["lead", "engineer", "reviewer"]
+            );
+            assert!(replies[1].text.contains("checklist from Lead"));
+            assert_eq!(replies[2].text, "I verified Engineer’s checklist.");
+            assert_eq!(
+                entries.iter().filter(|entry| entry.kind == "user").count(),
+                1
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Everyone handoff replies: {replies:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn everyone_pass_retracts_the_announced_pending_reply() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_args("everyone-pass", vec!["--group-rounds".into()]);
+    {
+        let mut state = fixture.state.lock().unwrap();
+        state.prism.install_template();
+        state
+            .prism
+            .find_mut("reviewer")
+            .unwrap()
+            .card
+            .as_mut()
+            .unwrap()
+            .in_everyone = true;
+    }
+    let (status, body) = fixture.post(
+        "/api/threads",
+        json!({"conversation_id":"everyone","title":"Review"}),
+    );
+    assert_eq!(status, 201, "{body}");
+    let thread = body["thread"]["id"].as_str().unwrap();
+    let prompt = "@reviewer Nothing to add";
+    assert_eq!(
+        fixture
+            .post("/api/everyone", json!({"threadId":thread,"text":prompt}))
+            .0,
+        202
+    );
+    let task = fixture.completed(prompt);
+    assert!(
+        !everyone_entries(&fixture.state)
+            .iter()
+            .any(|entry| entry.kind == "pending" && entry.task_id == task.id)
+    );
+    let events = fixture.events.since(0);
+    let pending = events
+        .iter()
+        .find(|event| {
+            event.kind == "entry" && event.task_id == task.id && event.data["kind"] == "pending"
+        })
+        .expect("working row was announced");
+    assert!(
+        events.iter().any(|event| event.sequence > pending.sequence
+            && event.kind == "entry_removed"
+            && event.data["id"] == pending.data["id"]
+            && event.data["thread_id"] == thread),
+        "working row removal was not announced"
+    );
+}
+
+#[test]
+fn paused_everyone_thread_messages_resume_as_sequential_rounds() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_persistence(
+        "everyone-paused",
+        vec!["--group-rounds".into(), "--report-round-history".into()],
+        true,
+    );
+    let (status, body) = fixture.post(
+        "/api/threads",
+        json!({"conversation_id":"everyone","title":"Held rounds"}),
+    );
+    assert_eq!(status, 201, "{body}");
+    let thread = body["thread"]["id"].as_str().unwrap();
+    assert_eq!(fixture.post("/api/control/pause", json!({})).0, 200);
+    let prompts = ["@marble First held round", "@marble Second held round"];
+    for (text, client) in prompts.into_iter().zip([Some("held-first"), None]) {
+        let mut request = json!({"threadId":thread,"text":text});
+        if let Some(client) = client {
+            request["client_message_id"] = json!(client);
+        }
+        let (status, body) = fixture.post("/api/everyone", request.clone());
+        assert_eq!(status, 202, "{body}");
+        assert_eq!(body["queued"], true, "{body}");
+        if client.is_some() {
+            assert_eq!(fixture.post("/api/everyone", request), (status, body));
+        }
+    }
+    let store = fixture.store.as_ref().unwrap();
+    let paused = store.load().unwrap();
+    assert_eq!(paused.control.queue.len(), 2);
+    assert!(paused.tasks.is_empty());
+    assert_eq!(fixture.post("/api/control/resume", json!({})).0, 200);
+    let first = fixture.completed(prompts[0]);
+    let second = fixture.completed(prompts[1]);
+    let state = fixture.state.lock().unwrap();
+    assert!(state.control.queue.is_empty());
+    let replies: Vec<_> = state
+        .transcript
+        .iter()
+        .filter(|entry| {
+            entry.conversation_id == "everyone"
+                && entry.thread_id.as_deref() == Some(thread)
+                && entry.kind == "assistant"
+        })
+        .collect();
+    assert_eq!(
+        replies
+            .iter()
+            .map(|entry| &entry.task_id)
+            .collect::<Vec<_>>(),
+        [&first.id, &second.id]
+    );
+    assert!(
+        !replies[0].text.contains(prompts[1]),
+        "{:?}",
+        replies[0].text
+    );
+    assert!(
+        replies[1].text.contains(prompts[0]),
+        "{:?}",
+        replies[1].text
+    );
+    assert!(
+        paused
+            .transcript
+            .iter()
+            .all(|entry| !prompts.contains(&entry.text.as_str()))
+    );
+    assert_eq!(
+        state
+            .transcript
+            .iter()
+            .filter(|entry| {
+                entry.conversation_id == "everyone"
+                    && entry.thread_id.as_deref() == Some(thread)
+                    && entry.kind == "user"
+            })
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn restoring_an_archived_everyone_thread_resumes_its_held_round() {
+    if !python3_available() {
+        return;
+    }
+    let fixture =
+        NamedTurnFixture::with_args("everyone-archived-held", vec!["--group-rounds".into()]);
+    let (status, body) = fixture.post(
+        "/api/threads",
+        json!({"conversation_id":"everyone","title":"Temporarily archived"}),
+    );
+    assert_eq!(status, 201, "{body}");
+    let thread = body["thread"]["id"].as_str().unwrap();
+    let prompt = "@marble answer after restore";
+    assert_eq!(fixture.post("/api/control/pause", json!({})).0, 200);
+    let (status, body) = fixture.post("/api/everyone", json!({"threadId":thread,"text":prompt}));
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(body["queued"], true);
+    assert_eq!(
+        fixture
+            .post(&format!("/api/threads/{thread}/archive"), json!({}))
+            .0,
+        200
+    );
+    let (status, body) = fixture.post("/api/control/resume", json!({}));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["dispatched"], 0);
+    assert_eq!(fixture.state.lock().unwrap().control.queue.len(), 1);
+    assert_eq!(
+        fixture
+            .post(&format!("/api/threads/{thread}/restore"), json!({}))
+            .0,
+        200
+    );
+    fixture.completed(prompt);
+    assert!(fixture.state.lock().unwrap().control.queue.is_empty());
+}
+
+#[test]
+fn restoring_a_deleted_everyone_thread_recovers_its_held_rounds() {
+    if !python3_available() {
+        return;
+    }
+    for restore_while_paused in [true, false] {
+        let fixture = NamedTurnFixture::with_persistence(
+            &format!("everyone-deleted-held-{restore_while_paused}"),
+            vec!["--group-rounds".into()],
+            true,
+        );
+        let (status, body) = fixture.post(
+            "/api/threads",
+            json!({"conversation_id":"everyone","title":"Held rounds in trash"}),
+        );
+        assert_eq!(status, 201, "{body}");
+        let thread = body["thread"]["id"].as_str().unwrap();
+        assert_eq!(fixture.post("/api/control/pause", json!({})).0, 200);
+        let prompts = [
+            "@marble First trashed round",
+            "@marble Second trashed round",
+        ];
+        let mut entry_ids = Vec::new();
+        for (i, prompt) in prompts.into_iter().enumerate() {
+            let (status, body) = fixture.post(
+                "/api/everyone",
+                json!({"threadId":thread,"text":prompt,"client_message_id":format!("trashed-{i}")}),
+            );
+            assert_eq!(status, 202, "{body}");
+            assert_eq!(body["queued"], true, "{body}");
+            entry_ids.push(body["entry_id"].as_str().unwrap().to_owned());
+        }
+        let store = fixture.store.as_ref().unwrap();
+        let queued = store.load().unwrap().control.queue;
+        let delete = format!("/api/threads/{thread}/delete");
+        let restore = format!("/api/conversations/{thread}/restore");
+        assert_eq!(fixture.post(&delete, json!({})).0, 200);
+        let mut deleted = store.load().unwrap();
+        assert!(deleted.control.queue.is_empty());
+        assert_eq!(
+            deleted.encode()["deletedChats"][0]["heldTurns"],
+            json!(queued)
+        );
+        if !restore_while_paused {
+            let (status, body) = fixture.post("/api/control/resume", json!({}));
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(body["dispatched"], 0);
+        }
+        assert_eq!(fixture.post(&restore, json!({})).0, 200);
+        if restore_while_paused {
+            assert_eq!(store.load().unwrap().control.queue, queued);
+            assert!(fixture.state.lock().unwrap().tasks.is_empty());
+            assert_eq!(fixture.post("/api/control/resume", json!({})).0, 200);
+        }
+        for prompt in prompts {
+            fixture.completed(prompt);
+        }
+        let state = fixture.state.lock().unwrap();
+        assert!(state.control.queue.is_empty());
+        let actual = state
+            .transcript
+            .iter()
+            .filter(|entry| {
+                entry.conversation_id == "everyone"
+                    && entry.thread_id.as_deref() == Some(thread)
+                    && entry.kind == "user"
+            })
+            .map(|entry| &entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(actual, entry_ids.iter().collect::<Vec<_>>());
+        drop(state);
+
+        assert!(deleted.expire_deleted_chats(u64::MAX));
+        assert!(deleted.control.queue.is_empty());
+        let expired = server_with(
+            deleted,
+            ApprovalInbox::default(),
+            EventBus::default(),
+            AccessPolicy::new(None),
+        );
+        assert_eq!(expired.handle("POST", &restore, "{}").0, 404);
+    }
+}
+
+#[test]
+fn deleted_private_chat_restores_held_messages_until_expiry() {
+    if !python3_available() {
+        return;
+    }
+    for agent in [false, true] {
+        for restore_while_paused in [false, true] {
+            let mut fixture = NamedTurnFixture::with_persistence(
+                &format!("private-deleted-held-{agent}-{restore_while_paused}"),
+                vec![],
+                true,
+            );
+            fixture.install_default_worker();
+            let (_, body) = fixture.post(
+                "/api/conversations",
+                json!({"marbleId":agent.then_some(&fixture.marble_id)}),
+            );
+            let chat = body["conversation"]["id"].as_str().unwrap();
+            assert_eq!(fixture.post("/api/control/pause", json!({})).0, 200);
+            let prompt = "Restore this private message";
+            let (status, held) = fixture.post(
+                "/api/turns",
+                json!({"conversationId":chat,"text":prompt,"client_message_id":"private-held"}),
+            );
+            assert_eq!(status, 202, "{held}");
+            assert_eq!(held["paused"], true, "{held}");
+            let store = fixture.store.as_ref().unwrap();
+            let queued = store.load().unwrap().control.queue;
+            assert_eq!(queued.len(), 1);
+            let delete = format!("/api/conversations/{chat}/delete");
+            let restore = format!("/api/conversations/{chat}/restore");
+            assert_eq!(fixture.post(&delete, json!({})).0, 200);
+            let mut deleted = store.load().unwrap();
+            assert!(deleted.control.queue.is_empty());
+            assert_eq!(
+                deleted.encode()["deletedChats"][0]["heldTurns"],
+                json!(queued)
+            );
+            if !restore_while_paused {
+                assert_eq!(
+                    fixture.post("/api/control/resume", json!({})).1["dispatched"],
+                    0
+                );
+            }
+            assert_eq!(fixture.post(&restore, json!({})).0, 200);
+            if restore_while_paused {
+                assert_eq!(store.load().unwrap().control.queue, queued);
+                assert_eq!(
+                    fixture.post("/api/control/resume", json!({})).1["dispatched"],
+                    1
+                );
+            }
+            assert_eq!(fixture.completed(prompt).conversation_id, chat);
+            assert!(fixture.state.lock().unwrap().control.queue.is_empty());
+
+            assert!(deleted.expire_deleted_chats(u64::MAX));
+            assert!(deleted.control.queue.is_empty());
+            let expired = server_with(
+                deleted,
+                ApprovalInbox::default(),
+                EventBus::default(),
+                AccessPolicy::new(None),
+            );
+            assert_eq!(expired.handle("POST", &restore, "{}").0, 404);
+        }
+    }
 }
 
 #[test]
@@ -3026,10 +3468,18 @@ fn blocked_group_workspace_cleanup_is_retried_after_deletion() {
     assert!(intact.threads.iter().any(|entry| entry.id == thread));
     let (status, body) = fixture.post(&path, json!({}));
     assert_eq!(status, 200, "{body}");
-    assert!(!session_root.exists());
+    assert!(session_root.is_dir());
     let mut reloaded = store.load().unwrap();
     assert!(reloaded.transcript.is_empty());
     assert!(reloaded.threads.is_empty());
+    let deleted_at = serde_json::to_value(&reloaded).unwrap()["deletedChats"][0]["deletedAt"]
+        .as_u64()
+        .unwrap();
+    assert!(!reloaded.expire_deleted_chats(deleted_at + 604_799_999));
+    assert!(reloaded.expire_deleted_chats(deleted_at + 604_800_000));
+    store.save(&reloaded).unwrap();
+    store.retry_everyone_cleanup(&mut reloaded);
+    assert!(!session_root.exists());
     assert_eq!(
         serde_json::to_value(&reloaded).unwrap()["pendingEveryoneCleanup"],
         json!([thread])
@@ -3842,6 +4292,79 @@ impl NamedTurnFixture {
             assert!(Instant::now() < deadline, "no completed task for {prompt}");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+}
+
+#[test]
+fn new_private_chats_with_the_same_agent_keep_separate_history() {
+    if !python3_available() {
+        return;
+    }
+    let fixture = NamedTurnFixture::with_persistence("private-chats", vec![], true);
+    let (status, body) = fixture.post(
+        "/api/turns",
+        json!({"marbleId": fixture.marble_id, "text": "Original roster chat"}),
+    );
+    assert_eq!(status, 202, "{body}");
+    let original = fixture.completed("Original roster chat").conversation_id;
+    let create = || {
+        let (status, body) =
+            fixture.post("/api/conversations", json!({"marbleId": fixture.marble_id}));
+        assert_eq!(status, 201, "{body}");
+        body["conversation"]["id"].as_str().unwrap().to_owned()
+    };
+    let first = create();
+    let second = create();
+    assert_ne!(first, second);
+    for (chat, prompt) in [
+        (&first, "First private note"),
+        (&second, "Second private note"),
+        (&first, "Continue first private chat"),
+    ] {
+        let (status, body) = fixture.post(
+            "/api/turns",
+            json!({"text": prompt, "conversationId": chat}),
+        );
+        assert_eq!(status, 202, "{body}");
+        assert_eq!(body["conversationId"], *chat);
+        assert_eq!(fixture.completed(prompt).conversation_id, *chat);
+    }
+    let state = fixture.store.as_ref().unwrap().load().unwrap();
+    assert_eq!(
+        state.prism.get(&fixture.marble_id).unwrap().conversation_id,
+        original
+    );
+    let prompts = |chat: &str| {
+        state
+            .transcript
+            .iter()
+            .filter(|entry| entry.kind == "user" && entry.conversation_id == chat)
+            .map(|entry| entry.text.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        prompts(&first),
+        ["First private note", "Continue first private chat"]
+    );
+    assert_eq!(prompts(&second), ["Second private note"]);
+    assert_ne!(
+        state
+            .conversations
+            .iter()
+            .find(|c| c.id == first)
+            .unwrap()
+            .engine_conversation_id,
+        ""
+    );
+    for chat in [&first, &second] {
+        assert!(
+            fixture
+                .root
+                .join("conversation-sessions")
+                .join(chat)
+                .join("workspace")
+                .is_dir()
+        );
     }
 }
 
@@ -6825,7 +7348,7 @@ fn thread_turns_route_and_propagate_to_every_entry_and_retry_after_reload() {
                 202
             );
             let task = fixture.completed(&prompt);
-            assert_eq!(!task.marble_id.is_empty(), named);
+            assert_eq!(!task.marble_id.is_empty(), named || everyone);
             {
                 let state = fixture.state.lock().unwrap();
                 let entries: Vec<_> = state
@@ -6844,6 +7367,8 @@ fn thread_turns_route_and_propagate_to_every_entry_and_retry_after_reload() {
             }
             let engine_storage = if named {
                 fixture.root.join("prism-sessions").join(&fixture.marble_id)
+            } else if everyone {
+                fixture.root.join("prism-sessions").join("marble")
             } else {
                 fixture.root.join("default-sessions")
             };
@@ -7419,7 +7944,20 @@ fn everyone_agent_workspaces_are_distinct_and_deleted_with_the_thread() {
             .0,
         200
     );
-    assert!(!first_root.exists());
+    assert!(first_root.exists());
+    assert_eq!(
+        fixture
+            .post(&format!("/api/conversations/{first}/restore"), json!({}))
+            .0,
+        200
+    );
+    assert_eq!(
+        fixture
+            .server
+            .handle("GET", &format!("/api/threads/{first}"), "")
+            .0,
+        200
+    );
     assert!(second_root.exists());
     let (status, _) = fixture.post("/api/everyone/clear", json!({}));
     assert_eq!(status, 200);
@@ -8485,7 +9023,7 @@ fn an_everyone_mention_routes_to_the_named_marble() {
 }
 
 #[test]
-fn everyone_follow_up_steers_the_active_agent_without_a_second_run() {
+fn everyone_thread_message_interrupts_the_active_round() {
     if !python3_available() {
         return;
     }
@@ -8510,7 +9048,7 @@ fn everyone_follow_up_steers_the_active_agent_without_a_second_run() {
         &root,
         &state,
         &events,
-        vec!["--wait-for-steer".into()],
+        vec!["--group-rounds".into()],
     );
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let server = MarbleServer::new(MarbleServerParts {
@@ -8537,7 +9075,7 @@ fn everyone_follow_up_steers_the_active_agent_without_a_second_run() {
     let (status, body) = server.handle(
         "POST",
         "/api/everyone",
-        &json!({"text":"@Ada first","thread_id":thread}).to_string(),
+        &json!({"text":"@Ada Pause this round","thread_id":thread}).to_string(),
     );
     assert_eq!(status, 202, "{body}");
     while receiver.recv_timeout(Duration::from_secs(5)).unwrap().kind != "turn_start" {}
@@ -8561,13 +9099,18 @@ fn everyone_follow_up_steers_the_active_agent_without_a_second_run() {
             .collect();
         if !replies.is_empty() {
             assert_eq!(replies.len(), 1);
-            assert!(
-                replies[0]
-                    .text
-                    .contains("With your correction in mind: @Ada second")
-            );
+            assert_eq!(replies[0].text, "The handoff is ready for the team.");
             let guard = state.lock().unwrap();
-            assert_eq!(guard.tasks.len(), 1);
+            assert_eq!(guard.tasks.len(), 2);
+            assert_eq!(
+                guard
+                    .tasks
+                    .iter()
+                    .find(|task| task.prompt == "@Ada Pause this round")
+                    .unwrap()
+                    .status,
+                "cancelled",
+            );
             assert!(guard.control.queue.is_empty());
             break;
         }

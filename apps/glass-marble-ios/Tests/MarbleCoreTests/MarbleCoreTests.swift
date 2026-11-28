@@ -785,6 +785,19 @@ final class MarbleNavigationTests: XCTestCase {
         XCTAssertEqual(nav.viewingConversationId, "conv-1")
     }
 
+    func testNewAgentChatStaysInRosterChatWhenHostIgnoresAgent() throws {
+        var nav = MarbleNavigation()
+        nav.openMarble("ada")
+        let response = Data(#"{"id":"chat-1","title":"","taskIds":[],"updatedAt":0}"#.utf8)
+        var chat = try JSONDecoder().decode(MarbleConversation.self, from: response)
+        nav.openNewAgentChat(chat, agentId: "ada")
+        XCTAssertEqual(nav.chatPath, [.marbleChat("ada")])
+
+        chat.marbleId = "ada"
+        nav.openNewAgentChat(chat, agentId: "ada")
+        XCTAssertEqual(nav.chatPath, [.marbleChat("ada"), .conversation("chat-1")])
+    }
+
     func testDeletedPopsBackToList() {
         var nav = MarbleNavigation()
         nav.openConversation("a")
@@ -1615,6 +1628,19 @@ final class MarbleResumeTests: XCTestCase {
             MarbleChatCache.fileName(for: "http://b:4783")
         )
         XCTAssertTrue(MarbleChatCache.fileName(for: "http://a:1").hasPrefix("marble-chats-"))
+    }
+
+    func testHostRefreshUnhidesRestoredChatsOnAnotherDevice() {
+        var local: Set<String> = ["restored", "still-deleted"]
+        var snapshot = MarbleState.empty
+        snapshot.reconcileDeletedConversations(&local)
+        XCTAssertEqual(local, ["restored", "still-deleted"])
+
+        snapshot.conversations = [
+            MarbleConversation(id: "restored", title: "Restored elsewhere", taskIds: [], updatedAt: 1)
+        ]
+        snapshot.reconcileDeletedConversations(&local)
+        XCTAssertEqual(local, ["still-deleted"])
     }
 
     func testDeletedConversationIsAbsentFromRewrittenDiskCache() throws {

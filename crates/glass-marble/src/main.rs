@@ -340,7 +340,11 @@ fn serve(cli: &Cli, options: ServeOptions<'_>) -> Result<(), MarbleError> {
     loaded
         .memory
         .expire_deleted(glass_marble::worker::now_millis());
-    if loaded.prism.install_template() || loaded.memory.recently_deleted.len() != recently_deleted {
+    let expired_chats = loaded.expire_deleted_chats(glass_marble::worker::now_millis());
+    if loaded.prism.install_template()
+        || expired_chats
+        || loaded.memory.recently_deleted.len() != recently_deleted
+    {
         loaded.bump();
         store.save(&loaded)?;
     }

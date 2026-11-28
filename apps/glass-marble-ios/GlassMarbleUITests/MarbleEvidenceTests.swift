@@ -20,6 +20,12 @@ final class MarbleEvidenceTests: XCTestCase {
 
     private func back() { app.navigationBars.buttons.element(boundBy: 0).tap() }
 
+    private func checkCapsule(_ title: String) {
+        let control = button(title)
+        check(control)
+        XCTAssertGreaterThanOrEqual(control.frame.height, 44)
+    }
+
     private func start(address: String = "http://127.0.0.1:4783", expectedAgent: String = "Ada") throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["MARBLE_EVIDENCE"] == "1",
                           "Requires a seeded local Marble host")
@@ -59,14 +65,14 @@ final class MarbleEvidenceTests: XCTestCase {
         check(app.staticTexts["Nothing yet"])
         shot("empty")
         back()
-        button("New Marble").tap()
-        check(app.textFields["Name your Marble"])
+        button("New agent").tap()
+        check(app.textFields["Name your agent"])
         shot("new-marble")
         button("Cancel").tap()
         app.staticTexts["Ada"].firstMatch.tap()
         check(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "packing list")).firstMatch)
         shot("chat")
-        button("About this Marble").tap()
+        button("About this agent").tap()
         check(app.staticTexts["Profile"].firstMatch)
         shot("profile")
         button("Memory").tap()
@@ -147,10 +153,12 @@ final class MarbleEvidenceTests: XCTestCase {
         XCTAssertTrue(keepSkill.isSelected)
         keepSkill.tap()
         XCTAssertFalse(keepSkill.isSelected)
+        checkCapsule("Delete selected")
+        checkCapsule("Keep all")
         shot("p3-pruning")
         button("Delete selected").tap()
         XCTAssertTrue(app.staticTexts["Suggested cleanup"].waitForNonExistence(timeout: 10))
-        button("About this Marble").tap()
+        button("About this agent").tap()
         button("Memory").tap()
         let deleted = button("Recently Deleted")
         for _ in 0..<3 where !deleted.isHittable { app.swipeUp() }
@@ -166,17 +174,22 @@ final class MarbleEvidenceTests: XCTestCase {
             throw XCTSkip("Requires a local host seeded with Dietrich's learned skill")
         }
         try start(address: address, expectedAgent: "Marble")
-        let everyoneLink = button("Pick a Marble to talk one to one, or meet in Everyone.")
+        let everyoneLink = app.buttons["Everyone"].firstMatch
         check(everyoneLink)
         everyoneLink.tap()
         check(app.navigationBars["Everyone"])
-        app.tabBars.buttons["Marbles"].tap()
+        app.tabBars.buttons["Agents"].tap()
         let dietrich = app.staticTexts["Dietrich"].firstMatch
         for _ in 0..<4 where !dietrich.isHittable { app.swipeUp() }
         XCTAssertTrue(dietrich.isHittable)
         dietrich.tap()
-        button("About this Marble").tap()
+        button("About this agent").tap()
         button("Memory").tap()
+        let placeholder = app.textFields["What should Dietrich remember?"]
+        for _ in 0..<4 where !placeholder.isHittable { app.swipeUp() }
+        XCTAssertTrue(placeholder.isHittable)
+        shot("p4-dietrich-memory")
+        for _ in 0..<4 where !app.staticTexts["Cobalt project checklist"].firstMatch.isHittable { app.swipeDown() }
         let attribution = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Learned from Ada, ")).firstMatch
         check(attribution)
         shot("p3-learned-skill")
@@ -192,6 +205,8 @@ final class MarbleEvidenceTests: XCTestCase {
         XCTAssertEqual(engineer.value as? String, "1")
         shot("p3-share-skill")
         back()
+        check(button("Share with 1 agent"))
+        shot("p4-one-agent")
         button("Save").tap()
         check(app.staticTexts["Cobalt project checklist for launch"])
     }
@@ -207,6 +222,8 @@ final class MarbleEvidenceTests: XCTestCase {
         thread.tap()
         let choose = app.buttons.matching(NSPredicate(format: "label == %@ AND enabled == YES", "Choose memory")).firstMatch
         check(choose)
+        checkCapsule("Choose memory")
+        checkCapsule("Not now")
         XCTAssertFalse(app.staticTexts["I plan trips using cobalt maps"].exists)
         shot("p3-memory-consent")
         choose.tap()
@@ -231,7 +248,7 @@ final class MarbleEvidenceTests: XCTestCase {
         check(engineer)
         shot("p2-agent-roster")
         engineer.tap()
-        button("About this Marble").tap()
+        button("About this agent").tap()
         check(app.textFields["First name"])
         shot("p2-agent-card")
         let native = app.switches["Native tools (all as a group)"]
@@ -241,16 +258,16 @@ final class MarbleEvidenceTests: XCTestCase {
         let duplicate = button("Duplicate agent")
         for _ in 0..<4 where !duplicate.isHittable { app.swipeUp() }
         duplicate.tap()
-        check(app.textFields["Name your Marble"])
-        XCTAssertEqual(app.textFields["Name your Marble"].value as? String, "Engineer copy")
+        check(app.textFields["Name your agent"])
+        XCTAssertEqual(app.textFields["Name your agent"].value as? String, "Engineer copy")
         shot("p2-duplicate-agent")
         button("Cancel").tap()
         back()
         back()
-        let create = button("New Marble")
+        let create = button("New agent")
         for _ in 0..<4 where !create.isHittable { app.swipeUp() }
         create.tap()
-        check(app.textFields["Name your Marble"])
+        check(app.textFields["Name your agent"])
         shot("p2-new-agent")
         button("Cancel").tap()
     }
@@ -267,13 +284,13 @@ final class MarbleEvidenceTests: XCTestCase {
         let load = button("Load card")
         if !load.isHittable { app.swipeUp() }
         load.tap()
-        let name = app.textFields["Name your Marble"]
+        let name = app.textFields["Name your agent"]
         check(name)
         XCTAssertEqual(name.value as? String, "Sage")
         XCTAssertEqual(app.textFields["Role"].value as? String, "Release librarian")
         shot("p2-import-agent-preview")
         button("Create").tap()
-        check(button("About this Marble"), timeout: 35)
+        check(button("About this agent"), timeout: 35)
         back()
         let imported = app.staticTexts["Sage"].firstMatch
         for _ in 0..<5 where !imported.isHittable { app.swipeUp() }
@@ -323,12 +340,13 @@ final class MarbleEvidenceTests: XCTestCase {
         check(app.staticTexts["Done when, Checklist is ready"])
         shot("p2-group-task-header")
         field.tap()
-        field.typeText("Plan the launch")
+        field.typeText("Verify the handoff")
         button("Send").tap()
         let tutorial = button("Continue")
         if tutorial.exists { tutorial.tap() }
         let handoff = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "checklist from Lead")).firstMatch
         check(handoff, timeout: 15)
+        check(app.staticTexts["I verified Engineer’s checklist."], timeout: 15)
         check(app.staticTexts["Lead suggests adding Researcher"])
         app.swipeDown()
         shot("p2-group-suggestion")
@@ -353,7 +371,7 @@ final class MarbleEvidenceTests: XCTestCase {
     }
 
     func testEveryoneThreads() throws {
-        try start()
+        try start(address: "http://127.0.0.1:4785", expectedAgent: "Engineer")
         app.tabBars.buttons["Everyone"].tap()
         let newThread = button("New Everyone thread")
         check(newThread)
@@ -363,37 +381,89 @@ final class MarbleEvidenceTests: XCTestCase {
         check(title)
         shot("p0-new-thread")
         title.tap()
-        title.typeText("Friday plans")
+        let name = "Friday plans \(Int(Date().timeIntervalSince1970))"
+        title.typeText(name)
         button("Create").tap()
         let field = app.textFields["Reply in thread"]
         check(field)
         field.tap()
-        field.typeText("Hello everyone")
+        field.typeText("Verify the handoff")
         button("Send").tap()
-        for name in ["Marble", "Ada", "Dietrich"] {
-            check(app.staticTexts["\(name) says hello."])
-        }
+        let reviewer = app.staticTexts["I verified Engineer’s checklist."]
+        check(reviewer, timeout: 15)
+        XCTAssertFalse(app.staticTexts["Dietrich is working…"].exists)
         XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "The user is asking")).firstMatch.exists)
-        shot("p0-all-members-and-clean-dietrich-reply")
-        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", " · List")).firstMatch.exists)
-        shot("p0-greeting-without-tools")
+        let engineer = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "@reviewer, please verify.")).firstMatch
+        let transcript = app.scrollViews.firstMatch
+        for _ in 0..<4 where !engineer.isHittable || !reviewer.isHittable {
+            transcript.swipeUp(velocity: .slow)
+        }
+        XCTAssertTrue(engineer.isHittable)
+        XCTAssertTrue(reviewer.isHittable)
+        shot("p4-everyone-handoff")
         button("Thread options").tap()
         button("Archive").tap()
         check(newThread)
         app.staticTexts["Archived"].tap()
-        check(app.staticTexts["Friday plans"])
+        check(app.staticTexts[name])
         shot("p0-archived")
         button("Restore").tap()
         back()
-        check(app.staticTexts["Friday plans"])
+        check(app.staticTexts[name])
         shot("p0-restored")
-        app.staticTexts["Friday plans"].tap()
+        app.staticTexts[name].tap()
         button("Thread options").tap()
         button("Delete").tap()
         button("Delete thread").tap()
         check(newThread)
-        XCTAssertFalse(app.staticTexts["Friday plans"].exists)
+        XCTAssertFalse(app.staticTexts[name].exists)
         shot("p0-deleted")
+    }
+
+    func testHostedPrivateChatLifecycle() throws {
+        guard let address = ProcessInfo.processInfo.environment["MARBLE_PRIVATE_CHAT_EVIDENCE_URL"] else {
+            throw XCTSkip("Requires a local private-chat fixture")
+        }
+        try start(address: address, expectedAgent: "Engineer")
+        let prompt = "Private trip notes \(Int(Date().timeIntervalSince1970))"
+        app.staticTexts["Engineer"].firstMatch.tap()
+        let chats = app.navigationBars.buttons["Chats"]
+        check(chats)
+        chats.tap()
+        button("New chat").tap()
+        let composer = app.textFields["composer.field"]
+        check(composer)
+        composer.tap()
+        composer.typeText(prompt)
+        button("Send").tap()
+        check(app.staticTexts[prompt])
+        check(app.staticTexts["Memory not available."].firstMatch, timeout: 15)
+        let more = app.navigationBars.buttons["Chat actions"]
+        check(more)
+        more.tap()
+        button("Archive").tap()
+        back()
+        back()
+        app.staticTexts["Marble"].firstMatch.tap()
+        button("Archived").tap()
+        check(button("Restore"))
+        shot("p4-private-archived")
+        let archived = app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", prompt)).firstMatch
+        check(archived)
+        archived.tap()
+        check(composer)
+        more.tap()
+        button("Delete").tap()
+        app.buttons.matching(NSPredicate(format: "label == %@", "Delete")).firstMatch.tap()
+        check(app.navigationBars["Archived"])
+        back()
+        button("Recently Deleted").tap()
+        let deleted = app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", prompt)).firstMatch
+        check(deleted)
+        shot("p4-chat-recently-deleted")
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@", "Restore ", prompt))
+            .firstMatch.tap()
+        XCTAssertTrue(deleted.waitForNonExistence(timeout: 15))
     }
 
     func testHostedActivityAndSettings() throws {
@@ -443,8 +513,8 @@ final class MarbleEvidenceTests: XCTestCase {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["MARBLE_PICKER_INSET_EVIDENCE"] == "1",
                           "Requires a seeded roster that fills the picker")
         try start()
-        let newMarble = button("New Marble")
-        let tab = button("Marbles")
+        let newMarble = button("New agent")
+        let tab = button("Agents")
         check(tab)
         for _ in 0..<5 {
             app.swipeUp()
@@ -457,7 +527,7 @@ final class MarbleEvidenceTests: XCTestCase {
 
     func testHostedTablet() throws {
         try start()
-        check(app.staticTexts["Choose a Marble to start a conversation."])
+        check(app.staticTexts["Choose an agent to start a conversation."])
         shot("ipad-home")
         app.staticTexts["Ada"].firstMatch.tap()
         check(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "packing list")).firstMatch)
@@ -465,14 +535,31 @@ final class MarbleEvidenceTests: XCTestCase {
         shot("ipad-chat")
     }
 
+    func testHostedAgentCopy() throws {
+        try start(expectedAgent: "Marble")
+        try XCTSkipUnless(app.frame.width >= 600, "Requires the split-view layout")
+        check(app.staticTexts["Start a chat"])
+        check(app.staticTexts["Choose an agent to start a conversation."])
+        shot("p4-agent-empty")
+        let newAgent = button("New agent")
+        for _ in 0..<4 where !newAgent.isHittable {
+            app.collectionViews.firstMatch.swipeUp()
+        }
+        check(newAgent)
+        shot("p4-new-agent-button")
+        newAgent.tap()
+        check(app.textFields["Name your agent"])
+        shot("p4-new-agent")
+    }
+
     func testHostedXL() throws {
         try start()
         app.swipeUp()
-        let create = button("New Marble")
+        let create = button("New agent")
         check(create)
         XCTAssertTrue(create.isHittable)
         create.tap()
-        check(app.textFields["Name your Marble"])
+        check(app.textFields["Name your agent"])
         shot("new-marble-xl")
         app.swipeUp()
         check(app.staticTexts["Look"])
@@ -514,20 +601,40 @@ final class MarbleEvidenceTests: XCTestCase {
     func testHostedTurnPresentation() throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["MARBLE_TURN_EVIDENCE"] == "1",
                           "Requires the local turn presentation fixture")
-        try start()
-        app.staticTexts["Ada"].firstMatch.tap()
-        let field = app.descendants(matching: .any)["composer.field"].firstMatch
+        let address = try XCTUnwrap(ProcessInfo.processInfo.environment["MARBLE_TURN_EVIDENCE_URL"])
+        try start(address: address, expectedAgent: "Marble")
+        shot("p4-agents-tab")
+        app.staticTexts["Marble"].firstMatch.tap()
+        check(button("chat.compose"))
+        shot("p4-new-chat-button")
+        button("chat.compose").tap()
+        check(app.staticTexts["New chat"])
+        shot("p4-new-chat-picker")
+        button("Private chat").tap()
+        let field = app.textFields["composer.field"]
         check(field)
+        shot("p4-new-chat-empty")
         field.tap()
         field.typeText("Please check the report.")
         button("Send").tap()
         check(app.staticTexts["Checking the report…"])
         shot("p1-working-line")
-        let collapsed = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Used 2 tools")).firstMatch
+        let collapsed = button("Used 2 tools")
         check(collapsed, timeout: 15)
+        collapsed.tap()
+        let listing = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Listed appendix.pdf")).firstMatch
+        let search = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Searched the web")).firstMatch
+        check(listing)
+        check(search)
+        check(app.staticTexts["Running"].firstMatch)
+        shot("p4-tools-running")
         let reply = app.staticTexts["The report is ready to review."]
-        check(reply)
+        check(reply, timeout: 20)
         XCTAssertFalse(app.tabBars.firstMatch.exists)
+        check(listing)
+        check(search)
+        shot("p4-tools-settled")
+        collapsed.tap()
         shot("p1-tools-collapsed")
         collapsed.tap()
         let failed = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Failed")).firstMatch
@@ -542,13 +649,38 @@ final class MarbleEvidenceTests: XCTestCase {
         field.tap()
         field.typeText("Check the report failure.")
         button("Send").tap()
-        XCTAssertFalse(app.staticTexts["Ada couldn’t finish this reply."].exists)
-        check(app.staticTexts["Ada couldn’t finish this reply."], timeout: 15)
-        XCTAssertEqual(app.staticTexts.matching(identifier: "Ada couldn’t finish this reply.").count, 1)
-        check(button("Retry"))
+        XCTAssertFalse(app.staticTexts["Marble couldn’t finish this reply."].exists)
+        check(app.staticTexts["Marble couldn’t finish this reply."], timeout: 20)
+        XCTAssertEqual(app.staticTexts.matching(identifier: "Marble couldn’t finish this reply.").count, 1)
+        checkCapsule("Retry")
         let continueButton = button("Continue")
         if continueButton.exists { continueButton.tap() }
         shot("p1-named-failure")
+    }
+
+    func testHostedInlineApproval() throws {
+        guard let address = ProcessInfo.processInfo.environment["MARBLE_TURN_EVIDENCE_URL"] else {
+            throw XCTSkip("Requires the local turn presentation fixture")
+        }
+        try start(address: address)
+        app.staticTexts["Marble"].firstMatch.tap()
+        button("chat.compose").tap()
+        button("Private chat").tap()
+        let field = app.textFields["composer.field"]
+        check(field)
+        field.tap()
+        field.typeText("Approve the report draft")
+        button("Send").tap()
+        check(app.staticTexts["Write to workspace"])
+        let approve = button("Allow")
+        let decline = button("Deny")
+        let transcript = app.scrollViews.firstMatch
+        for _ in 0..<3 where !approve.isHittable { transcript.swipeUp(velocity: .slow) }
+        XCTAssertTrue(approve.isHittable)
+        XCTAssertGreaterThanOrEqual(decline.frame.minX, app.frame.minX + 16)
+        XCTAssertLessThanOrEqual(approve.frame.maxX, app.frame.maxX - 16)
+        shot("p4-inline-approval")
+        decline.tap()
     }
 
     func testHostedNamedStop() throws {

@@ -29,6 +29,7 @@ public enum ChatRoute: Hashable, Sendable {
     case marbleChat(String)
     /// The default assistant's chats list — its "chat" is every conversation.
     case marbleChats
+    case archivedChats
     /// A marble's info screen: personality, look, memory, what it can do.
     case marbleInfo(String)
 }
@@ -122,6 +123,11 @@ public struct MarbleNavigation: Sendable, Equatable {
         case .activity, .settings:
             break
         }
+    }
+
+    mutating func openNewAgentChat(_ chat: MarbleConversation, agentId: String) {
+        guard chat.marbleId == agentId else { return }
+        openNewChat(chat.id)
     }
 
     /// A roster row: the default assistant opens its chats list, a named

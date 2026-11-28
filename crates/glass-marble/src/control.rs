@@ -224,6 +224,8 @@ pub struct QueuedTurn {
     pub id: String,
     #[serde(default)]
     pub marble_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) everyone_round: bool,
     #[serde(default)]
     pub conversation_id: Option<String>,
     pub text: String,
@@ -486,6 +488,7 @@ impl ControlState {
             thread_id: None,
             id: next_id("queued"),
             marble_id,
+            everyone_round: false,
             conversation_id,
             text: text.into(),
             at: now_millis(),

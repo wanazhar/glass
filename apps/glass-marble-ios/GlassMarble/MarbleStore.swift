@@ -80,6 +80,7 @@ final class MarbleStore: ObservableObject {
     private var loadingOlder: [String: String] = [:]
     private var loadingOlderThreads: [String: String] = [:]
     private var deletedConversationIDs: Set<String> = []
+    private var deletionSequence: UInt64 = 0
     private var conversationDeletions: [String: UInt64] = [:]
     @Published private(set) var historyErrors: Set<String> = []
     @Published private(set) var threadUpdates: [String: MarbleThread] = [:]
@@ -569,10 +570,14 @@ final class MarbleStore: ObservableObject {
     private func refreshPass() async {
         guard let client else { return }
         let generation = hostGeneration.current
+        let knownDeletions = deletionSequence
         do {
             async let healthFetch = client.health()
             var snapshot = try await client.state()
             guard hostGeneration.isCurrent(generation) else { return }
+            if knownDeletions == deletionSequence {
+                snapshot.reconcileDeletedConversations(&deletedConversationIDs)
+            }
             removeDeletedConversations(from: &snapshot)
             let previousChats = Set(state.conversations.map(\.id))
             if !previousChats.isSubset(of: Set(snapshot.conversations.map(\.id))) {
@@ -955,11 +960,12 @@ final class MarbleStore: ObservableObject {
               canSend(to: target) else { return false }
         let responders: [String]
         switch target {
-        case .everyone: responders = MarbleMentions.responders(in: trimmed, roster: prism.marbles)
+        case .everyone(let thread):
+            responders = thread == nil ? MarbleMentions.responders(in: trimmed, roster: prism.marbles) : []
         case .marble(let id): responders = [id]
         case .conversation(let id, _):
             responders = id == marbleGroupConversationId ? []
-                : [prism.marbles.first(where: { $0.conversationId == id })?.id ?? "marble"]
+                : [state.conversation(id)?.marbleId ?? prism.marbles.first(where: { $0.conversationId == id })?.id ?? "marble"]
         }
         let previous = target.isEveryone
             ? outgoingPresentation(entries, to: target, conversationId: everyoneConversationId).entries
@@ -1469,7 +1475,13 @@ final class MarbleStore: ObservableObject {
 
     /// The marble a transcript row is speaking as, for its label and dot.
     func speakerStyle(for entry: MarbleEntry) -> MarbleSpeakerStyle? {
-        MarbleSpeakerStyle.for(entry: entry, marbles: prism.marbles)
+        guard var style = MarbleSpeakerStyle.for(entry: entry, marbles: prism.marbles) else { return nil }
+        if let agent = prism.marbles.first(where: { $0.id == entry.speaker || $0.name == entry.speakerName }) {
+            let identity = rosterStyle(for: agent)
+            style.hue = identity.hue
+            style.glyph = identity.glyph
+        }
+        return style
     }
 
     /// A marble's own chat transcript once it has a durable conversation.
@@ -1680,19 +1692,19 @@ final class MarbleStore: ObservableObject {
         await perform { state.memory = try await client.updateKnowledge(id: id, action, input) }
     }
 
-    func createConversation() async throws -> MarbleConversation {
+    func createConversation(marbleId: String? = nil) async throws -> MarbleConversation {
         let conversation: MarbleConversation
         #if DEBUG
         if fixtureThreads != nil {
             conversation = MarbleConversation(
                 id: UUID().uuidString, title: "", taskIds: [],
-                updatedAt: UInt64(Date().timeIntervalSince1970 * 1000)
+                updatedAt: UInt64(Date().timeIntervalSince1970 * 1000), marbleId: marbleId
             )
             state.conversations.append(conversation)
             return conversation
         }
         #endif
-        conversation = try await withChatClient { try await $0.createConversation() }
+        conversation = try await withChatClient { try await $0.createConversation(marbleId: marbleId) }
         if state.conversation(conversation.id) == nil {
             state.conversations.append(conversation)
         }
@@ -1708,6 +1720,31 @@ final class MarbleStore: ObservableObject {
 
     func isDeletedConversation(_ id: String) -> Bool {
         deletedConversationIDs.contains(id)
+    }
+
+    func archiveConversation(_ id: String, archived: Bool) async {
+        do {
+            try await withChatClient { try await $0.archiveConversation(id: id, archived: archived) }
+            if let index = state.conversations.firstIndex(where: { $0.id == id }) {
+                state.conversations[index].archived = archived
+            }
+            errorMessage = nil
+            scheduleEventRefresh()
+        } catch is CancellationError {
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func restoreDeletedChat(_ id: String) async {
+        do {
+            try await withChatClient { try await $0.restoreDeletedChat(id: id) }
+            errorMessage = nil
+            await refresh()
+        } catch is CancellationError {
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func delete(conversationId id: String) async -> Bool {
@@ -1745,6 +1782,7 @@ final class MarbleStore: ObservableObject {
     }
 
     private func purgeConversation(_ id: String) {
+        deletionSequence &+= 1
         guard deletedConversationIDs.insert(id).inserted else { return }
         invalidateEveryoneHistory()
         let transcript = marbleTranscripts[id] ?? state.transcript(for: id)
@@ -1879,6 +1917,12 @@ final class MarbleStore: ObservableObject {
     private var narration = MarbleReplyNarration()
     private var narratedTaskId: String?
 
+    private func isNarrationVisible(in conversationId: String) -> Bool {
+        MarbleReplyNarration.isVisible(
+            conversationId, selected: selectedConversationId, rosterChat: displayedMarbleConversation
+        )
+    }
+
     func toggleVoice() async {
         guard let client else { return }
         let wasEnabled = voice.enabled
@@ -1916,7 +1960,7 @@ final class MarbleStore: ObservableObject {
     }
 
     private func narrateFinalReply(_ entry: MarbleEntry) {
-        guard voice.enabled, entry.conversationId == selectedConversationId,
+        guard voice.enabled, isNarrationVisible(in: entry.conversationId),
               let utterance = narration.finalReply(entry) else { return }
         Task { await speak(utterance.text, utterance: utterance) }
     }
@@ -2172,7 +2216,7 @@ final class MarbleStore: ObservableObject {
     }
 
     private func confirmEntries(_ entries: [MarbleEntry], conversationId: String) {
-        if conversationId == selectedConversationId, voice.enabled {
+        if isNarrationVisible(in: conversationId), voice.enabled {
             for entry in entries { narrateFinalReply(entry) }
         }
         if let rows = liveEntries[conversationId] {
@@ -2229,6 +2273,10 @@ final class MarbleStore: ObservableObject {
     private func handle(_ event: MarbleEvent, liveAfter: UInt64? = nil) {
         guard event.sequence > sequence else { return }
         sequence = event.sequence
+        if event.kind == "conversation", event.data.restored != nil {
+            scheduleEventRefresh()
+            return
+        }
         guard !deletedConversationIDs.contains(event.conversationId) else { return }
         if event.kind == "conversation", let id = event.data.deleted, !id.isEmpty {
             purgeConversation(id)
@@ -2252,6 +2300,18 @@ final class MarbleStore: ObservableObject {
             workingLines.removeValue(forKey: taskId)
         }
         if event.kind == "reasoning" { recordReasoning(event.data.text ?? "", taskId: event.taskId) }
+        if event.kind == "entry_removed", let id = event.data.entryId {
+            liveEntries[event.conversationId]?.removeAll { $0.id == id }
+            workingLines.removeValue(forKey: taskId)
+            if let threadId = event.data.threadId {
+                threadPages[threadId]?.entries.removeAll { $0.id == id }
+                threadEventSequences[threadId] = event.sequence
+            }
+            saveCache()
+            saveCursor()
+            scheduleEventRefresh()
+            return
+        }
         if event.kind == "entry" {
             if let entry = event.entryUpdate, entry.kind == "pending" || entry.kind == "system",
                liveAfter.map({ event.sequence > $0 }) == true {
@@ -2323,7 +2383,8 @@ final class MarbleStore: ObservableObject {
             guard buffers.taskId == nil || event.taskId.isEmpty || buffers.taskId == event.taskId else { break }
             if !event.taskId.isEmpty, !event.conversationId.isEmpty, event.data.cancelled != true {
                 awaitingTranscript[event.conversationId] = event.taskId
-                if forActive, voice.enabled, liveAfter.map({ event.sequence > $0 }) == true {
+                if isNarrationVisible(in: event.conversationId), voice.enabled,
+                   liveAfter.map({ event.sequence > $0 }) == true {
                     // The durable reply follows settlement. Only its final
                     // text (or the confirmed transcript) can be narrated.
                     narration.awaitFinal(taskId: event.taskId, conversationId: event.conversationId)

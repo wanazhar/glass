@@ -337,7 +337,7 @@ impl StateStore {
         let before = state.pending_everyone_cleanup.len();
         state.pending_everyone_cleanup.retain(|id| {
             let Some(root) = self.conversation_root(id).filter(|_| {
-                crate::everyone::is_session(id) || id.starts_with("group-thread-")
+                crate::everyone::is_session(id) || id.starts_with("group-thread-") || id.starts_with("chat-")
             })
             else {
                 return false;

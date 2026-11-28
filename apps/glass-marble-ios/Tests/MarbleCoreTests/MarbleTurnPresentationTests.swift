@@ -52,6 +52,14 @@ final class MarbleTurnPresentationTests: XCTestCase {
         XCTAssertEqual(updated.map(\.id), ["visible-tool", reply.id, "active-tool"])
     }
 
+    func testNarrationRecognizesTheVisibleRosterChatWithoutSpeakingOtherChats() {
+        XCTAssertTrue(MarbleReplyNarration.isVisible("dietrich", selected: nil, rosterChat: "dietrich"))
+        XCTAssertFalse(MarbleReplyNarration.isVisible("ada", selected: nil, rosterChat: "dietrich"))
+        XCTAssertTrue(MarbleReplyNarration.isVisible("private", selected: "private", rosterChat: "dietrich"))
+        XCTAssertFalse(MarbleReplyNarration.isVisible("dietrich", selected: "private", rosterChat: "dietrich"))
+        XCTAssertFalse(MarbleReplyNarration.isVisible("dietrich", selected: nil, rosterChat: nil))
+    }
+
     func testNarrationUsesFinalReplyAndResetInvalidatesQueuedSpeechByTask() throws {
         var narration = MarbleReplyNarration()
         var entry = MarbleEntry(conversationId: "chat", kind: "assistant", text: "Final answer.",
@@ -186,7 +194,7 @@ final class MarbleTurnPresentationTests: XCTestCase {
         let end = try toolEvent("tool_end", data: #"{"callId":"shell","text":"hello","isError":true}"#)
         MarbleToolActivity.apply(end, to: &calls)
         let tool = try XCTUnwrap(calls.first)
-        XCTAssertEqual(label, "Ran a command")
+        XCTAssertEqual(label, "Ran printf")
         XCTAssertEqual(tool.title, label)
         XCTAssertEqual(tool.details?.command, "printf hello")
         XCTAssertEqual(tool.details?.output, "hello")
@@ -195,9 +203,13 @@ final class MarbleTurnPresentationTests: XCTestCase {
         row.toolDetails = tool.details
         let reply = MarbleEntry(conversationId: "chat", kind: "assistant", text: "Reply", taskId: "turn", at: 2)
         let later = MarbleEntry(conversationId: "chat", kind: "user", text: "Next", taskId: "next", at: 3)
-        let timeline = MarbleReasoningAssociation([reply, later, row])
-        XCTAssertEqual(timeline.standalone, [reply, later])
-        XCTAssertEqual(timeline.tools[reply.id], [row])
+        let running = MarbleReasoningAssociation([row])
+        let timeline = MarbleReasoningAssociation([row, reply, later])
+        XCTAssertEqual(timeline.standalone, [row, reply, later])
+        XCTAssertEqual(timeline.tools, running.tools)
+        XCTAssertEqual(timeline.tools[row.id], [row])
+        XCTAssertEqual(MarbleToolActivity(id: "list", name: "bash", query: "ls -l appendix.pdf",
+                                          status: .running).title, "Listed appendix.pdf")
     }
 
     func testTimeLabelsSeparateDaysAndGapsOverFiveMinutes() {

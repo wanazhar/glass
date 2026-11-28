@@ -29,6 +29,18 @@ struct ConversationListView: View {
                 }
             }
             conversationSection
+            Section {
+                NavigationLink(value: ChatRoute.archivedChats) {
+                    Label("Archived", systemImage: "archivebox").frame(minHeight: 44)
+                }
+                .listRowBackground(MarbleTheme.card)
+                NavigationLink {
+                    RecentlyDeletedView(owner: nil)
+                } label: {
+                    Label("Recently Deleted", systemImage: "trash").frame(minHeight: 44)
+                }
+                .listRowBackground(MarbleTheme.card)
+            }
         }
         .navigationTitle("Conversations")
         .navigationBarTitleDisplayMode(.inline)
@@ -59,7 +71,7 @@ struct ConversationListView: View {
             }
             Button("Cancel", role: .cancel) { deleting = nil }
         } message: {
-            Text("Its transcript is removed from the host. A conversation with a running turn cannot be deleted.")
+            Text("You can restore it from Recently Deleted for seven days. A chat with a running turn can’t be deleted.")
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { MarbleNavConnection() }
@@ -140,6 +152,15 @@ struct ConversationListView: View {
             Button("Delete", role: .destructive) {
                 deleting = conversation
             }
+            Button("Archive", systemImage: "archivebox") {
+                Task { await store.archiveConversation(conversation.id, archived: true) }
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            Button("Archive", systemImage: "archivebox") {
+                Task { await store.archiveConversation(conversation.id, archived: true) }
+            }
+            .tint(MarbleTheme.tint)
         }
     }
 
@@ -148,7 +169,7 @@ struct ConversationListView: View {
         // is the default assistant's conversations.
         store.state.conversations
             .filter { conversation in
-                !conversation.isEveryoneSession
+                !conversation.isEveryoneSession && conversation.archived != true && conversation.marbleId == nil
                     && !store.prism.marbles.contains {
                         !$0.isDefault && $0.conversationId == conversation.id
                     }
@@ -169,6 +190,33 @@ struct ConversationListView: View {
         }
     }
 
+}
+
+struct ArchivedChatsView: View {
+    @EnvironmentObject private var store: MarbleStore
+
+    var body: some View {
+        List {
+            let archived = store.state.conversations.filter { $0.archived == true }
+                .sorted { $0.updatedAt > $1.updatedAt }
+            if archived.isEmpty { ContentUnavailableView("No archived chats", systemImage: "archivebox") }
+            ForEach(archived) { conversation in
+                HStack {
+                    NavigationLink(value: ChatRoute.conversation(conversation.id)) {
+                        ConversationRow(conversation: conversation, line: store.stateLine(for: conversation))
+                    }
+                    .buttonStyle(.plain)
+                    MarbleInlineButton(title: "Restore") {
+                        Task { await store.archiveConversation(conversation.id, archived: false) }
+                    }
+                }
+                .listRowBackground(MarbleTheme.card)
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(MarbleTheme.paper)
+        .navigationTitle("Archived")
+    }
 }
 
 struct MarbleNewChatButton: View {
@@ -248,11 +296,13 @@ private struct MarbleGroupComposer: View {
         NavigationStack {
             Form {
                 Section("Chat") { TextField("Title", text: $title) }
+                    .listRowBackground(MarbleTheme.card)
                 Section("Crew presets") {
                     preset("Refactor", ["engineer", "reviewer"])
                     preset("Research", ["researcher", "reviewer"])
                     preset("Launch", ["designer", "engineer", "reviewer"])
                 }
+                .listRowBackground(MarbleTheme.card)
                 Section("Members") { MarbleGroupMemberPicker(members: $members) }
                 Section("Task (optional)") {
                     TextField("Goal", text: $goal, axis: .vertical)
@@ -260,7 +310,10 @@ private struct MarbleGroupComposer: View {
                     TextField("Done when", text: $doneWhen, axis: .vertical)
                         .accessibilityIdentifier("group.doneWhen")
                 }
+                .listRowBackground(MarbleTheme.card)
             }
+            .scrollContentBackground(.hidden)
+            .background(MarbleTheme.paper)
             .navigationTitle("New group chat")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -308,6 +361,7 @@ struct MarbleGroupMemberPicker: View {
     var body: some View {
         Label("Lead · Required", systemImage: "lock")
             .frame(minHeight: 44)
+            .listRowBackground(MarbleTheme.card)
         ForEach(store.prism.marbles.filter { $0.id != "lead" }) { agent in
             Toggle(agent.name, isOn: Binding(
                 get: { members.contains(agent.id) },
@@ -316,6 +370,7 @@ struct MarbleGroupMemberPicker: View {
                 }
             ))
             .frame(minHeight: 44)
+            .listRowBackground(MarbleTheme.card)
         }
     }
 }

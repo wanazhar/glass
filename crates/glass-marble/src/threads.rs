@@ -396,6 +396,25 @@ impl ProductState {
     }
 
     pub(crate) fn prune_threads(&mut self) {
+        let held_entries: std::collections::HashSet<_> = self
+            .control
+            .queue
+            .iter()
+            .filter(|queued| queued.everyone_round)
+            .map(|queued| {
+                queued
+                    .client_message
+                    .as_ref()
+                    .map_or(queued.id.as_str(), |client| &client.entry_id)
+            })
+            .collect();
+        if !held_entries.is_empty() {
+            self.transcript.retain(|entry| {
+                entry.conversation_id != crate::everyone::EVERYONE_CONVERSATION
+                    || entry.kind != "user"
+                    || !held_entries.contains(entry.id.as_str())
+            });
+        }
         self.threads.retain(|t| {
             (t.parent_entry_id.is_empty()
                 && (t.conversation_id == crate::everyone::EVERYONE_CONVERSATION
@@ -424,6 +443,13 @@ impl ProductState {
                 entry.thread = None;
             }
         }
+        self.control.queue.retain(|queued| {
+            !queued.everyone_round
+                || queued
+                    .thread_id
+                    .as_ref()
+                    .is_some_and(|id| valid.contains(id))
+        });
         for queued in &mut self.control.queue {
             if queued
                 .thread_id

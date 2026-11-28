@@ -176,6 +176,14 @@ struct EveryoneHistoryView: View {
                     .marbleToolbarTitle()
             }
             ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    draft = MarbleMentions.askingEveryone(in: draft)
+                } label: {
+                    Image(systemName: "person.3").frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityLabel("Ask everyone")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink(value: ChatRoute.find(everyoneConversationId)) {
                     Label("Find", systemImage: "magnifyingglass")
                 }

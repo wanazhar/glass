@@ -391,6 +391,11 @@ private struct MarbleThreadView: View {
             if page?.thread.conversationId == everyoneConversationId {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        if page?.thread.archived == false {
+                            Button("Ask everyone", systemImage: "person.3") {
+                                draft = MarbleMentions.askingEveryone(in: draft)
+                            }
+                        }
                         Button("Archive", systemImage: "archivebox") { update("archive") }
                         Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete = true }
                     } label: {

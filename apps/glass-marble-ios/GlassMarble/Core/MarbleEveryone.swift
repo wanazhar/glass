@@ -3,6 +3,11 @@ import Foundation
 /// The shared plane's fixed conversation id, the same string the host uses.
 let everyoneConversationId = "everyone"
 
+struct MarbleEveryoneRouting: Codable, Equatable, Sendable {
+    var mode: String
+    var names: [String]
+}
+
 /// `@Name` handling for the Everyone composer and timeline. Pure value code so
 /// parsing, completion, and the speaker look-up are testable on Linux.
 enum MarbleMentions {
@@ -40,6 +45,10 @@ enum MarbleMentions {
         return String(text[..<at]) + "@\(name) "
     }
 
+    static func askingEveryone(in draft: String) -> String {
+        mentioned("everyone", in: draft.lowercased()) ? draft : "@everyone \(draft)"
+    }
+
     /// Which of `names` the text actually mentions, whole-word and
     /// case-insensitive — the same rule the host applies, so the composer and
     /// the host agree about who answers.
@@ -59,16 +68,17 @@ enum MarbleMentions {
 
     static func responders(in text: String, roster: [MarblePrismMarble]) -> [String] {
         let text = text.lowercased()
+        let roster = roster.filter(\.isEveryoneMember)
         let mentions = roster.compactMap { marble -> (String, String.Index)? in
             let named = mentionPosition(marble.name.lowercased(), in: text)
-            let alias = marble.isDefault ? mentionPosition("marble", in: text) : nil
+            let alias = mentionPosition(marble.id.lowercased(), in: text)
             return [named, alias].compactMap { $0 }.min().map { (marble.id, $0) }
         }.sorted { $0.1 < $1.1 }.map(\.0)
         var ids = mentions
         if mentioned("everyone", in: text) {
             ids += roster.map(\.id).filter { !mentions.contains($0) }
         }
-        return ids.isEmpty ? (roster.isEmpty ? ["marble"] : roster.map(\.id)) : ids
+        return ids
     }
 
     private static func mentionPosition(_ word: String, in text: String) -> String.Index? {

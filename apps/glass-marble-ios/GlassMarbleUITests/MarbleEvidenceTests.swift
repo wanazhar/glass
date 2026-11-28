@@ -340,7 +340,7 @@ final class MarbleEvidenceTests: XCTestCase {
         check(app.staticTexts["Done when, Checklist is ready"])
         shot("p2-group-task-header")
         field.tap()
-        field.typeText("Verify the handoff")
+        field.typeText("@Lead @Engineer @Reviewer Verify the handoff")
         button("Send").tap()
         let tutorial = button("Continue")
         if tutorial.exists { tutorial.tap() }
@@ -715,6 +715,33 @@ final class MarbleEvidenceTests: XCTestCase {
         XCTAssertTrue(latest.isHittable)
         XCTAssertLessThanOrEqual(latest.frame.maxY, field.frame.minY)
         shot("p5-code-keyboard")
+    }
+
+    func testHostedP5EveryoneRouting() throws {
+        guard let address = ProcessInfo.processInfo.environment["MARBLE_TURN_EVIDENCE_URL"] else {
+            throw XCTSkip("Requires the local turn presentation fixture")
+        }
+        try start(address: address, expectedAgent: "Marble")
+        app.tabBars.buttons["Everyone"].tap()
+        app.staticTexts["Earlier messages"].tap()
+        let field = app.textFields["composer.field"]
+        check(field)
+        field.tap()
+        field.typeText("Which Rust function has a bug?")
+        button("Send").tap()
+        check(app.staticTexts["Routed to Engineer"].firstMatch)
+        shot("p5-everyone-routed")
+
+        let askEveryone = button("Ask everyone")
+        check(askEveryone)
+        askEveryone.tap()
+        XCTAssertTrue((field.value as? String)?.hasPrefix("@everyone") == true)
+        field.tap()
+        field.typeText("What is one thing to check?")
+        button("Send").tap()
+        let all = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Asked everyone:")).firstMatch
+        check(all)
+        shot("p5-everyone-ask-all")
     }
 
     func testHostedP5PauseAcrossTabs() throws {

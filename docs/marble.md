@@ -759,10 +759,13 @@ private data can be read; sign-out clears the HTTP-only session cookie.
 Four hash-routed destinations work with browser back and forward:
 
 - **Everyone** (`#/everyone`) is home: a shared timeline with named speakers,
-  coloured glyphs, plain handoff lines, a mention-completing composer and a hint
-  following the host's exact answer rule. `@Name` asks the named Marble,
-  `@everyone` asks all named Marbles, and unaddressed messages ask the default
-  Marble. Clear asks for confirmation and leaves individual chats intact.
+  coloured glyphs, plain handoff lines, and a mention-completing composer.
+  `@Name` asks the named Marble and `@everyone` asks the whole Everyone
+  roster. For an unaddressed message, the host selects up to two agents based
+  on the request's terms and their roles, with Marble as the general fallback.
+  The transcript shows who was selected. The iOS **Ask everyone** action adds
+  `@everyone` to the draft. Clear asks for confirmation and leaves individual
+  chats intact.
 - **Marbles** (`#/marbles`) lists personalities and live status. Wide screens
   also show the Marble rows directly in the rail.
 - **Marble chats** (`#/m/<id>`) show safe minimal markdown, collapsed Thought,

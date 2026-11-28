@@ -133,7 +133,7 @@ The [bug report note](../BUG_REPORT.md) routes readers to that matrix.
 - [Browser crate](../crates/glass-browser/README.md) and
   [Glass development crate](../crates/glass-dev/README.md) — package-level
   APIs and ownership.
-- [Glass Marble](marble.md) — the always-on, self-hosted personal assistant, with Everyone and Marble chats, shared named-chat intake and paused-message cancellation, responsive web navigation, restart-aware event cursors, and one instance per data directory
+- [Glass Marble](marble.md) — the always-on, self-hosted personal assistant, with role-based Everyone routing, individual Marble chats, paused-message cancellation, responsive web navigation, restart-aware event cursors, and one instance per data directory
   built on the mixed-tool runtime: governance, presence, memory, routines,
   webhook and APNs notifications, on-device voice, a token-protected HTTP
   surface, a responsive WebUI, and the iOS client.

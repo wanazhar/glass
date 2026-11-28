@@ -38,18 +38,18 @@ test('tasks retain their named owner before a chat exists and older tasks still 
 });
 
 test('who answers follows whole-name, case-insensitive host rules', () => {
-  assert.deepEqual(L.whoAnswers('hello', people).map(p => p.id), ['marble']);
+  assert.deepEqual(L.whoAnswers('hello', people).map(p => p.id), []);
   assert.deepEqual(L.whoAnswers('@ADA, check this', people).map(p => p.id), ['a']);
   assert.deepEqual(L.whoAnswers('@ada and @ben', people).map(p => p.id), ['a', 'b']);
   assert.deepEqual(L.whoAnswers('@everyone', people).map(p => p.id), ['marble', 'a', 'b']);
   assert.deepEqual(L.whoAnswers('@everyone @ada', people).map(p => p.id), ['a', 'marble', 'b']);
   assert.deepEqual(L.whoAnswers('@Marble take the lead @everyone', people).map(p => p.id), ['marble', 'a', 'b']);
   assert.deepEqual(L.whoAnswers('@Marble and @Ada help', people).map(p => p.id), ['marble', 'a']);
-  for (const text of ['@adaptive', '@ben-tools', '@ben_2', '@bené', '@unknown']) assert.deepEqual(L.whoAnswers(text, people).map(p => p.id), ['marble']);
+  for (const text of ['@adaptive', '@ben-tools', '@ben_2', '@bené', '@unknown']) assert.deepEqual(L.whoAnswers(text, people).map(p => p.id), []);
   assert.deepEqual(L.whoAnswers('@everyone', [people[0]]), [people[0]]);
   assert.deepEqual(L.whoAnswers('', []), []);
-  assert.equal(L.answerHint('', people), 'Marble will answer.');
-  assert.equal(L.answerHint('@everyone', []), 'No Marbles to answer yet.');
+  assert.equal(L.answerHint('', people), 'The host picks who can help.');
+  assert.equal(L.answerHint('@everyone', people), 'Asks everyone.');
 });
 
 test('status keeps stream, request failure and engine health independent', () => {

@@ -2772,7 +2772,7 @@ fn everyone_threads_run_sequential_handoffs_in_the_group_round_engine() {
     let id = body["thread"]["id"].as_str().unwrap();
     let (status, body) = fixture.post(
         "/api/everyone",
-        json!({"threadId":id,"text":"Verify the handoff"}),
+        json!({"threadId":id,"text":"@Lead @Engineer @Reviewer Verify the handoff"}),
     );
     assert_eq!(status, 202, "{body}");
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -8283,7 +8283,7 @@ fn everyone_threads_keep_ada_private_history_out_and_support_archive_restore_and
 }
 
 #[test]
-fn everyone_dispatches_to_named_members_or_all_when_none_are_mentioned() {
+fn everyone_dispatches_to_named_members_all_or_the_default_when_unsure() {
     if !python3_available() {
         return;
     }
@@ -8293,7 +8293,7 @@ fn everyone_dispatches_to_named_members_or_all_when_none_are_mentioned() {
         ("@Ada hi", true, false),
         ("@Marble take the lead @everyone", true, true),
         ("@Marble and @Ada help", true, true),
-        ("no mention here", true, true),
+        ("no mention here", false, true),
     ] {
         assert_eq!(fixture.post("/api/everyone", json!({"text":prompt})).0, 202);
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -8334,6 +8334,55 @@ fn everyone_dispatches_to_named_members_or_all_when_none_are_mentioned() {
                 )));
             }
         }
+    }
+}
+
+#[test]
+fn everyone_routes_code_to_engineer_and_records_the_decision_in_both_timelines() {
+    if !python3_available() {
+        return;
+    }
+    let mut fixture = NamedTurnFixture::new("everyone-expertise-routing");
+    fixture.install_default_worker();
+    fixture.state.lock().unwrap().prism.install_template();
+    let (status, created) = fixture.post(
+        "/api/threads",
+        json!({"conversation_id":"everyone","title":"Code review"}),
+    );
+    assert_eq!(status, 201);
+    let thread = created["thread"]["id"].as_str().unwrap();
+    for (prompt, thread_id) in [
+        ("Debug this Rust compiler error", None),
+        ("Refactor this Swift function", Some(thread)),
+    ] {
+        let (status, reply) = fixture.post(
+            "/api/everyone",
+            json!({"text":prompt,"thread_id":thread_id}),
+        );
+        assert_eq!(status, 202);
+        assert_eq!(reply["answering"], json!(["Engineer"]));
+        assert_eq!(fixture.completed(prompt).marble_id, "engineer");
+        let state = fixture.state.lock().unwrap();
+        let entry = state
+            .transcript
+            .iter()
+            .find(|entry| {
+                entry.kind == "user" && entry.conversation_id == "everyone" && entry.text == prompt
+            })
+            .unwrap();
+        assert_eq!(entry.thread_id.as_deref(), thread_id);
+        assert_eq!(
+            serde_json::to_value(&entry.routing).unwrap(),
+            json!({"mode":"automatic", "names":["Engineer"]})
+        );
+        assert_eq!(
+            state
+                .tasks
+                .iter()
+                .filter(|task| task.prompt == prompt)
+                .count(),
+            1
+        );
     }
 }
 

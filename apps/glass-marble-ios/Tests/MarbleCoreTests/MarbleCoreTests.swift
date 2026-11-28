@@ -1214,6 +1214,21 @@ final class MarbleMentionTests: XCTestCase {
         )
     }
 
+    func testAskEveryonePreservesTheDraftAndAddsTheMentionOnce() {
+        XCTAssertEqual(MarbleMentions.askingEveryone(in: "Review this"), "@everyone Review this")
+        XCTAssertEqual(MarbleMentions.askingEveryone(in: "@Everyone Review this"), "@Everyone Review this")
+        XCTAssertEqual(MarbleMentions.askingEveryone(in: ""), "@everyone ")
+    }
+
+    func testRoutingNoteDecodesAndOlderEntriesStillLoad() throws {
+        let older = #"{"conversationId":"everyone","kind":"user","text":"Debug this","at":1}"#
+        let routed = older.dropLast() + #","routing":{"mode":"automatic","names":["Engineer"]}}"#
+        let decoder = JSONDecoder()
+        XCTAssertNil(try decoder.decode(MarbleEntry.self, from: Data(older.utf8)).routing)
+        XCTAssertEqual(try decoder.decode(MarbleEntry.self, from: Data(routed.utf8)).routing,
+                       MarbleEveryoneRouting(mode: "automatic", names: ["Engineer"]))
+    }
+
     func testNextHueFillsTheLargestGap() {
         XCTAssertEqual(MarbleMentions.nextHue(used: []), 40)
         XCTAssertEqual(MarbleMentions.nextHue(used: [0, 180]), 90)

@@ -1046,6 +1046,17 @@ pub(crate) struct HeldRound {
     pub position: usize,
 }
 
+#[derive(Default)]
+pub(crate) struct StartedRound {
+    pub held: Option<HeldRound>,
+    pub answering: Vec<String>,
+}
+
+struct EveryoneRound {
+    route: crate::everyone::Route,
+    retry: Option<Box<TaskRecord>>,
+}
+
 impl RoundScope {
     fn thread(&self) -> &str {
         match self {
@@ -1193,7 +1204,7 @@ impl PrismPool {
         text: String,
         client: Option<crate::state::ClientMessage>,
         zone: Option<String>,
-    ) -> Result<Option<HeldRound>, (u16, &'static str)> {
+    ) -> Result<StartedRound, (u16, &'static str)> {
         self.start_round(
             RoundScope::Everyone(thread),
             text,
@@ -1226,7 +1237,7 @@ impl PrismPool {
         client: Option<crate::state::ClientMessage>,
         zone: Option<String>,
         source: RoundSource<'_>,
-    ) -> Result<Option<HeldRound>, (u16, &'static str)> {
+    ) -> Result<StartedRound, (u16, &'static str)> {
         let lane = self
             .groups
             .lock()
@@ -1244,7 +1255,7 @@ impl PrismPool {
             |message| message.entry_id.clone(),
         );
         let mut latest = lane.latest.lock().unwrap_or_else(|e| e.into_inner());
-        let snapshot = {
+        let (snapshot, route, answering) = {
             let mut state = self.lock_state();
             scope.record(&state)?;
             if state.control.paused {
@@ -1266,10 +1277,13 @@ impl PrismPool {
                 let snapshot = state.clone();
                 drop(state);
                 self.persist(&snapshot);
-                return Ok(Some(HeldRound {
-                    id: queued.id,
-                    position,
-                }));
+                return Ok(StartedRound {
+                    held: Some(HeldRound {
+                        id: queued.id,
+                        position,
+                    }),
+                    ..Default::default()
+                });
             }
             if let RoundSource::Retry(task) = &source
                 && task.marble_id != "marble"
@@ -1297,16 +1311,36 @@ impl PrismPool {
                 }
                 state.control.queue.remove(index);
             }
-            if matches!(scope, RoundScope::Everyone(_)) {
+            let route = if matches!(scope, RoundScope::Everyone(_)) {
                 crate::everyone::ensure_conversation(&mut state);
-            }
+                Some(match &source {
+                    RoundSource::Retry(task) => crate::everyone::Route {
+                        ids: vec![task.marble_id.clone()],
+                        mode: crate::everyone::RoutingMode::Mentioned,
+                    },
+                    _ => crate::everyone::plan(&state, &text),
+                })
+            } else {
+                None
+            };
+            let routing = route.as_ref().map(|route| route.note(&state));
+            let answering = routing
+                .as_ref()
+                .map_or_else(Vec::new, |note| note.names.clone());
             if let Some(previous) = latest.replace(cancel.clone()) {
                 previous.store(true, Ordering::Relaxed);
             }
             self.cancels.register(&round_id, cancel.clone());
-            Self::record_round_message(&mut state, &scope, entry_id.clone(), &text, client);
+            Self::record_round_message(
+                &mut state,
+                &scope,
+                entry_id.clone(),
+                &text,
+                client,
+                routing,
+            );
             state.bump();
-            state.clone()
+            (state.clone(), route, answering)
         };
         self.persist(&snapshot);
         if matches!(source, RoundSource::Held(_))
@@ -1327,6 +1361,7 @@ impl PrismPool {
             RoundSource::Retry(task) => Some(task),
             _ => None,
         };
+        let everyone_round = route.map(|route| EveryoneRound { route, retry });
         let pool = Arc::clone(self);
         std::thread::spawn(move || {
             let running = lane.running.lock().unwrap_or_else(|e| e.into_inner());
@@ -1336,7 +1371,7 @@ impl PrismPool {
                 &text,
                 zone.as_deref(),
                 &cancel,
-                retry.as_deref(),
+                everyone_round.as_ref(),
             );
             pool.cancels.forget(&round_id);
             let mut latest = lane.latest.lock().unwrap_or_else(|e| e.into_inner());
@@ -1352,7 +1387,10 @@ impl PrismPool {
                 pool.resume_held_everyone(&thread);
             }
         });
-        Ok(None)
+        Ok(StartedRound {
+            held: None,
+            answering,
+        })
     }
 
     fn record_round_message(
@@ -1361,6 +1399,7 @@ impl PrismPool {
         entry_id: String,
         text: &str,
         client: Option<crate::state::ClientMessage>,
+        routing: Option<crate::everyone::RoutingNote>,
     ) {
         state.push_transcript(TranscriptEntry {
             id: entry_id,
@@ -1372,6 +1411,7 @@ impl PrismPool {
             speaker: crate::everyone::USER_SPEAKER.into(),
             speaker_name: "You".into(),
             at: now_millis(),
+            routing,
             ..Default::default()
         });
         state.refresh_thread(scope.thread());
@@ -1384,14 +1424,16 @@ impl PrismPool {
         message: &str,
         zone: Option<&str>,
         cancel: &Arc<AtomicBool>,
-        retry: Option<&TaskRecord>,
+        everyone_round: Option<&EveryoneRound>,
     ) {
         let thread = scope.thread();
-        let everyone = matches!(scope, RoundScope::Everyone(_));
+        let everyone = everyone_round.is_some();
+        let route = everyone_round.map(|round| &round.route);
+        let retry = everyone_round.and_then(|round| round.retry.as_deref());
         let mut visited = Vec::new();
         let mut replies = Vec::<(String, String)>::new();
         let mut handoff = String::new();
-        for _ in 0..if retry.is_some() { 1 } else { 4 } {
+        for index in 0..route.map_or(4, |route| route.ids.len()) {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
@@ -1433,12 +1475,6 @@ impl PrismPool {
                     })
                 };
                 let mut agents: Vec<_> = group.members.iter().filter_map(|id| roster(id)).collect();
-                let directed = everyone
-                    && crate::everyone::mention_position(&message.to_lowercase(), "everyone")
-                        .is_none()
-                    && agents
-                        .iter()
-                        .any(|agent| mentioned(message, agent).is_some());
                 agents.retain(|agent| !visited.contains(&agent.id));
                 let first_mentioned = |text: &str| {
                     agents
@@ -1452,15 +1488,14 @@ impl PrismPool {
                 let lead = || agents.iter().find(|agent| agent.id == "lead");
                 let agent = if let Some(task) = retry {
                     agents.iter().find(|agent| agent.id == task.marble_id)
-                } else if !everyone && visited.is_empty() {
+                } else if let Some(route) = route {
+                    agents.iter().find(|agent| agent.id == route.ids[index])
+                } else if visited.is_empty() {
                     lead()
                 } else {
                     first_mentioned(&handoff)
                         .or_else(|| first_mentioned(message))
                         .or_else(|| {
-                            if directed {
-                                return None;
-                            }
                             visited
                                 .is_empty()
                                 .then(lead)
@@ -1481,7 +1516,12 @@ impl PrismPool {
                                 })
                         })
                 };
-                let Some(agent) = agent.cloned() else { return };
+                let Some(agent) = agent.cloned() else {
+                    if route.is_some() {
+                        continue;
+                    }
+                    return;
+                };
                 let available = state
                     .prism
                     .marbles
@@ -2911,6 +2951,7 @@ mod tests {
         let hold = |text: &str| {
             pool.start_everyone_round(thread.clone(), text.into(), None, None)
                 .unwrap()
+                .held
                 .unwrap()
                 .id
         };

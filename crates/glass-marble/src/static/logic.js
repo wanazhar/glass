@@ -19,16 +19,17 @@
             }
             return Infinity;
         };
-        const chosen = people.map(person => ({ person, at: Math.min(position(person.name), person.isDefault || person.id === 'marble' ? position('marble') : Infinity) }))
+        const chosen = people.map(person => ({ person, at: Math.min(position(person.name), position(person.id)) }))
             .filter(item => Number.isFinite(item.at)).sort((a, b) => a.at - b.at).map(item => item.person);
         if (mentioned(text, 'everyone')) for (const person of [...people.filter(p => p.isDefault || p.id === 'marble'), ...named(people)]) {
             if (!chosen.includes(person)) chosen.push(person);
         }
-        return chosen.length ? chosen : people.filter(p => p.isDefault || p.id === 'marble');
+        return chosen;
     }
     function answerHint(text, people) {
+        if (mentioned(text, 'everyone')) return 'Asks everyone.';
         const chosen = whoAnswers(text, people).map(p => p.name);
-        return chosen.length ? chosen.join(' and ') + ' will answer.' : 'No Marbles to answer yet.';
+        return chosen.length ? 'Asks ' + chosen.join(' and ') + '.' : 'The host picks who can help.';
     }
     function reduceStatus(state, event) {
         switch (event.type) {

@@ -172,6 +172,21 @@ struct MarbleEntryView: View {
             } else {
                 entryContent(isFailure: failure)
             }
+            if isUser, let routing = entry.routing, !routing.names.isEmpty {
+                let names = routing.names.formatted(.list(type: .and))
+                Group {
+                    if routing.mode == "all" {
+                        Text("Asked everyone: \(names)")
+                    } else {
+                        Text("Routed to \(names)")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .accessibilityIdentifier("everyone.routing")
+            }
             if entry.kind == "assistant" && !failure {
                 MarbleKnowledgeCards(entry: entry, chooseMemory: chooseMemory)
             }

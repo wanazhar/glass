@@ -200,6 +200,11 @@ def run_turn(identifier, task, text, conversation, request):
         reply(identifier, {"settled": True})
         return
     if os.environ.get("MARBLE_FIXTURE_TURN_EVIDENCE") == "1":
+        if "Which Rust function has a bug?" in text or "What is one thing to check?" in text:
+            event(turn, "text", {"text": "I would check the inputs first."})
+            event(turn, "settled", {"reason": "completed"})
+            reply(identifier, {"settled": True})
+            return
         if text == "Show a wide code sample.":
             code = "let values = [" + ", ".join(str(index) for index in range(100)) + "]"
             event(turn, "text", {"text": f"```swift\n{code}\n```\n\nEnd of code example."})

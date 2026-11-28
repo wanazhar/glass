@@ -116,12 +116,13 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
     var speakerName: String
     /// One marble asking another for help, when this row records an ask.
     var handoff: MarbleHandoff?
+    var routing: MarbleEveryoneRouting? = nil
 
     enum CodingKeys: String, CodingKey {
         case conversationId, kind, text, taskId, at, speaker, speakerName, handoff
         case serverID = "id"
         case clientMessageID = "client_message_id"
-        case threadId, thread, failure, cancelled, toolDetails
+        case threadId, thread, failure, cancelled, toolDetails, routing
     }
 
     init(from decoder: Decoder) throws {
@@ -144,6 +145,7 @@ struct MarbleEntry: Codable, Identifiable, Equatable {
         speaker = try container.decodeIfPresent(String.self, forKey: .speaker) ?? ""
         speakerName = try container.decodeIfPresent(String.self, forKey: .speakerName) ?? ""
         handoff = try container.decodeIfPresent(MarbleHandoff.self, forKey: .handoff)
+        routing = try container.decodeIfPresent(MarbleEveryoneRouting.self, forKey: .routing)
     }
 
     init(

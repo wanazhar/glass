@@ -1626,37 +1626,18 @@ impl MarbleServer {
                 Err(response) => return response,
             };
         if let Some((pool, round_thread)) = self.prism.as_ref().zip(thread.as_ref()) {
-            let answering = {
-                let state = self.lock_state();
-                match crate::everyone::plan(&state, &text) {
-                    crate::everyone::EveryoneTarget::Named(ids) => ids
-                        .into_iter()
-                        .map(|id| {
-                            if id == "marble" {
-                                state.prism.default_marble().name
-                            } else {
-                                state
-                                    .prism
-                                    .get(&id)
-                                    .map_or(id.clone(), |agent| agent.name.clone())
-                            }
-                        })
-                        .collect::<Vec<_>>(),
-                    crate::everyone::EveryoneTarget::All => Vec::new(),
-                }
-            };
             return match pool.start_everyone_round(
                 round_thread.clone(),
                 text,
                 client,
                 device_time_zone.map(str::to_owned),
             ) {
-                Ok(held) => {
+                Ok(round) => {
                     let mut response = json!({
-                            "ok":true,"accepted":true,"answering":answering,"busy":[],
+                            "ok":true,"accepted":true,"answering":round.answering,"busy":[],
                             "conversationId":crate::everyone::EVERYONE_CONVERSATION,
                     });
-                    if let Some(crate::prism::HeldRound { id, position }) = held {
+                    if let Some(crate::prism::HeldRound { id, position }) = round.held {
                         self.events.publish(
                             "",
                             "",
@@ -1667,7 +1648,6 @@ impl MarbleServer {
                         response["queueId"] = json!(id);
                         response["position"] = json!(position);
                         response["paused"] = json!(true);
-                        response["answering"] = json!([]);
                     } else {
                         self.events.publish(
                             crate::everyone::EVERYONE_CONVERSATION,
@@ -1681,7 +1661,7 @@ impl MarbleServer {
                 Err((status, error)) => Response::error(status, error),
             };
         }
-        let entry_id = {
+        let (entry_id, ids) = {
             let mut guard = self.lock_state();
             if thread
                 .as_ref()
@@ -1697,6 +1677,8 @@ impl MarbleServer {
             }) {
                 return Response::error(409, "thread_archived");
             }
+            let route = crate::everyone::plan(&guard, &text);
+            let routing = route.note(&guard);
             crate::everyone::mirror(
                 &mut guard,
                 crate::everyone::USER_SPEAKER,
@@ -1711,6 +1693,7 @@ impl MarbleServer {
                 .last_mut()
                 .expect("the user entry was just mirrored");
             entry.thread_id = thread.clone();
+            entry.routing = Some(routing);
             if let Some(client) = &client {
                 entry.id = client.entry_id.clone();
                 entry.client_message_id = Some(client.id.clone());
@@ -1720,7 +1703,7 @@ impl MarbleServer {
                 guard.refresh_thread(id);
             }
             guard.bump();
-            entry_id
+            (entry_id, route.ids)
         };
         self.save_state();
         self.events.publish(
@@ -1729,28 +1712,7 @@ impl MarbleServer {
             "everyone",
             json!({"kind": "user", "thread_id":thread}),
         );
-        let plan = crate::everyone::plan(&self.lock_state(), &text);
-        match plan {
-            crate::everyone::EveryoneTarget::Named(ids) => {
-                self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id, device_time_zone)
-            }
-            crate::everyone::EveryoneTarget::All => {
-                let ids: Vec<String> = {
-                    let guard = self.lock_state();
-                    std::iter::once(crate::everyone::DEFAULT_SPEAKER.to_string())
-                        .chain(
-                            guard
-                                .prism
-                                .marbles
-                                .iter()
-                                .filter(|agent| agent.in_everyone())
-                                .map(|marble| marble.id.clone()),
-                        )
-                        .collect()
-                };
-                self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id, device_time_zone)
-            }
-        }
+        self.dispatch_everyone(&text, ids, thread.as_deref(), &entry_id, device_time_zone)
     }
 
     /// Reserve replies before dispatch; busy named engines drain their queue.

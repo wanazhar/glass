@@ -4,7 +4,10 @@
 //! mirrored into the timeline, and each chosen marble answers in an engine
 //! session scoped to the thread. Replies carry the speaker's name.
 
+use crate::prism::PrismMarble;
 use crate::state::{HandoffEntry, ProductState, TranscriptEntry};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// The fixed conversation id the shared plane keeps in the document.
 pub const EVERYONE_CONVERSATION: &str = "everyone";
@@ -96,63 +99,239 @@ pub(crate) fn ensure_session(state: &mut ProductState, id: &str) {
     }
 }
 
-/// Who should answer one Everyone message.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EveryoneTarget {
-    /// These marble ids were named — each one answers.
-    Named(Vec<String>),
-    /// No known mention or `@everyone` — the whole roster answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoutingMode {
+    Automatic,
+    Mentioned,
     All,
 }
 
-/// Parse `@name` mentions against the roster, whole-word and case-insensitive.
+/// The host's decision, saved with the user message so it also appears in history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutingNote {
+    pub mode: RoutingMode,
+    pub names: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Route {
+    pub ids: Vec<String>,
+    pub mode: RoutingMode,
+}
+
+impl Route {
+    pub fn note(&self, state: &ProductState) -> RoutingNote {
+        RoutingNote {
+            mode: self.mode,
+            names: self.ids.iter().map(|id| agent_name(state, id)).collect(),
+        }
+    }
+}
+
+fn agent_name(state: &ProductState, id: &str) -> String {
+    if id == DEFAULT_SPEAKER {
+        state.prism.default_marble().name
+    } else {
+        state
+            .prism
+            .get(id)
+            .map_or_else(|| id.to_owned(), |agent| agent.name.clone())
+    }
+}
+
+/// Explicit mentions take precedence over automatic routing and keep their order.
 ///
 /// `@everyone` names the whole roster; a named marble that is not on the
 /// roster is treated as ordinary text rather than a failed mention.
-pub fn plan(state: &ProductState, text: &str) -> EveryoneTarget {
+pub(crate) fn plan(state: &ProductState, text: &str) -> Route {
     let lowered = text.to_lowercase();
     let default = state.prism.default_marble();
-    let roster = std::iter::once(&default).chain(
-        state
-            .prism
-            .marbles
-            .iter()
-            .filter(|agent| agent.in_everyone()),
-    );
-    let mut mentions: Vec<_> = roster
-        .filter_map(|marble| {
-            let at = mention_position(&lowered, &marble.name.to_lowercase());
-            let at = if marble.id == DEFAULT_SPEAKER {
-                at.into_iter()
-                    .chain(mention_position(&lowered, "marble"))
-                    .min()
-            } else {
-                at
-            };
-            at.map(|at| (at, marble.id.clone()))
-        })
-        .collect();
-    mentions.sort_by_key(|(at, _)| *at);
-    let mut named: Vec<String> = mentions.into_iter().map(|(_, id)| id).collect();
-    if mentioned(&lowered, "everyone") {
-        for id in std::iter::once(DEFAULT_SPEAKER.to_string()).chain(
+    let roster: Vec<_> = std::iter::once(&default)
+        .chain(
             state
                 .prism
                 .marbles
                 .iter()
-                .filter(|agent| agent.in_everyone())
-                .map(|m| m.id.clone()),
-        ) {
-            if !named.contains(&id) {
-                named.push(id);
+                .filter(|agent| agent.in_everyone()),
+        )
+        .collect();
+    let mut mentions: Vec<_> = roster
+        .iter()
+        .filter_map(|marble| {
+            let at = mention_position(&lowered, &marble.name.to_lowercase())
+                .into_iter()
+                .chain(mention_position(&lowered, &marble.id))
+                .min();
+            at.map(|at| (at, marble.id.clone()))
+        })
+        .collect();
+    mentions.sort_by_key(|(at, _)| *at);
+    let mut ids: Vec<String> = mentions.into_iter().map(|(_, id)| id).collect();
+    if mentioned(&lowered, "everyone") || explicitly_asks_everyone(&lowered) {
+        for agent in roster {
+            if !ids.contains(&agent.id) {
+                ids.push(agent.id.clone());
             }
         }
+        return Route {
+            ids,
+            mode: RoutingMode::All,
+        };
     }
-    if named.is_empty() {
-        EveryoneTarget::All
-    } else {
-        EveryoneTarget::Named(named)
+    if !ids.is_empty() {
+        return Route {
+            ids,
+            mode: RoutingMode::Mentioned,
+        };
     }
+    Route {
+        ids: automatic_targets(&roster, &lowered),
+        mode: RoutingMode::Automatic,
+    }
+}
+
+fn explicitly_asks_everyone(text: &str) -> bool {
+    let text = text.trim_start();
+    text.starts_with("everyone,")
+        || text.starts_with("everyone:")
+        || text.starts_with("ask everyone ")
+        || text.starts_with("i want everyone to ")
+        || text.starts_with("can everyone ")
+        || text.starts_with("could everyone ")
+}
+
+// Built-in expertise has explicit domain terms. A custom agent can qualify
+// for the same domain through its role, or through a direct role-term match.
+struct Expertise {
+    agent: &'static str,
+    role_terms: &'static str,
+    signals: &'static str,
+}
+
+const EXPERTISE: &[Expertise] = &[
+    Expertise {
+        agent: "engineer",
+        role_terms: "engineer developer programmer programming software devops code",
+        signals: "code coding bug debug compiler compile refactor function stacktrace repository repo rust swift swiftui python javascript typescript sql api test kubectl kubernetes docker deploy implementation implement",
+    },
+    Expertise {
+        agent: "reviewer",
+        role_terms: "reviewer review quality qa auditor",
+        signals: "review regression audit verify verification validate",
+    },
+    Expertise {
+        agent: "designer",
+        role_terms: "designer design ux visual typography",
+        signals: "design layout visual typography contrast wireframe mockup ux icon palette",
+    },
+    Expertise {
+        agent: "researcher",
+        role_terms: "researcher research source",
+        signals: "research citation source literature study studies evidence",
+    },
+    Expertise {
+        agent: "finance",
+        role_terms: "finance financial accounting bookkeeper budget",
+        signals: "budget invoice tax cashflow revenue expense finance profit cost pricing accounting",
+    },
+    Expertise {
+        agent: "shopper",
+        role_terms: "shopper shopping retail purchasing buyer",
+        signals: "shopping shop buy purchase retailer product deal warranty",
+    },
+    Expertise {
+        agent: "lead",
+        role_terms: "lead coordinator manager planning",
+        signals: "roadmap milestone coordinate prioritize planning schedule checklist",
+    },
+];
+
+fn terms(text: &str) -> HashSet<&str> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .flat_map(|word| {
+            let singular = word.strip_suffix("es").filter(|stem| stem.len() > 2);
+            [Some(word), singular, word.strip_suffix('s')]
+                .into_iter()
+                .flatten()
+        })
+        .collect()
+}
+
+fn automatic_targets(roster: &[&PrismMarble], message: &str) -> Vec<String> {
+    let message = terms(message);
+    let mut ranked = Vec::new();
+    for agent in roster.iter().filter(|agent| agent.id != DEFAULT_SPEAKER) {
+        let role = agent.role.to_lowercase();
+        let role = terms(&role);
+        let built_in = EXPERTISE
+            .iter()
+            .find(|expertise| expertise.agent == agent.id);
+        let domain = EXPERTISE
+            .iter()
+            .filter(|expertise| {
+                built_in.map_or_else(
+                    || {
+                        expertise
+                            .role_terms
+                            .split_whitespace()
+                            .any(|term| role.contains(term))
+                    },
+                    |built_in| built_in.agent == expertise.agent,
+                )
+            })
+            .map(|expertise| {
+                expertise
+                    .signals
+                    .split_whitespace()
+                    .filter(|term| message.contains(*term))
+                    .count()
+            })
+            .max()
+            .unwrap_or(0);
+        let shared = role
+            .intersection(&message)
+            .filter(|word| {
+                word.len() > 2
+                    && !matches!(
+                        **word,
+                        "and"
+                            | "the"
+                            | "for"
+                            | "with"
+                            | "from"
+                            | "that"
+                            | "this"
+                            | "work"
+                            | "help"
+                            | "specialist"
+                            | "agent"
+                            | "assistant"
+                            | "support"
+                            | "general"
+                    )
+            })
+            .count();
+        let score = if built_in.is_some() {
+            2 * domain
+        } else {
+            (2 * domain).max(3 * shared)
+        };
+        if score > 0 {
+            ranked.push((score, &agent.id));
+        }
+    }
+    ranked.sort_by(|left, right| right.0.cmp(&left.0));
+    let Some((best, _)) = ranked.first() else {
+        return vec![DEFAULT_SPEAKER.into()];
+    };
+    ranked
+        .iter()
+        .take(2)
+        .take_while(|(score, _)| score * 3 >= best * 2)
+        .map(|(_, id)| (*id).clone())
+        .collect()
 }
 
 /// Whether `@word` appears in `text` bounded by non-word characters, so `@Ada`
@@ -179,23 +358,8 @@ pub(crate) fn mention_position(text: &str, word: &str) -> Option<usize> {
 }
 
 pub(crate) fn addressing(state: &ProductState, text: &str, owner: &str) -> String {
-    let ids = match plan(state, text) {
-        EveryoneTarget::Named(ids) => ids,
-        EveryoneTarget::All => std::iter::once(DEFAULT_SPEAKER.to_string())
-            .chain(state.prism.marbles.iter().map(|marble| marble.id.clone()))
-            .collect(),
-    };
-    let name = |id: &str| {
-        if id == DEFAULT_SPEAKER {
-            state.prism.default_marble().name
-        } else {
-            state
-                .prism
-                .get(id)
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| id.to_string())
-        }
-    };
+    let ids = plan(state, text).ids;
+    let name = |id: &str| agent_name(state, id);
     let names = ids
         .iter()
         .enumerate()
@@ -431,26 +595,20 @@ mod tests {
     #[test]
     fn mentions_route_to_the_named_marbles() {
         let state = roster();
-        assert_eq!(plan(&state, "hi there"), EveryoneTarget::All);
+        assert_eq!(plan(&state, "hi there").ids, ["marble"]);
         assert_eq!(
-            plan(&state, "@everyone ship it"),
-            EveryoneTarget::Named(vec![
+            plan(&state, "@everyone ship it").ids,
+            vec![
                 "marble".into(),
                 state.prism.marbles[0].id.clone(),
                 state.prism.marbles[1].id.clone()
-            ])
+            ]
         );
-        match plan(&state, "@ada please draft this") {
-            EveryoneTarget::Named(ids) => assert_eq!(ids.len(), 1),
-            other => panic!("expected a named target: {other:?}"),
-        }
-        match plan(&state, "@ADA and @ben check this") {
-            EveryoneTarget::Named(ids) => assert_eq!(ids.len(), 2),
-            other => panic!("expected two named targets: {other:?}"),
-        }
+        assert_eq!(plan(&state, "@ada please draft this").ids.len(), 1);
+        assert_eq!(plan(&state, "@ADA and @ben check this").ids.len(), 2);
         // A mistyped or partial name is plain text, not a mention.
-        assert_eq!(plan(&state, "@adaptive thing"), EveryoneTarget::All);
-        assert_eq!(plan(&state, "asked by radar"), EveryoneTarget::All);
+        assert_eq!(plan(&state, "@adaptive thing").ids, ["marble"]);
+        assert_eq!(plan(&state, "asked by radar").ids, ["marble"]);
     }
 
     #[test]
@@ -458,28 +616,63 @@ mod tests {
         let state = roster();
         let ada = state.prism.marbles[0].id.clone();
         let ben = state.prism.marbles[1].id.clone();
+        assert_eq!(plan(&state, "@Ada hi").ids, vec![ada.clone()]);
         assert_eq!(
-            plan(&state, "@Ada hi"),
-            EveryoneTarget::Named(vec![ada.clone()])
+            plan(&state, "@Marble take the lead @everyone").ids,
+            vec!["marble".into(), ada.clone(), ben.clone()]
         );
         assert_eq!(
-            plan(&state, "@Marble take the lead @everyone"),
-            EveryoneTarget::Named(vec!["marble".into(), ada.clone(), ben.clone()])
+            plan(&state, "@mArBlE and @Ada help").ids,
+            vec!["marble".into(), ada.clone()]
         );
         assert_eq!(
-            plan(&state, "@mArBlE and @Ada help"),
-            EveryoneTarget::Named(vec!["marble".into(), ada.clone()])
+            plan(&state, "@Ben @everyone @Ada @Ben").ids,
+            vec![ben, ada.clone(), "marble".into()]
         );
-        assert_eq!(
-            plan(&state, "@Ben @everyone @Ada @Ben"),
-            EveryoneTarget::Named(vec![ben, ada.clone(), "marble".into()])
-        );
-        assert_eq!(plan(&state, ""), EveryoneTarget::All);
-        assert_eq!(plan(&state, "hello"), EveryoneTarget::All);
+        assert_eq!(plan(&state, "").ids, ["marble"]);
+        assert_eq!(plan(&state, "hello").ids, ["marble"]);
         assert!(
             addressing(&state, "@Marble @everyone", &ada)
                 .starts_with("This message is addressed to: Marble (lead), Ada, Ben. You are Ada.")
         );
+    }
+
+    #[test]
+    fn automatic_routing_picks_clear_specialists_and_honors_explicit_requests() {
+        let mut state = ProductState::default();
+        state.prism.install_template();
+        let horticulturist = state
+            .prism
+            .add("Fern", "Botany and horticulture", "moon", 76, "", "")
+            .unwrap()
+            .id
+            .clone();
+        let route = |text| plan(&state, text);
+        assert_eq!(
+            route("Debug this Rust compiler error in my code").ids,
+            ["engineer"]
+        );
+        assert_eq!(
+            route("Compare our tax expenses and budget").ids,
+            ["finance"]
+        );
+        assert_eq!(
+            route("Where should I buy this product with a warranty?").ids,
+            ["shopper"]
+        );
+        assert_eq!(
+            route("Can you review this code for regressions?").ids,
+            ["reviewer"]
+        );
+        assert_eq!(
+            route("Can you review the Rust code for regressions?").ids,
+            ["engineer", "reviewer"]
+        );
+        assert_eq!(route("I need horticulture advice").ids, [horticulturist]);
+        assert_eq!(route("Can you help?").ids, ["marble"]);
+        assert_eq!(route("@Finance debug the Rust code").ids, ["finance"]);
+        assert_eq!(route("Everyone, what should we do?").mode, RoutingMode::All);
+        assert_eq!(route("@everyone debug the Rust code").ids.len(), 9);
     }
 
     #[test]

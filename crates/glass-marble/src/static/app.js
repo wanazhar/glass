@@ -246,6 +246,10 @@
             body.append(el('div', 'speaker', name, time));
         }
         body.append(own ? prose(entry.text) : prose(entry, entry.text));
+        if (own && entry.routing?.names?.length) {
+            const label = entry.routing.mode === 'all' ? t('Asked everyone: ') : t('Routed to ');
+            body.append(el('p', 'muted small', label + entry.routing.names.join(', ')));
+        }
         if (!own && s.data.voice?.enabled && entry.text) body.append(button(t('Read aloud'), () => readAloud(entry.text), 'quiet small'));
         return own ? el('article', 'message user', body) : el('article', 'message', glyph(p), body);
     }

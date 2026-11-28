@@ -1917,6 +1917,12 @@ final class MarbleStore: ObservableObject {
     private var narration = MarbleReplyNarration()
     private var narratedTaskId: String?
 
+    private func isNarrationVisible(in conversationId: String) -> Bool {
+        MarbleReplyNarration.isVisible(
+            conversationId, selected: selectedConversationId, rosterChat: displayedMarbleConversation
+        )
+    }
+
     func toggleVoice() async {
         guard let client else { return }
         let wasEnabled = voice.enabled
@@ -1954,7 +1960,7 @@ final class MarbleStore: ObservableObject {
     }
 
     private func narrateFinalReply(_ entry: MarbleEntry) {
-        guard voice.enabled, entry.conversationId == selectedConversationId,
+        guard voice.enabled, isNarrationVisible(in: entry.conversationId),
               let utterance = narration.finalReply(entry) else { return }
         Task { await speak(utterance.text, utterance: utterance) }
     }
@@ -2210,7 +2216,7 @@ final class MarbleStore: ObservableObject {
     }
 
     private func confirmEntries(_ entries: [MarbleEntry], conversationId: String) {
-        if conversationId == selectedConversationId, voice.enabled {
+        if isNarrationVisible(in: conversationId), voice.enabled {
             for entry in entries { narrateFinalReply(entry) }
         }
         if let rows = liveEntries[conversationId] {
@@ -2377,7 +2383,8 @@ final class MarbleStore: ObservableObject {
             guard buffers.taskId == nil || event.taskId.isEmpty || buffers.taskId == event.taskId else { break }
             if !event.taskId.isEmpty, !event.conversationId.isEmpty, event.data.cancelled != true {
                 awaitingTranscript[event.conversationId] = event.taskId
-                if forActive, voice.enabled, liveAfter.map({ event.sequence > $0 }) == true {
+                if isNarrationVisible(in: event.conversationId), voice.enabled,
+                   liveAfter.map({ event.sequence > $0 }) == true {
                     // The durable reply follows settlement. Only its final
                     // text (or the confirmed transcript) can be narrated.
                     narration.awaitFinal(taskId: event.taskId, conversationId: event.conversationId)

@@ -52,6 +52,14 @@ final class MarbleTurnPresentationTests: XCTestCase {
         XCTAssertEqual(updated.map(\.id), ["visible-tool", reply.id, "active-tool"])
     }
 
+    func testNarrationRecognizesTheVisibleRosterChatWithoutSpeakingOtherChats() {
+        XCTAssertTrue(MarbleReplyNarration.isVisible("dietrich", selected: nil, rosterChat: "dietrich"))
+        XCTAssertFalse(MarbleReplyNarration.isVisible("ada", selected: nil, rosterChat: "dietrich"))
+        XCTAssertTrue(MarbleReplyNarration.isVisible("private", selected: "private", rosterChat: "dietrich"))
+        XCTAssertFalse(MarbleReplyNarration.isVisible("dietrich", selected: "private", rosterChat: "dietrich"))
+        XCTAssertFalse(MarbleReplyNarration.isVisible("dietrich", selected: nil, rosterChat: nil))
+    }
+
     func testNarrationUsesFinalReplyAndResetInvalidatesQueuedSpeechByTask() throws {
         var narration = MarbleReplyNarration()
         var entry = MarbleEntry(conversationId: "chat", kind: "assistant", text: "Final answer.",

@@ -46,6 +46,10 @@ struct MarbleReplyNarration {
 
     private var tasks: [String: State] = [:]
 
+    static func isVisible(_ conversationId: String, selected: String?, rosterChat: String?) -> Bool {
+        !conversationId.isEmpty && conversationId == (selected ?? rosterChat)
+    }
+
     mutating func awaitFinal(taskId: String, conversationId: String) {
         guard !taskId.isEmpty, tasks[taskId] == nil else { return }
         tasks[taskId] = .awaitingFinal(conversationId: conversationId)

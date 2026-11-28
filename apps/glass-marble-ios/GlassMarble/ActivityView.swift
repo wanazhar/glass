@@ -5,6 +5,7 @@ import SwiftUI
 struct ActivityView: View {
     @EnvironmentObject private var store: MarbleStore
     @State private var confirmStop = false
+    var isRootTab = false
 
     var body: some View {
         List {
@@ -68,7 +69,7 @@ struct ActivityView: View {
                 Text("New messages wait until you resume. What is already running keeps going.")
             }
 
-            Section(header: Text("Recent decisions")) {
+            Section(header: Text("Recent decisions").padding(.top, 8)) {
                 if store.control.ledger.isEmpty {
                     Text("Marble has not asked to do anything yet.")
                         .font(.footnote)
@@ -83,14 +84,11 @@ struct ActivityView: View {
                 }
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(MarbleTheme.paper)
+        .marbleFormBackground()
         .navigationTitle("Activity")
-        .confirmationDialog(
-            "Stop everything?",
-            isPresented: $confirmStop,
-            titleVisibility: .visible
-        ) {
+        .navigationBarTitleDisplayMode(isRootTab ? .large : .inline)
+        .alert("Pause the host?", isPresented: $confirmStop) {
+            Button("Cancel", role: .cancel) {}
             Button("Stop everything", role: .destructive) {
                 Task { await store.stopEverything() }
             }
@@ -163,6 +161,7 @@ private struct DecisionDetailView: View {
                 Text("Details")
             }
         }
+        .marbleFormBackground()
         .navigationTitle("Decision")
         .navigationBarTitleDisplayMode(.inline)
     }

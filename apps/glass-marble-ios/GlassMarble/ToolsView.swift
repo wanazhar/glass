@@ -55,9 +55,9 @@ struct WhatMarbleCanUseView: View {
                 }
             }
             .refreshable { await store.loadTools() }
+            .marbleFormBackground()
             .navigationTitle("What Marble can use")
             .navigationBarTitleDisplayMode(.inline)
-            
             .task { await store.loadTools() }
     }
 }

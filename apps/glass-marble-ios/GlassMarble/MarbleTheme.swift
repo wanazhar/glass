@@ -3,6 +3,7 @@ import SwiftUI
 enum MarbleTheme {
     static let paper = Color("MarblePaper")
     static let tint = adaptive(0x653E52, 0xE3B7CA)
+    static let onTint = adaptive(0xFFFFFF, 0x282022)
     static let card = adaptive(0xFFFBF6, 0x2D2523)
     static let wash = adaptive(0xEEE3E0, 0x3C2C32)
     static let chatWash = adaptive(0xF4DCD2, 0x3E2931)
@@ -67,7 +68,7 @@ struct MarbleInlineButton: View {
             Text(title)
                 .font(.footnote)
                 .multilineTextAlignment(.center)
-                .foregroundStyle(role == .destructive ? Color.red : MarbleTheme.ink)
+                .foregroundStyle(role == .destructive ? Color.red : prominent ? MarbleTheme.onTint : MarbleTheme.ink)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
                 .fixedSize(horizontal: false, vertical: true)
@@ -179,6 +180,11 @@ extension View {
             .scrollEdgeEffectStyle(.soft, for: .bottom)
     }
 
+    func marbleFormBackground() -> some View {
+        scrollContentBackground(.hidden)
+            .background { MarbleTheme.paper.ignoresSafeArea() }
+    }
+
     func marbleNewChatBackground() -> some View {
         background {
             MarbleTheme.paper.overlay(alignment: .top) {
@@ -205,7 +211,7 @@ private struct MarbleFloatingMaterial<S: Shape>: ViewModifier {
 
     func body(content: Content) -> some View {
         if reduceTransparency {
-            content.background(tint == nil ? MarbleTheme.card : MarbleTheme.wash, in: shape)
+            content.background(tint ?? MarbleTheme.card, in: shape)
         } else {
             content.glassEffect(.regular.tint(tint).interactive(interactive), in: shape)
         }

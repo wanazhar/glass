@@ -46,6 +46,7 @@ struct MarbleOnboardingView: View {
                 pairingForm
             }
         }
+        .background { MarbleTheme.paper.ignoresSafeArea() }
         .onDisappear { checkTask?.cancel() }
         .onAppear {
             // The host is prefilled; the token never is. A saved token that
@@ -67,6 +68,8 @@ struct MarbleOnboardingView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .submitLabel(.next)
+                        .onSubmit { focusedField = .token }
                         .frame(minHeight: 44)
                     pairingError(for: .host)
                 }
@@ -78,6 +81,8 @@ struct MarbleOnboardingView: View {
                         .focused($focusedField, equals: .token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .submitLabel(.done)
+                        .onSubmit { focusedField = nil }
                         .frame(minHeight: 44)
                     pairingError(for: .token)
                     if expiredToken, verdict == nil, MarbleToken.normalize(token).isEmpty {
@@ -121,8 +126,8 @@ struct MarbleOnboardingView: View {
             .listRowInsets(EdgeInsets())
         }
         .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .background(MarbleTheme.paper)
+        .scrollDismissesKeyboard(.interactively)
+        .marbleFormBackground()
         .navigationTitle(expiredToken ? "Replace access token" : "Pair your host")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: address) { verdict = nil }

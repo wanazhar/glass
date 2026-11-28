@@ -71,18 +71,14 @@ struct SettingsView: View {
             Section {
                 link(.notifications)
                 link(.data)
-            }
-            Section {
                 link(.about)
             }
             Section {
                 Button(role: .destructive) {
                     confirmStop = true
                 } label: {
-                    Label("Stop everything", systemImage: "stop.circle")
-                        .font(.subheadline)
+                    MarbleSettingsLabel("Stop everything", systemImage: "stop.circle")
                         .foregroundStyle(.red)
-                        .frame(minHeight: 44)
                 }
                 .accessibilityIdentifier("settings.stopEverything")
                 .disabled(store.changingHostPause)
@@ -90,11 +86,13 @@ struct SettingsView: View {
                 Text("Cancels every running turn and pauses the host.")
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(MarbleTheme.paper)
+        .environment(\.defaultMinListRowHeight, 44)
+        .listSectionSpacing(18)
+        .marbleFormBackground()
         .navigationTitle("Settings")
         .navigationDestination(for: MarbleSettingsRoute.self) { $0.destination }
-        .confirmationDialog("Stop everything?", isPresented: $confirmStop, titleVisibility: .visible) {
+        .alert("Pause the host?", isPresented: $confirmStop) {
+            Button("Cancel", role: .cancel) {}
             Button("Stop everything", role: .destructive) {
                 Task { await store.stopEverything() }
             }
@@ -115,19 +113,36 @@ struct SettingsView: View {
     }
 
     private func rowLabel(_ route: MarbleSettingsRoute, title: String? = nil, detail: Text? = nil) -> some View {
-        Label {
+        MarbleSettingsLabel(title ?? route.title, systemImage: route.systemImage, detail: detail)
+    }
+}
+
+private struct MarbleSettingsLabel: View {
+    let title: String
+    let systemImage: String
+    var detail: Text?
+
+    init(_ title: String, systemImage: String, detail: Text? = nil) {
+        self.title = title
+        self.systemImage = systemImage
+        self.detail = detail
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.subheadline)
+                .frame(width: 24)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title ?? route.title).font(.subheadline)
+                Text(title).font(.subheadline)
                 if let detail {
                     detail.font(.footnote).foregroundStyle(MarbleTheme.muted)
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: route.systemImage)
-                .font(.subheadline)
         }
-        .frame(minHeight: 44, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -164,6 +179,7 @@ struct ConnectionSettingsView: View {
                 Text("Signing out forgets this host and token on this iPhone.")
             }
         }
+        .marbleFormBackground()
         .navigationTitle("Connection")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showsChangeHost) {
@@ -177,16 +193,17 @@ struct MarblesModelsSettingsView: View {
     var body: some View {
         List {
             Section {
-                NavigationLink { ModelSettingsView() } label: { Label("Model", systemImage: "cpu") }
-                NavigationLink { PermissionsView() } label: { Label("Permissions", systemImage: "hand.raised") }
-                NavigationLink { MemoryView() } label: { Label("Memory", systemImage: "brain") }
+                NavigationLink { ModelSettingsView() } label: { MarbleSettingsLabel("Model", systemImage: "cpu") }
+                NavigationLink { PermissionsView() } label: { MarbleSettingsLabel("Permissions", systemImage: "hand.raised") }
+                NavigationLink { MemoryView() } label: { MarbleSettingsLabel("Memory", systemImage: "brain") }
                 NavigationLink { WhatMarbleCanUseView() } label: {
-                    Label("What Marble can use", systemImage: "wrench.and.screwdriver")
+                    MarbleSettingsLabel("What Marble can use", systemImage: "wrench.and.screwdriver")
                 }
             } footer: {
                 Text("Edit each agent’s personality and appearance in Agents.")
             }
         }
+        .marbleFormBackground()
         .navigationTitle("Agents and models")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -211,6 +228,7 @@ struct NotificationSettingsView: View {
                 Text("Marble alerts you to new replies in other chats. With background connection enabled, alerts can also arrive while Marble is in the background.")
             }
         }
+        .marbleFormBackground()
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -242,6 +260,7 @@ struct DataSettingsView: View {
                 Text("Clearing Everyone erases what was said there, including agent replies. Private chats are untouched.")
             }
         }
+        .marbleFormBackground()
         .navigationTitle("Chats and data")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
@@ -268,6 +287,7 @@ struct AboutSettingsView: View {
                 NavigationLink("About this host") { AboutHostView() }
             }
         }
+        .marbleFormBackground()
         .navigationTitle("About")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -336,6 +356,7 @@ struct ChangeHostView: View {
                 Text("The address is checked against the host before it is saved. The token is kept in the iOS keychain.")
             }
         }
+        .marbleFormBackground()
         .navigationTitle("Change host")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -412,6 +433,7 @@ struct PermissionsView: View {
                 }
             }
         }
+        .marbleFormBackground()
         .navigationTitle("Permissions")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -445,6 +467,7 @@ struct ModelSettingsView: View {
         Form {
             Section { ModelPickerRow() }
         }
+        .marbleFormBackground()
         .navigationTitle("Model")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -465,6 +488,7 @@ struct AboutHostView: View {
                 NavigationLink("What Marble can use") { WhatMarbleCanUseView() }
             }
         }
+        .marbleFormBackground()
         .navigationTitle("About this host")
         .navigationBarTitleDisplayMode(.inline)
     }

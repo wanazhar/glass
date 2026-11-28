@@ -71,6 +71,7 @@ struct ScheduledView: View {
                 Text("Times follow this iPhone's time zone.")
             }
         }
+        .marbleFormBackground()
         .navigationTitle("Scheduled")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -216,6 +217,7 @@ struct ScheduleEditor: View {
                 Text("The schedule runs in that Marble's chat once it has one.")
             }
         }
+        .marbleFormBackground()
         .navigationTitle(routine == nil ? "Add schedule" : "Edit schedule")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

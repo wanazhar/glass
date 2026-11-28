@@ -51,7 +51,7 @@ struct MarbleRootView: View {
                     }
                     .accessibilityIdentifier("tab.everyone")
                     Tab("Activity", systemImage: "waveform.path", value: MarbleTab.activity) {
-                        NavigationStack { ActivityView() }.marbleHostNotices()
+                        NavigationStack { ActivityView(isRootTab: true) }.marbleHostNotices()
                     }
                     .accessibilityIdentifier("tab.activity")
                     .badge(store.state.approvals.count + store.memory.suggestions.count)
@@ -86,9 +86,18 @@ struct MarbleRootView: View {
 
 private extension View {
     func marbleHostNotices() -> some View {
+        modifier(MarbleHostNoticePlacement())
+    }
+}
+
+private struct MarbleHostNoticePlacement: ViewModifier {
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    func body(content: Content) -> some View {
         VStack(spacing: 0) {
-            MarbleHostNotices()
-            self
+            if sizeClass != .regular { MarbleHostNotices() }
+            content
+            if sizeClass == .regular { MarbleHostNotices() }
         }
     }
 }
@@ -122,10 +131,15 @@ private struct MarbleHostNotices: View {
                     .accessibilityIdentifier("host.paused")
                 }
                 if store.hostVersionMismatch {
-                    Label("Marble and your host are on different builds.", systemImage: "info.circle")
-                        .font(.footnote)
-                        .foregroundStyle(MarbleTheme.muted)
-                        .accessibilityIdentifier("host.versionMismatch")
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "info.circle").accessibilityHidden(true)
+                        Text("Marble and your host are on different builds.")
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(MarbleTheme.muted)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("host.versionMismatch")
                 }
             }
             .frame(maxWidth: 660, alignment: .leading)

@@ -18,7 +18,15 @@ struct MarbleMarkdownView: View, Equatable {
             failurePolicy: .returnPartiallyParsedIfPossible
         )
         let readable = MarbleMath.inline(in: value)
-        return (try? AttributedString(markdown: readable, options: options)) ?? AttributedString(readable)
+        var text = (try? AttributedString(markdown: readable, options: options)) ?? AttributedString(readable)
+        for run in Array(text.runs) {
+            if var intent = run.inlinePresentationIntent, intent.contains(.stronglyEmphasized) {
+                intent.remove(.stronglyEmphasized)
+                intent.insert(.emphasized)
+                text[run.range].inlinePresentationIntent = intent
+            }
+        }
+        return text
     }
 }
 
@@ -33,6 +41,7 @@ private struct MarbleMarkdownBlocks: View {
                 view(for: block)
             }
         }
+        .lineSpacing(3)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -46,8 +55,9 @@ private struct MarbleMarkdownBlocks: View {
                 .fixedSize(horizontal: false, vertical: true)
         case .heading(let level, let value):
             Text(MarbleMarkdownView.inline(value))
-                .font(level == 1 ? .title3.bold() : level == 2 ? .headline : .subheadline.bold())
+                .font(level == 1 ? .body.weight(.semibold) : .subheadline.weight(.semibold))
                 .foregroundStyle(color)
+                .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
         case .quote(let inner):
             HStack(alignment: .top, spacing: 10) {
@@ -74,14 +84,14 @@ private struct MarbleMarkdownBlocks: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .font(font)
-                    .padding(.leading, CGFloat(item.level) * 16)
+                    .padding(.leading, CGFloat(min(item.level, 3)) * 12)
                 }
             }
         case .code(let language, let code):
             MarbleCodeBlock(code: code, language: language)
         case .math(let value):
             Text(value)
-                .font(.system(.body, design: .serif))
+                .font(font)
                 .multilineTextAlignment(.center)
                 .padding(.vertical, 4)
                 .frame(maxWidth: .infinity)
@@ -103,13 +113,13 @@ private struct MarbleCodeBlock: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(language.isEmpty ? "code" : language)
-                    .font(.caption.weight(.semibold))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 if overflows {
                     Image(systemName: "arrow.left.and.right")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                         .accessibilityLabel("Scrolls horizontally")
                 }
@@ -122,7 +132,7 @@ private struct MarbleCodeBlock: View {
                     }
                 } label: {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.caption)
+                        .font(.footnote)
                         .frame(width: 44, height: 44)
                         .contentShape(Capsule())
                 }
@@ -158,7 +168,7 @@ private struct MarbleTableBlock: View {
     var rows: [[String]]
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal) {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
                 GridRow {
                     ForEach(Array(header.enumerated()), id: \.offset) { column, cell in

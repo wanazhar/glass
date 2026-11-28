@@ -65,17 +65,100 @@ struct MarbleInlineButton: View {
     var body: some View {
         Button(role: role, action: action) {
             Text(title)
-                .font(.subheadline.weight(.semibold))
+                .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(role == .destructive ? Color.red : MarbleTheme.ink)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(minWidth: 44, maxWidth: expands ? .infinity : nil, minHeight: 44)
                 .contentShape(Capsule())
                 .marbleFloating(tint: prominent ? (role == .destructive ? .red : MarbleTheme.tint) : nil,
                                 interactive: true)
         }
         .buttonStyle(.plain)
+    }
+}
+
+struct MarbleAdaptiveRow<Content: View>: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
+    var spacing: CGFloat = 8
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        let layout = typeSize >= .xxxLarge
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: spacing))
+            : AnyLayout(HStackLayout(spacing: spacing))
+        layout { content() }
+    }
+}
+
+struct MarbleValueRow: View {
+    var title: LocalizedStringKey
+    var value: String
+
+    init(_ title: LocalizedStringKey, value: String) {
+        self.title = title
+        self.value = value
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(title)
+                Spacer(minLength: 0)
+                valueLabel
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                valueLabel
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var valueLabel: some View {
+        Text(value)
+            .font(.subheadline)
+            .foregroundStyle(MarbleTheme.muted)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+struct MarbleEmptyState<Actions: View>: View {
+    let title: Text
+    var description: Text? = nil
+    var systemImage: String? = nil
+    @ViewBuilder var actions: () -> Actions
+
+    var body: some View {
+        VStack(spacing: 8) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.body)
+                    .foregroundStyle(MarbleTheme.muted)
+                    .accessibilityHidden(true)
+            }
+            title
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(MarbleTheme.ink)
+                .accessibilityAddTraits(.isHeader)
+            if let description {
+                description.font(.subheadline).foregroundStyle(MarbleTheme.muted)
+            }
+            actions()
+        }
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20)
+    }
+}
+
+extension MarbleEmptyState where Actions == EmptyView {
+    init(_ title: LocalizedStringKey, description: Text? = nil, systemImage: String? = nil) {
+        self.init(title: Text(title), description: description, systemImage: systemImage) { EmptyView() }
     }
 }
 
@@ -105,10 +188,11 @@ extension View {
         }
     }
 
-    func marbleToolbarTitle() -> some View {
-        padding(.horizontal, 14)
-            .padding(.vertical, 5)
-            .marbleFloating()
+    func marbleChatHeader() -> some View {
+        padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background(MarbleTheme.paper)
     }
 }
 
@@ -127,7 +211,7 @@ private struct MarbleFloatingMaterial<S: Shape>: ViewModifier {
     }
 }
 
-/// Toolbar title with a quiet connection mark: a small green dot while
+/// Chat title with a quiet connection mark: a small green dot while
 /// connected, and a word only when it is not.
 struct MarbleTitleView: View {
     var title: String
@@ -154,8 +238,9 @@ struct MarbleTitleView: View {
                     MarbleAvatar(glyph: avatar.glyph, hue: hue, size: 20, isWorking: avatarWorking)
                 }
                 Text(title)
-                    .font(.headline)
-                    .lineLimit(1)
+                    .font(.subheadline.weight(.semibold))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
                 if connectionText == nil {
                     Circle()
                         .fill(MarbleTheme.ready)
@@ -164,12 +249,16 @@ struct MarbleTitleView: View {
             }
             if let connectionText {
                 Text(connectionText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.footnote)
+                    .foregroundStyle(MarbleTheme.muted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title), \(connectionText ?? "Connected")")
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityIdentifier("chat.title")
     }
 }
 
@@ -184,7 +273,7 @@ struct MarbleStatusText: View {
                 .fill(tone)
                 .frame(width: 7, height: 7)
             Text(label)
-                .font(.caption)
+                .font(.footnote)
                 .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)

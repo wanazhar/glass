@@ -20,21 +20,19 @@ struct TranscriptView: View {
                         && store.liveTools.isEmpty {
                         // Load failed: say so and offer a retry, never a silent
                         // empty conversation that looks settled.
-                        ContentUnavailableView {
-                            Label("Could not reach the host", systemImage: "network.slash")
-                        } description: {
-                            Text(store.errorMessage ?? "")
-                        } actions: {
+                        MarbleEmptyState(title: Text("Could not reach the host"),
+                                         description: store.errorMessage.map { Text($0) },
+                                         systemImage: "network.slash") {
                             MarbleInlineButton(title: "Retry", prominent: true) { Task { await store.refresh() } }
                         }
                     } else if entries.isEmpty
                         && store.liveText.isEmpty
                         && store.liveReasoning.isEmpty
                         && store.liveTools.isEmpty {
-                        ContentUnavailableView(
+                        MarbleEmptyState(
                             "No messages yet",
-                            systemImage: "text.bubble",
-                            description: Text("Say hello, ask a question, or share what’s on your mind.")
+                            description: Text("Say hello, ask a question, or share what’s on your mind."),
+                            systemImage: "text.bubble"
                         )
                     }
                     let transcript = MarbleReasoningAssociation(entries)
@@ -103,9 +101,7 @@ struct MarbleHistoryUnavailable: View {
     let retry: () async -> Void
 
     var body: some View {
-        ContentUnavailableView {
-            Label("Couldn’t load messages", systemImage: "network.slash")
-        } actions: {
+        MarbleEmptyState(title: Text("Couldn’t load messages"), systemImage: "network.slash") {
             MarbleInlineButton(title: "Retry") { Task { await retry() } }
         }
     }
@@ -120,6 +116,7 @@ struct MarbleEntryView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.marbleMeasuresHistory) private var measuresHistory
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var creatingThread = false
     @State private var threadError = false
     @State private var showsMessageActions = false
@@ -151,8 +148,8 @@ struct MarbleEntryView: View {
         VStack(alignment: .leading, spacing: 6) {
             if let timestamp {
                 Text(timestamp)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.footnote)
+                    .foregroundStyle(MarbleTheme.muted)
                     .frame(maxWidth: .infinity)
             }
             if entry.kind == "assistant" || entry.kind == "pending" || failure {
@@ -181,8 +178,8 @@ struct MarbleEntryView: View {
                         Text("Routed to \(names)")
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.footnote)
+                .foregroundStyle(MarbleTheme.muted)
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .accessibilityIdentifier("everyone.routing")
@@ -248,7 +245,8 @@ struct MarbleEntryView: View {
                 if let thread = store.threadSummary(for: entry) {
                     NavigationLink(value: ChatRoute.thread(thread.id)) {
                         Label(thread.replyLabel, systemImage: "text.bubble")
-                            .font(.footnote.weight(.medium))
+                            .font(.footnote)
+                            .frame(minHeight: 44)
                     }
                     .buttonStyle(.borderless)
                 }
@@ -297,6 +295,8 @@ struct MarbleEntryView: View {
             Text(entry.text)
                 .font(.body)
                 .foregroundStyle(MarbleTheme.ink)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .padding(.horizontal, 13)
                 .padding(.vertical, 8)
@@ -304,7 +304,7 @@ struct MarbleEntryView: View {
                     MarbleTheme.wash,
                     in: MarbleTheme.panel
                 )
-                .padding(.leading, 48)
+                .padding(.leading, typeSize >= .xxxLarge ? 12 : 32)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         } else if entry.kind == "pending" {
             MarbleThinkingBubble(name: speaker?.name ?? store.agentName(for: entry.taskId) ?? "Marble",
@@ -338,8 +338,9 @@ struct MarbleEntryView: View {
                                  isWorking: settledAt == nil && task.map(store.isTaskWorking) == true,
                                  settledAt: settledAt)
                     Text(speaker.name)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.footnote.weight(.semibold))
                         .foregroundStyle(MarbleTheme.marble(hue: hue, brightness: colorScheme == .dark ? 1 : 0.38))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(speaker.name) said")
@@ -417,7 +418,7 @@ struct MarbleToolRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .font(.caption)
+        .font(.footnote)
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .combine)
         .sheet(isPresented: $showsDetails) {
@@ -439,7 +440,7 @@ struct MarbleToolRow: View {
 
     private func detail(_ title: String, _ text: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.headline)
+            Text(title).font(.subheadline.weight(.semibold))
             Text(text.isEmpty ? "Not recorded" : text)
                 .font(.body)
                 .textSelection(.enabled)
@@ -465,6 +466,7 @@ struct MarbleToolTimeline: View {
                         .font(.caption.weight(.semibold))
                         .accessibilityHidden(true)
                 }
+                .frame(minHeight: 44)
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
@@ -577,10 +579,13 @@ private struct MarbleFailedTurnRow: View {
 /// inside. Return adds a line; the arrow sends.
 struct ComposerBar: View {
     @EnvironmentObject private var store: MarbleStore
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var submitting = false
     @Binding var draft: String
     var isWorking: Bool
     var isDictating: Bool = false
+    var notice: String? = nil
     var placeholder: String = "Message"
     var workingPlaceholder: String = "Add to what Marble is doing"
     /// False where the host cannot take a correction mid-turn.
@@ -601,6 +606,13 @@ struct ComposerBar: View {
         VStack(alignment: .leading, spacing: 6) {
             MarbleConnectionNotice()
                 .padding(.horizontal, 16)
+            if let notice {
+                Text(notice)
+                    .font(.footnote)
+                    .foregroundStyle(MarbleTheme.problem)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+            }
             if action == .stopOnly {
                 Text(MarbleSteer.unsupportedNote)
                     .font(.footnote)
@@ -613,57 +625,76 @@ struct ComposerBar: View {
     }
 
     private var field: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            if let onDictate {
-                Button(action: onDictate) {
-                    Image(systemName: isDictating ? "waveform" : "mic")
-                        .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(isDictating ? .red : .secondary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel(isDictating ? "Stop dictation" : "Dictate")
+        let stacked = sizeClass == .compact && typeSize >= .xxxLarge
+        let layout = stacked
+            ? AnyLayout(VStackLayout(alignment: .trailing, spacing: 0))
+            : AnyLayout(HStackLayout(alignment: .bottom, spacing: 4))
+        return layout {
+            if !stacked {
+                dictationButton
             }
-
             TextField(
                 action == .steer ? workingPlaceholder : placeholder,
                 text: $draft,
                 axis: .vertical
             )
-            .lineLimit(1...6)
+            .font(.body)
+            .lineLimit(1...(typeSize >= .xxxLarge ? 2 : 6))
             .focused($focused)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .accessibilityIdentifier("composer.field")
-
-            if action == .send || (action == .steer && !trimmed.isEmpty) {
-                Button { submit() } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 32))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(MarbleTheme.card, trimmed.isEmpty ? MarbleTheme.muted : MarbleTheme.tint)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+            HStack(spacing: 4) {
+                if stacked {
+                    dictationButton
+                    Spacer(minLength: 0)
                 }
-                .disabled(trimmed.isEmpty || submitting || store.connectionPaused || store.needsToken
-                          || (action == .steer && !steerReady))
-                .accessibilityLabel(action == .steer ? "Steer" : "Send")
-            }
-            if isWorking {
-                Button(action: onStop) {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.red)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel("Stop")
+                sendAndStop
             }
         }
         .padding(.horizontal, 6)
         .marbleFloating()
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
+    }
+
+    @ViewBuilder private var dictationButton: some View {
+        if let onDictate {
+            Button(action: onDictate) {
+                Image(systemName: isDictating ? "waveform" : "mic")
+                    .font(.body)
+                    .foregroundStyle(isDictating ? .red : .secondary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel(isDictating ? "Stop dictation" : "Dictate")
+        }
+    }
+
+    @ViewBuilder private var sendAndStop: some View {
+        if action == .send || (action == .steer && !trimmed.isEmpty) {
+            Button { submit() } label: {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 28))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(MarbleTheme.card, trimmed.isEmpty ? MarbleTheme.muted : MarbleTheme.tint)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .disabled(trimmed.isEmpty || submitting || store.connectionPaused || store.needsToken
+                      || (action == .steer && !steerReady))
+            .accessibilityLabel(action == .steer ? "Steer" : "Send")
+        }
+        if isWorking {
+            Button(action: onStop) {
+                Image(systemName: "stop.circle.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.red)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Stop")
+        }
     }
 
     private func submit() {
@@ -940,21 +971,18 @@ struct ApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(MarbleDecisionWords.action(tool: approval.tool))
-                .font(.headline)
+                .font(.subheadline.weight(.semibold))
             Text(approval.argumentsSummary)
-                .font(.caption)
+                .font(.footnote)
                 .foregroundStyle(.secondary)
-                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
             if let conflict = approval.conflict, !conflict.isEmpty {
                 Label(conflict, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { actions }
-                VStack(alignment: .leading, spacing: 8) { actions }
-            }
+            MarbleAdaptiveRow { actions }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

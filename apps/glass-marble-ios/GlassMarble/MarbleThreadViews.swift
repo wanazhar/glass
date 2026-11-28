@@ -23,19 +23,16 @@ struct EveryoneView: View {
             let active = threads.filter { !$0.archived }
             if store.everyoneThreadList == nil {
                 if loadFailed {
-                    ContentUnavailableView {
-                        Label("Couldn’t load threads", systemImage: "bubble.left.and.bubble.right")
-                    } description: {
-                        EmptyView()
-                    } actions: {
+                    MarbleEmptyState(title: Text("Couldn’t load threads"),
+                                     systemImage: "bubble.left.and.bubble.right") {
                         MarbleInlineButton(title: "Retry") { Task { await load(reportFailure: true) } }
                     }
                 } else {
                     MarbleListSkeleton()
                 }
             } else if active.isEmpty {
-                ContentUnavailableView("No threads yet", systemImage: "bubble.left.and.bubble.right",
-                                       description: Text("Start a thread to talk with Everyone."))
+                MarbleEmptyState("No threads yet", description: Text("Start a thread to talk with Everyone."),
+                                 systemImage: "bubble.left.and.bubble.right")
             }
             ForEach(active) { thread in
                 NavigationLink(value: ChatRoute.thread(thread.id)) {
@@ -108,6 +105,7 @@ struct EveryoneView: View {
             .scrollContentBackground(.hidden)
             .background(MarbleTheme.paper)
             .navigationTitle("Archived")
+            .navigationBarTitleDisplayMode(.inline)
         }
         .task(id: RefreshKey(updates: store.threadUpdates, revision: store.threadHostRevision)) { await load() }
         .refreshable { await load(reportFailure: true) }
@@ -115,11 +113,12 @@ struct EveryoneView: View {
 
     private func row(_ thread: MarbleThread) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(thread.displayTitle).font(.headline)
+            Text(thread.displayTitle).font(.subheadline.weight(.semibold))
             Text(marbleMessageDate(thread.summary.lastActivityAt), style: .relative)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.footnote)
+                .foregroundStyle(MarbleTheme.muted)
         }
+        .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
     }
 
@@ -251,6 +250,7 @@ private struct MarbleFindView: View {
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
         .navigationTitle("Find")
+        .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find in this chat")
         .toolbarVisibility(.hidden, for: .tabBar)
     }
@@ -269,22 +269,23 @@ private struct MarbleThreadInbox: View {
                     NavigationLink(value: ChatRoute.thread(thread.id)) {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(thread.parentPreview.isEmpty ? "Thread" : thread.parentPreview)
-                                .lineLimit(2)
-                            HStack {
+                                .font(.subheadline)
+                            MarbleAdaptiveRow(spacing: 4) {
                                 if !thread.parentSender.isEmpty { Text(thread.parentSender) }
                                 Text(thread.summary.replyLabel)
-                                Spacer()
                                 Text(marbleMessageDate(thread.summary.lastActivityAt), style: .relative)
                             }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(.footnote)
+                            .foregroundStyle(MarbleTheme.muted)
                         }
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.vertical, 2)
                     }
                 }
                 if threads.isEmpty && !failed {
-                    ContentUnavailableView("No threads yet", systemImage: "text.bubble",
-                                           description: Text("Touch and hold a message to reply in a thread."))
+                    MarbleEmptyState("No threads yet",
+                                     description: Text("Touch and hold a message to reply in a thread."),
+                                     systemImage: "text.bubble")
                 }
             } else if !failed {
                 ProgressView()
@@ -299,6 +300,7 @@ private struct MarbleThreadInbox: View {
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
         .navigationTitle("Threads")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbarVisibility(.hidden, for: .tabBar)
         .task(id: store.threadUpdates.filter { $0.value.conversationId == conversationId }) {
             await load()
@@ -358,16 +360,14 @@ private struct MarbleThreadView: View {
             } else if let page {
                 timeline(page)
             } else if loadFailed {
-                ContentUnavailableView {
-                    Label("Couldn’t load thread", systemImage: "text.bubble")
-                } actions: {
+                MarbleEmptyState(title: Text("Couldn’t load thread"), systemImage: "text.bubble") {
                     MarbleInlineButton(title: "Retry") { Task { await load() } }
                 }
             } else {
                 ProgressView()
             }
         }
-        .navigationTitle(page?.thread.displayTitle ?? "Thread")
+        .navigationTitle("Thread")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(MarbleTheme.paper, for: .navigationBar)
         .toolbarBackgroundVisibility(.visible, for: .navigationBar)
@@ -483,44 +483,16 @@ private struct MarbleThreadView: View {
             .compactMap { store.agentName(for: $0.id) }
         return MarbleJumpTimeline(
             entries: store.withLiveToolRows(presentation.entries, conversationId: conversationId, threadId: id),
-            jump: jump, parentId: page.thread.parentEntryId, outgoing: store.lastOutgoing(to: target),
+            jump: jump, thread: page.thread, parentId: page.thread.parentEntryId, outgoing: store.lastOutgoing(to: target),
             workingNames: presentation.responders.filter { !reserved.contains($0) }.map { id in
                 store.prism.marbles.first { $0.id == id }?.name ?? page.thread.participants.first ?? "Marble"
             } + workingGroupNames,
             loadOlder: { await store.loadOlderThread(id, beforePrepend: $0) },
-            chooseMemory: { memoryConsent = $0 }
-        )
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if let group = page.thread.group,
-               group.closed || !group.goal.isEmpty || !group.doneWhen.isEmpty {
-                VStack(alignment: .leading, spacing: 5) {
-                    if !group.goal.isEmpty {
-                        LabeledContent {
-                            Text(group.goal).foregroundStyle(MarbleTheme.ink)
-                        } label: { Text("Goal").fontWeight(.semibold) }
-                    }
-                    if !group.doneWhen.isEmpty {
-                        LabeledContent {
-                            Text(group.doneWhen).foregroundStyle(MarbleTheme.ink)
-                        } label: { Text("Done when").fontWeight(.semibold) }
-                    }
-                    if group.closed {
-                        Label("Task completed", systemImage: "checkmark.circle").foregroundStyle(MarbleTheme.ready)
-                    }
-                }
-                .font(.subheadline)
-                .foregroundStyle(MarbleTheme.ink)
-                .padding(.vertical, 10)
-                .padding(.horizontal, 16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(MarbleTheme.card, in: MarbleTheme.panel)
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
+            chooseMemory: { memoryConsent = $0 },
+            footer: page.thread.group?.suggestions.first.map { suggestion in
+                { AnyView(suggestionCard(suggestion)) }
             }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let suggestion = page.thread.group?.suggestions.first { suggestionCard(suggestion) }
-        }
+        )
     }
 
     private func suggestionCard(_ suggestion: MarbleGroupThread.Suggestion) -> some View {
@@ -529,7 +501,7 @@ private struct MarbleThreadView: View {
         return VStack(alignment: .leading, spacing: 6) {
             Label("\(author) suggests adding \(agent)", systemImage: "person.badge.plus")
                 .font(.subheadline)
-            HStack {
+            MarbleAdaptiveRow {
                 MarbleInlineButton(title: "Add", prominent: true) { respond(to: suggestion, add: true) }
                 MarbleInlineButton(title: "Not now") { respond(to: suggestion, add: false) }
             }
@@ -538,7 +510,6 @@ private struct MarbleThreadView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .marbleFloating(in: MarbleTheme.panel)
-        .padding(.horizontal, 16)
     }
 
     private func respond(to suggestion: MarbleGroupThread.Suggestion, add: Bool) {
@@ -653,20 +624,19 @@ struct MarbleSearchRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
+            MarbleAdaptiveRow(spacing: 4) {
                 Text(hit.sender.isEmpty ? "Message" : hit.sender)
                     .fontWeight(.semibold)
                 if hit.threadId != nil {
                     Text("Thread").foregroundStyle(.secondary)
                 }
-                Spacer()
                 Text(marbleMessageDate(hit.createdAt), format: .dateTime.month().day().hour().minute())
                     .foregroundStyle(.secondary)
             }
-            .font(.caption)
+            .font(.footnote)
             Text(highlightedSnippet)
                 .font(.footnote)
-                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 2)
         .foregroundStyle(.primary)
@@ -678,7 +648,6 @@ struct MarbleSearchRow: View {
         for range in hit.highlights {
             result.append(AttributedString(String(hit.snippet[start..<range.lowerBound])))
             var match = AttributedString(String(hit.snippet[range]))
-            match.font = .footnote.bold()
             match.backgroundColor = Color.accentColor.opacity(0.16)
             result.append(match)
             start = range.upperBound
@@ -698,11 +667,13 @@ private struct MarbleJumpTimeline: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let entries: [MarbleEntry]
     let jump: MarbleMessageJump?
+    var thread: MarbleThread? = nil
     var parentId: String?
     var outgoing: UUID? = nil
     var workingNames: [String] = []
     var loadOlder: MarbleOlderHistoryLoader? = nil
     var chooseMemory: ((MarbleMemoryConsent) -> Void)? = nil
+    var footer: (() -> AnyView)? = nil
     @State private var highlight: String?
 
     var body: some View {
@@ -710,6 +681,28 @@ private struct MarbleJumpTimeline: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
+                    if let thread {
+                        Text(thread.displayTitle)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(MarbleTheme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityAddTraits(.isHeader)
+                        if let group = thread.group,
+                           group.closed || !group.goal.isEmpty || !group.doneWhen.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                if !group.goal.isEmpty { MarbleValueRow("Goal", value: group.goal) }
+                                if !group.doneWhen.isEmpty { MarbleValueRow("Done when", value: group.doneWhen) }
+                                if group.closed {
+                                    Label("Task completed", systemImage: "checkmark.circle")
+                                        .foregroundStyle(MarbleTheme.ready)
+                                }
+                            }
+                            .font(.subheadline)
+                            .foregroundStyle(MarbleTheme.ink)
+                            .padding(16)
+                            .background(MarbleTheme.card, in: MarbleTheme.panel)
+                        }
+                    }
                     ForEach(transcript.standalone, id: \.rowID) { entry in
                         VStack(alignment: .leading, spacing: 10) {
                             MarbleEntryView(entry: entry, speaker: store.speakerStyle(for: entry),
@@ -726,6 +719,7 @@ private struct MarbleJumpTimeline: View {
                         let agent = store.prism.marbles.first { $0.name == name }
                         MarbleThinkingBubble(name: name, speaker: agent.map(store.rosterStyle(for:)))
                     }
+                    if let footer { footer() }
                     MarbleTranscriptEnd(bottomPadding: 16)
                 }
                 .marbleHistoryScrollTargets()
@@ -769,9 +763,7 @@ private struct MarbleHistoryView: View {
                 if let entries {
                     MarbleJumpTimeline(entries: entries, jump: jump)
                 } else if failed {
-                    ContentUnavailableView {
-                        Label("Couldn’t find that message", systemImage: "magnifyingglass")
-                    } actions: {
+                    MarbleEmptyState(title: Text("Couldn’t find that message"), systemImage: "magnifyingglass") {
                         MarbleInlineButton(title: "Retry") { Task { await load() } }
                     }
                 } else {

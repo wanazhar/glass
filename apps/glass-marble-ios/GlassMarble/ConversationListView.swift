@@ -20,9 +20,10 @@ struct ConversationListView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(thread.title)
                                 Text(thread.group?.closed == true ? "Completed" : "Group chat")
-                                    .font(.caption)
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
+                            .fixedSize(horizontal: false, vertical: true)
                             .frame(minHeight: 44)
                         }
                     }
@@ -124,15 +125,7 @@ struct ConversationListView: View {
             if !store.loaded && store.state.conversations.isEmpty {
                 MarbleListSkeleton()
             } else if filteredConversations.isEmpty && visibleGroups.isEmpty {
-                VStack(spacing: 8) {
-                    Text("No chats yet")
-                        .font(.callout)
-                    Text("Start one with the compose button.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 24)
+                MarbleEmptyState("No chats yet", description: Text("Start one with the compose button."))
             }
         }
     }
@@ -199,13 +192,14 @@ struct ArchivedChatsView: View {
         List {
             let archived = store.state.conversations.filter { $0.archived == true }
                 .sorted { $0.updatedAt > $1.updatedAt }
-            if archived.isEmpty { ContentUnavailableView("No archived chats", systemImage: "archivebox") }
+            if archived.isEmpty { MarbleEmptyState("No archived chats", systemImage: "archivebox") }
             ForEach(archived) { conversation in
-                HStack {
+                MarbleAdaptiveRow {
                     NavigationLink(value: ChatRoute.conversation(conversation.id)) {
                         ConversationRow(conversation: conversation, line: store.stateLine(for: conversation))
                     }
                     .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .navigationLinkIndicatorVisibility(.hidden)
                     MarbleInlineButton(title: "Restore") {
                         Task { await store.archiveConversation(conversation.id, archived: false) }
@@ -218,6 +212,7 @@ struct ArchivedChatsView: View {
         .scrollContentBackground(.hidden)
         .background(MarbleTheme.paper)
         .navigationTitle("Archived")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -260,7 +255,7 @@ struct MarbleNewChatButton: View {
                     }
                 }
             }
-            .presentationDetents([.medium])
+            .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $makingGroup) {
             MarbleGroupComposer { thread in
@@ -421,15 +416,14 @@ private struct ConversationRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(conversation.displayTitle)
-                .font(.callout)
-                .lineLimit(1)
+                .font(.subheadline)
             if let line {
                 Text(line)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .font(.footnote)
+                    .foregroundStyle(MarbleTheme.muted)
             }
         }
         .padding(.vertical, 2)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }

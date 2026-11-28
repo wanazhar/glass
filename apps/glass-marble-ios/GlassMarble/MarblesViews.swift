@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// One marble-to-marble ask as a quiet system row: who asked whom, then the
-/// instruction or reply on one line. Tapping a row with more to say opens
+/// instruction or reply. Tapping a row with more to say opens
 /// the whole reply in place.
 struct HandoffLine: View {
     var handoff: MarbleHandoff
@@ -20,7 +20,6 @@ struct HandoffLine: View {
                     Image(systemName: symbol)
                         .font(.caption)
                         .foregroundStyle(tone)
-                        .frame(width: 14)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(MarbleHandoffLine.title(handoff))
                             .font(.footnote.weight(.semibold))
@@ -29,7 +28,6 @@ struct HandoffLine: View {
                             Text(detail)
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
                         }
                     }
                     Spacer(minLength: 4)
@@ -40,6 +38,8 @@ struct HandoffLine: View {
                             .rotationEffect(.degrees(expanded ? 180 : 0))
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -103,11 +103,8 @@ struct EveryoneHistoryView: View {
                 } else if entries.isEmpty && store.historyErrors.contains(everyoneConversationId) {
                     MarbleHistoryUnavailable { await store.openEveryoneHistory() }
                 } else if entries.isEmpty {
-                    ContentUnavailableView {
-                        Text("No one has spoken yet")
-                    } description: {
-                        Text("Say something, or use @ to call on an agent.")
-                    }
+                    MarbleEmptyState("No one has spoken yet",
+                                     description: Text("Say something, or use @ to call on an agent."))
                 }
                 let transcript = MarbleReasoningAssociation(entries)
                 ForEach(transcript.standalone, id: \.rowID) { entry in
@@ -156,10 +153,6 @@ struct EveryoneHistoryView: View {
         .toolbarBackground(MarbleTheme.paper, for: .navigationBar)
         .toolbarBackgroundVisibility(.visible, for: .navigationBar)
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                MarbleTitleView(title: "Everyone")
-                    .marbleToolbarTitle()
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     draft = MarbleMentions.askingEveryone(in: draft)
@@ -280,7 +273,7 @@ struct MarblesView: View {
             Section {
                 Button { showsNew = true } label: {
                     Label("New agent", systemImage: "plus.circle")
-                        .font(.headline)
+                        .font(.body)
                         .frame(minHeight: 44, alignment: .leading)
                 }
                 .listRowBackground(MarbleTheme.card)
@@ -308,20 +301,21 @@ struct MarblesView: View {
     private func person(_ marble: MarblePrismMarble) -> some View {
         let style = store.rosterStyle(for: marble)
         let working = store.isAgentWorking(marble)
-        return HStack(spacing: 14) {
-            MarbleAvatar(glyph: style.glyph, hue: style.hue ?? marble.hue, size: 50, isWorking: working)
+        return HStack(spacing: 12) {
+            MarbleAvatar(glyph: style.glyph, hue: style.hue ?? marble.hue, size: 44, isWorking: working)
             VStack(alignment: .leading, spacing: 4) {
-                Text(marble.name).font(.headline).foregroundStyle(MarbleTheme.ink)
+                Text(marble.name).font(.subheadline.weight(.semibold)).foregroundStyle(MarbleTheme.ink)
                 if !marble.role.isEmpty {
                     Text(marble.displayRole)
-                        .font(.subheadline).foregroundStyle(MarbleTheme.muted)
+                        .font(.footnote).foregroundStyle(MarbleTheme.muted)
                 }
                 if working {
                     Label("Working", systemImage: "circle.fill")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(MarbleTheme.waiting)
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .padding(.vertical, 6)
@@ -346,8 +340,8 @@ struct MarbleListSkeleton: View {
             HStack(spacing: 14) {
                 Circle().fill(.quaternary).frame(width: 44, height: 44)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Conversation").font(.headline)
-                    Text("Your latest messages").font(.subheadline)
+                    Text("Conversation").font(.subheadline.weight(.semibold))
+                    Text("Your latest messages").font(.footnote)
                 }
             }
             .redacted(reason: .placeholder)
@@ -584,9 +578,7 @@ struct MarbleChatScreen: View {
     var body: some View {
         Group {
             if let marble, store.state.conversation(marble.conversationId)?.archived == true {
-                ContentUnavailableView {
-                    Label("Chat archived", systemImage: "archivebox")
-                } actions: {
+                MarbleEmptyState(title: Text("Chat archived"), systemImage: "archivebox") {
                     MarbleInlineButton(title: "Restore") {
                         Task { await store.archiveConversation(marble.conversationId, archived: false) }
                     }
@@ -594,15 +586,21 @@ struct MarbleChatScreen: View {
             } else if let marble {
                 transcript(marble)
             } else {
-                ContentUnavailableView(
+                MarbleEmptyState(
                     "That agent is gone",
-                    systemImage: "person.crop.circle.badge.questionmark",
-                    description: Text("It was removed from your agents.")
+                    description: Text("It was removed from your agents."),
+                    systemImage: "person.crop.circle.badge.questionmark"
                 )
             }
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbarVisibility(.hidden, for: .tabBar)
+        .marbleChatBar(edge: .top) {
+            MarbleTitleView(title: marble?.name ?? "Marble",
+                            avatar: marble.map(store.rosterStyle(for:)),
+                            avatarWorking: marble.map(store.isAgentWorking) ?? false)
+                .marbleChatHeader()
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -625,12 +623,6 @@ struct MarbleChatScreen: View {
                     Label("Chats", systemImage: "bubble.left.and.bubble.right")
                 }
                 .disabled(creatingChat)
-            }
-            ToolbarItem(placement: .principal) {
-                MarbleTitleView(title: marble?.name ?? "Marble",
-                                avatar: marble.map(store.rosterStyle(for:)),
-                                avatarWorking: marble.map(store.isAgentWorking) ?? false)
-                    .marbleToolbarTitle()
             }
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink(value: ChatRoute.marbleInfo(marbleId)) {
@@ -670,11 +662,8 @@ struct MarbleChatScreen: View {
                     } else if entries.isEmpty && store.historyErrors.contains(marble.conversationId) {
                         MarbleHistoryUnavailable { await store.openMarbleHistory(marble) }
                     } else if entries.isEmpty && !thinking {
-                        ContentUnavailableView {
-                            Text("Nothing yet")
-                        } description: {
-                            Text("Say hello — \(marble.name) answers in its own voice.")
-                        }
+                        MarbleEmptyState("Nothing yet",
+                                         description: Text("Say hello — \(marble.name) answers in its own voice."))
                     }
                     let transcript = MarbleReasoningAssociation(entries)
                     ForEach(transcript.standalone, id: \.rowID) { entry in
@@ -761,17 +750,16 @@ struct MarbleInfoView: View {
         Form {
             if let marble {
                 Section {
-                    HStack {
-                        Spacer()
-                        VStack(spacing: 6) {
-                            MarbleAvatar(glyph: glyph, hue: hue, size: 88)
-                            Text(marble.name).font(.largeTitle.weight(.semibold))
-                            if !marble.role.isEmpty {
-                                Text(marble.displayRole).foregroundStyle(MarbleTheme.muted)
-                            }
+                    VStack(spacing: 8) {
+                        MarbleAvatar(glyph: glyph, hue: hue, size: 64)
+                        Text(marble.name).font(.body.weight(.semibold))
+                        if !marble.role.isEmpty {
+                            Text(marble.displayRole).font(.subheadline).foregroundStyle(MarbleTheme.muted)
                         }
-                        Spacer()
                     }
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity)
                     .listRowBackground(Color.clear)
                 }
 
@@ -808,9 +796,9 @@ struct MarbleInfoView: View {
                 }
                 Section {
                     DisclosureGroup("Workspace and abilities") {
-                        LabeledContent("Workspace", value: marble.workspace.isEmpty ? "Host workspace" : marble.workspace)
+                        MarbleValueRow("Workspace", value: marble.workspace.isEmpty ? "Host workspace" : marble.workspace)
                         let model = marble.card?.model.isEmpty == false ? marble.card?.model : store.model
-                        LabeledContent("Model", value: model.flatMap { $0.isEmpty ? nil : $0 } ?? "Host default")
+                        MarbleValueRow("Model", value: model.flatMap { $0.isEmpty ? nil : $0 } ?? "Host default")
                         NavigationLink("Tools") { WhatMarbleCanUseView() }
                     }
                 }

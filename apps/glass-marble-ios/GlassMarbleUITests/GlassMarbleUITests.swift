@@ -209,10 +209,9 @@ final class GlassMarbleUITests: XCTestCase {
         let hit = app.staticTexts["Fixture conversation 150"]
         XCTAssertTrue(hit.waitForExistence(timeout: 5))
         hit.tap()
-        let title = app.navigationBars.descendants(matching: .any).matching(
-            NSPredicate(format: "label BEGINSWITH %@", "Fixture conversation 150,")
-        ).firstMatch
+        let title = app.descendants(matching: .any)["chat.title"].firstMatch
         XCTAssertTrue(title.waitForExistence(timeout: 5))
+        XCTAssertTrue(title.label.hasPrefix("Fixture conversation 150,"))
     }
 
     func testConversationListSearchFindsSavedEmptyChatByDisplayedTitle() {

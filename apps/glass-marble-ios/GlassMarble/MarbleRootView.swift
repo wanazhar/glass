@@ -100,7 +100,7 @@ private struct MarbleHostNotices: View {
         if store.control.paused || store.hostVersionMismatch {
             VStack(alignment: .leading, spacing: 8) {
                 if store.control.paused {
-                    HStack(spacing: 12) {
+                    MarbleAdaptiveRow(spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
                             Label("Paused", systemImage: "pause.circle")
                                 .font(.subheadline.weight(.semibold))
@@ -108,7 +108,8 @@ private struct MarbleHostNotices: View {
                                 .font(.footnote)
                                 .foregroundStyle(MarbleTheme.muted)
                         }
-                        Spacer()
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         MarbleInlineButton(title: "Resume") { Task { await store.setPaused(false) } }
                             .disabled(store.changingHostPause)
                             .accessibilityIdentifier("host.resume")
@@ -177,12 +178,13 @@ struct MarblesTabView: View {
                     stack(root: {
                         VStack(spacing: 12) {
                             PocketPair().frame(width: 80, height: 80)
-                            Text("Start a chat").font(.largeTitle.weight(.semibold))
+                            Text("Start a chat").font(.subheadline.weight(.semibold))
                             Text("Choose an agent to start a conversation.")
+                                .font(.subheadline)
                                 .foregroundStyle(MarbleTheme.muted)
                         }
                         .multilineTextAlignment(.center)
-                        .padding(24)
+                        .padding(16)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(MarbleTheme.paper)
                     })
@@ -257,11 +259,19 @@ struct MarbleChatView: View {
                 draft: $draft,
                 isWorking: store.isWorking,
                 isDictating: dictation.isRecording,
+                notice: store.errorMessage ?? dictation.errorMessage,
                 onSend: send,
                 onSteer: steer,
                 onStop: { Task { await store.cancelActiveTask() } },
                 onDictate: { dictation.toggle() }
             )
+        }
+        .marbleChatBar(edge: .top) {
+            MarbleTitleView(title: conversationId.flatMap { store.state.conversation($0) }?.displayTitle ?? "New chat",
+                            avatar: agent.map(store.rosterStyle(for:))
+                                ?? .init(name: "Marble", hue: MarbleSpeakerStyle.defaultHue),
+                            avatarWorking: store.isWorking)
+                .marbleChatHeader()
         }
         .marbleNewChatBackground()
         .toolbarVisibility(.hidden, for: .tabBar)
@@ -277,13 +287,6 @@ struct MarbleChatView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                MarbleTitleView(title: conversationId.flatMap { store.state.conversation($0) }?.displayTitle ?? "New chat",
-                                avatar: agent.map(store.rosterStyle(for:))
-                                    ?? .init(name: "Marble", hue: MarbleSpeakerStyle.defaultHue),
-                                avatarWorking: store.isWorking)
-                    .marbleToolbarTitle()
-            }
             if conversationId != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -338,18 +341,6 @@ struct MarbleChatView: View {
         .sheet(item: $exportURL) { file in
             ShareLink(item: file.url) { Label("Share \(file.url.lastPathComponent)", systemImage: "square.and.arrow.up") }
                 .padding()
-        }
-        .overlay(alignment: .bottom) {
-            if let message = store.errorMessage ?? dictation.errorMessage {
-                Text(message)
-                    .font(.caption)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .marbleFloating()
-                    .padding(.bottom, 8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .allowsHitTesting(false)
-            }
         }
     }
 

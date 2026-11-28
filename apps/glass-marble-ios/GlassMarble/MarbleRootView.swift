@@ -43,25 +43,22 @@ struct MarbleRootView: View {
                     get: { navigation.state.tab }, set: { navigation.selectTab($0) }
                 )) {
                     Tab("Agents", systemImage: "person.2", value: MarbleTab.marbles) {
-                        MarblesTabView()
+                        MarblesTabView().marbleHostNotices()
                     }
                     .accessibilityIdentifier("tab.marbles")
                     Tab("Everyone", systemImage: "bubble.left.and.bubble.right", value: MarbleTab.everyone) {
-                        EveryoneTabView()
+                        EveryoneTabView().marbleHostNotices()
                     }
                     .accessibilityIdentifier("tab.everyone")
                     Tab("Activity", systemImage: "waveform.path", value: MarbleTab.activity) {
-                        NavigationStack { ActivityView() }
+                        NavigationStack { ActivityView() }.marbleHostNotices()
                     }
                     .accessibilityIdentifier("tab.activity")
                     .badge(store.state.approvals.count + store.memory.suggestions.count)
                     Tab("Settings", systemImage: "gearshape", value: MarbleTab.settings) {
-                        NavigationStack { SettingsView() }
+                        NavigationStack { SettingsView() }.marbleHostNotices()
                     }
                     .accessibilityIdentifier("tab.settings")
-                }
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    MarbleHostNotices()
                 }
             } else {
                 MarbleOnboardingView(expiredToken: store.needsToken)
@@ -83,6 +80,15 @@ struct MarbleRootView: View {
         }
         .onChange(of: store.onboarded) { _, onboarded in
             if !onboarded { navigation.signOut() }
+        }
+    }
+}
+
+private extension View {
+    func marbleHostNotices() -> some View {
+        VStack(spacing: 0) {
+            MarbleHostNotices()
+            self
         }
     }
 }
@@ -111,6 +117,7 @@ private struct MarbleHostNotices: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 4)
                     .background(MarbleTheme.card, in: MarbleTheme.panel)
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("host.paused")
                 }
                 if store.hostVersionMismatch {

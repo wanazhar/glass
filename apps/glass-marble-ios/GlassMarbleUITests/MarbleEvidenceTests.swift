@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 final class MarbleEvidenceTests: XCTestCase {
     private let app = XCUIApplication()
@@ -742,6 +743,60 @@ final class MarbleEvidenceTests: XCTestCase {
         let all = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Asked everyone:")).firstMatch
         check(all)
         shot("p5-everyone-ask-all")
+    }
+
+    func testHostedP5AvatarRosterAndHeader() throws {
+        guard let address = ProcessInfo.processInfo.environment["MARBLE_TURN_EVIDENCE_URL"] else {
+            throw XCTSkip("Requires the local turn presentation fixture")
+        }
+        try start(address: address, expectedAgent: "Engineer")
+        let engineer = app.staticTexts["Engineer"].firstMatch
+        shot("p5-avatar-roster-idle")
+        Thread.sleep(forTimeInterval: 2)
+        engineer.tap()
+        let field = app.textFields["composer.field"]
+        check(field)
+        shot("p5-avatar-header-idle")
+        field.tap()
+        field.typeText("Show the avatar motion in this chat")
+        button("Send").tap()
+        check(app.descendants(matching: .any)["Engineer is working"].firstMatch)
+        shot("p5-avatar-header-working")
+        Thread.sleep(forTimeInterval: 2)
+        if app.windows.firstMatch.frame.width < 700 {
+            back()
+            check(app.staticTexts["Working"].firstMatch)
+            shot("p5-avatar-roster-working")
+            Thread.sleep(forTimeInterval: 1)
+            engineer.tap()
+        } else {
+            shot("p5-avatar-roster-working")
+        }
+        check(app.staticTexts["The avatar can settle now."].firstMatch, timeout: 18)
+        shot("p5-avatar-header-settled")
+        Thread.sleep(forTimeInterval: 2)
+    }
+
+    func testHostedP5AvatarEveryone() throws {
+        guard let address = ProcessInfo.processInfo.environment["MARBLE_TURN_EVIDENCE_URL"] else {
+            throw XCTSkip("Requires the local turn presentation fixture")
+        }
+        if ProcessInfo.processInfo.environment["MARBLE_AVATAR_REDUCE_MOTION"] == "1" {
+            XCTAssertTrue(UIAccessibility.isReduceMotionEnabled)
+        }
+        try start(address: address, expectedAgent: "Engineer")
+        app.tabBars.buttons["Everyone"].tap()
+        app.staticTexts["Earlier messages"].tap()
+        let field = app.textFields["composer.field"]
+        check(field)
+        field.tap()
+        field.typeText("@Engineer Show the avatar motion in Everyone")
+        button("Send").tap()
+        check(app.descendants(matching: .any)["Engineer is working"].firstMatch)
+        shot("p5-avatar-everyone-working")
+        check(app.staticTexts["The avatar can settle now."].firstMatch, timeout: 18)
+        shot("p5-avatar-everyone-settled")
+        Thread.sleep(forTimeInterval: 2)
     }
 
     func testHostedP5PauseAcrossTabs() throws {

@@ -200,6 +200,15 @@ def run_turn(identifier, task, text, conversation, request):
         reply(identifier, {"settled": True})
         return
     if os.environ.get("MARBLE_FIXTURE_TURN_EVIDENCE") == "1":
+        if "Show the avatar motion" in text:
+            event(turn, "text", {"text": "<working>Checking the details…</working>\n"})
+            time.sleep(4)
+            for chunk in ("The avatar ", "can settle ", "now."):
+                event(turn, "text", {"text": chunk})
+                time.sleep(1.6)
+            event(turn, "settled", {"reason": "completed"})
+            reply(identifier, {"settled": True})
+            return
         if "Which Rust function has a bug?" in text or "What is one thing to check?" in text:
             event(turn, "text", {"text": "I would check the inputs first."})
             event(turn, "settled", {"reason": "completed"})

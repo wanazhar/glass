@@ -309,7 +309,7 @@ struct MarbleEntryView: View {
         } else if entry.kind == "pending" {
             MarbleThinkingBubble(name: speaker?.name ?? store.agentName(for: entry.taskId) ?? "Marble",
                                  retrying: store.automaticRetries.contains(entry.taskId),
-                                 status: store.workingLines[entry.taskId])
+                                 status: store.workingLines[entry.taskId], speaker: speaker)
         } else if entry.kind == "handoff", let handoff = entry.handoff {
             HandoffLine(handoff: handoff)
         } else if entry.kind == "reasoning" {
@@ -330,10 +330,13 @@ struct MarbleEntryView: View {
 
     private func replyBubble(_ text: String) -> some View {
         let hue = speaker?.hue ?? replyHue
+        let settledAt = store.replyRevealStart(for: entry)
         return VStack(alignment: .leading, spacing: 6) {
             if let speaker {
                 HStack(spacing: 7) {
-                    MarbleAvatar(glyph: speaker.glyph, hue: hue, size: 20)
+                    MarbleAvatar(glyph: speaker.glyph, hue: hue, size: 20,
+                                 isWorking: settledAt == nil && task.map(store.isTaskWorking) == true,
+                                 settledAt: settledAt)
                     Text(speaker.name)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(MarbleTheme.marble(hue: hue, brightness: colorScheme == .dark ? 1 : 0.38))
@@ -341,7 +344,7 @@ struct MarbleEntryView: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(speaker.name) said")
             }
-            if !reduceMotion, let start = store.replyRevealStart(for: entry),
+            if !reduceMotion, let start = settledAt,
                Date().timeIntervalSince(start) < MarbleReplyReveal.duration {
                 MarbleRevealedReply(text: text, startsAt: start)
             } else {

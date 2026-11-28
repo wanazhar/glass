@@ -1,21 +1,5 @@
 import SwiftUI
 
-/// A marble's shape and hue as a small avatar — how people tell them apart.
-struct MarbleAvatar: View {
-    var glyph: String
-    var hue: Int
-    var size: CGFloat = 22
-
-    var body: some View {
-        let shape = MarbleSilhouette(glyph: glyph)
-        shape
-            .fill(MarbleTheme.hues.first { $0.degrees == hue }?.fill
-                  ?? MarbleTheme.marble(hue: hue, brightness: 0.85))
-            .frame(width: size, height: size)
-            .accessibilityHidden(true)
-    }
-}
-
 /// One marble-to-marble ask as a quiet system row: who asked whom, then the
 /// instruction or reply on one line. Tapping a row with more to say opens
 /// the whole reply in place.
@@ -147,7 +131,8 @@ struct EveryoneHistoryView: View {
                     MarbleTurnTail(task: task, entries: entries, showsLiveTools: true)
                 }
                 ForEach(responders, id: \.self) { id in
-                    MarbleThinkingBubble(name: store.prism.marbles.first(where: { $0.id == id })?.name ?? "Marble")
+                    let agent = store.prism.marbles.first { $0.id == id }
+                    MarbleThinkingBubble(name: agent?.name ?? "Marble", speaker: agent.map(store.rosterStyle(for:)))
                 }
                 MarbleTranscriptEnd(bottomPadding: 12)
             }
@@ -322,15 +307,16 @@ struct MarblesView: View {
 
     private func person(_ marble: MarblePrismMarble) -> some View {
         let style = store.rosterStyle(for: marble)
+        let working = store.isAgentWorking(marble)
         return HStack(spacing: 14) {
-            MarbleAvatar(glyph: style.glyph, hue: style.hue ?? marble.hue, size: 50)
+            MarbleAvatar(glyph: style.glyph, hue: style.hue ?? marble.hue, size: 50, isWorking: working)
             VStack(alignment: .leading, spacing: 4) {
                 Text(marble.name).font(.headline).foregroundStyle(MarbleTheme.ink)
                 if !marble.role.isEmpty {
                     Text(marble.displayRole)
                         .font(.subheadline).foregroundStyle(MarbleTheme.muted)
                 }
-                if store.isAgentWorking(marble) {
+                if working {
                     Label("Working", systemImage: "circle.fill")
                         .font(.caption)
                         .foregroundStyle(MarbleTheme.waiting)
@@ -641,18 +627,14 @@ struct MarbleChatScreen: View {
                 .disabled(creatingChat)
             }
             ToolbarItem(placement: .principal) {
-                MarbleTitleView(title: marble?.name ?? "Marble")
+                MarbleTitleView(title: marble?.name ?? "Marble",
+                                avatar: marble.map(store.rosterStyle(for:)),
+                                avatarWorking: marble.map(store.isAgentWorking) ?? false)
                     .marbleToolbarTitle()
             }
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink(value: ChatRoute.marbleInfo(marbleId)) {
-                    if let marble {
-                        let style = store.rosterStyle(for: marble)
-                        MarbleAvatar(glyph: style.glyph, hue: style.hue ?? marble.hue, size: 24)
-                            .accessibilityHidden(false)
-                    } else {
-                        Image(systemName: "person.crop.circle")
-                    }
+                    Image(systemName: "person.crop.circle")
                 }
                 .accessibilityLabel("About this agent")
             }
@@ -711,7 +693,8 @@ struct MarbleChatScreen: View {
                     if thinking && !entries.contains(where: {
                         ["pending", "assistant"].contains($0.kind) && $0.taskId == active?.id
                     }) {
-                        MarbleThinkingBubble(name: marble.name, status: active.flatMap { store.workingLines[$0.id] })
+                        MarbleThinkingBubble(name: marble.name, status: active.flatMap { store.workingLines[$0.id] },
+                                             speaker: style)
                     }
                     MarbleTranscriptEnd(bottomPadding: 12)
                 }

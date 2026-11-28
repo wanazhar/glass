@@ -238,6 +238,11 @@ struct MarbleChatView: View {
         conversationId.flatMap { store.state.conversation($0) }?.title ?? ""
     }
 
+    private var agent: MarblePrismMarble? {
+        let id = conversationId.flatMap { store.state.conversation($0)?.marbleId }
+        return store.prism.marbles.first { id == nil ? $0.isDefault : $0.id == id }
+    }
+
     var body: some View {
         TranscriptView(conversationId: conversationId)
         .marbleComposerInset {
@@ -266,7 +271,10 @@ struct MarbleChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                MarbleTitleView(title: conversationId.flatMap { store.state.conversation($0) }?.displayTitle ?? "New chat")
+                MarbleTitleView(title: conversationId.flatMap { store.state.conversation($0) }?.displayTitle ?? "New chat",
+                                avatar: agent.map(store.rosterStyle(for:))
+                                    ?? .init(name: "Marble", hue: MarbleSpeakerStyle.defaultHue),
+                                avatarWorking: store.isWorking)
                     .marbleToolbarTitle()
             }
             if conversationId != nil {

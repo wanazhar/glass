@@ -1,4 +1,172 @@
 import SwiftUI
+import QuartzCore
+import UIKit
+
+struct MarbleAvatar: View {
+    var glyph: String
+    var hue: Int
+    var size: CGFloat = 22
+    /// A nil value keeps pickers and design previews static.
+    var isWorking: Bool? = nil
+    var settledAt: Date? = nil
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var appeared = false
+    @State private var inViewport = false
+
+    var body: some View {
+        let color = MarbleTheme.hues.first { $0.degrees == hue }?.fill
+            ?? MarbleTheme.marble(hue: hue, brightness: 0.85)
+        Group {
+            if let isWorking, !reduceMotion {
+                AvatarLayer(glyph: glyph, color: color, working: isWorking,
+                            enabled: appeared && inViewport && scenePhase == .active,
+                            settledAt: settledAt)
+                    .onGeometryChange(for: Bool.self) { geometry in
+                        guard let viewport = geometry.bounds(of: .scrollView) else { return true }
+                        return viewport.intersects(CGRect(origin: .zero, size: geometry.size))
+                    } action: { inViewport = $0 }
+                    .onAppear { appeared = true }
+                    .onDisappear { appeared = false }
+            } else {
+                MarbleSilhouette(glyph: glyph).fill(color)
+                    .padding(isWorking == nil ? 0 : size * 0.075)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Keep path drawing off the animation loop and let Core Animation drive the transform.
+private struct AvatarLayer: UIViewRepresentable {
+    var glyph: String
+    var color: Color
+    var working: Bool
+    var enabled: Bool
+    var settledAt: Date?
+
+    func makeUIView(context: Context) -> AvatarLayerView { AvatarLayerView(frame: .zero) }
+
+    func updateUIView(_ view: AvatarLayerView, context: Context) {
+        view.update(glyph: glyph, color: UIColor(color), working: working,
+                    enabled: enabled, settledAt: settledAt)
+    }
+}
+
+private final class AvatarLayerView: UIView {
+    private let shape = CAShapeLayer()
+    private var glyph = ""
+    private var color = UIColor.clear
+    private var working = false
+    private var enabled = false
+    private var settledAt: Date?
+    private var playingWork: Bool?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        layer.addSublayer(shape)
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: AvatarLayerView, _: UITraitCollection) in
+            view.updateFill()
+        }
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        // Bounds and position remain valid while the presentation transform runs.
+        shape.bounds = CGRect(origin: .zero, size: bounds.size)
+        shape.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        let inset = min(bounds.width, bounds.height) * 0.075
+        shape.path = MarbleSilhouette(glyph: glyph).path(in: shape.bounds.insetBy(dx: inset, dy: inset)).cgPath
+        CATransaction.commit()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        reconcile()
+    }
+
+    func update(glyph: String, color: UIColor, working: Bool, enabled: Bool, settledAt: Date?) {
+        if self.glyph != glyph {
+            self.glyph = glyph
+            setNeedsLayout()
+        }
+        if self.color != color {
+            self.color = color
+            updateFill()
+        }
+        self.working = working
+        self.enabled = enabled
+        self.settledAt = settledAt
+        reconcile()
+    }
+
+    private func updateFill() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shape.fillColor = color.resolvedColor(with: traitCollection).cgColor
+        CATransaction.commit()
+    }
+
+    private func reconcile() {
+        guard enabled, window != nil else {
+            if playingWork != nil {
+                shape.removeAllAnimations()
+                playingWork = nil
+            }
+            return
+        }
+        let previous = playingWork
+        guard previous != working else { return }
+        let freshReply = settledAt.map { Date().timeIntervalSince($0) < 0.7 } == true
+        let current = shape.presentation()?.transform ?? CATransform3DIdentity
+        let startingPose = previous == nil && freshReply && !working
+            ? pose(scale: 1.07, stretch: 0.03, degrees: 7) : current
+        let settleTime = working ? 0.22 : 0.65
+        let transitionTime = previous != nil || (freshReply && !working) ? settleTime : 0
+        playingWork = working
+        shape.removeAllAnimations()
+
+        if transitionTime > 0 {
+            let settle = CABasicAnimation(keyPath: "transform")
+            settle.fromValue = NSValue(caTransform3D: startingPose)
+            settle.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+            settle.duration = transitionTime
+            settle.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            settle.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 60)
+            shape.add(settle, forKey: "settle")
+        }
+
+        let cycle = CAKeyframeAnimation(keyPath: "transform")
+        let expanded = pose(scale: working ? 1.08 : 1.025,
+                            stretch: working ? 0.03 : 0.012, degrees: working ? 8 : 3)
+        let contracted = pose(scale: working ? 0.96 : 0.985,
+                              stretch: working ? -0.02 : -0.008, degrees: working ? -6 : -3)
+        cycle.values = [CATransform3DIdentity, expanded, CATransform3DIdentity, contracted, CATransform3DIdentity]
+            .map { NSValue(caTransform3D: $0) }
+        cycle.timingFunctions = Array(repeating: CAMediaTimingFunction(name: .easeInEaseOut), count: 4)
+        cycle.duration = working ? 1.55 : 5.6
+        cycle.repeatCount = .infinity
+        cycle.preferredFrameRateRange = working
+            ? CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+            : CAFrameRateRange(minimum: 24, maximum: 120, preferred: 30)
+        if transitionTime > 0 {
+            cycle.beginTime = shape.convertTime(CACurrentMediaTime(), from: nil) + transitionTime
+        }
+        shape.add(cycle, forKey: "breathe")
+    }
+
+    private func pose(scale: CGFloat, stretch: CGFloat, degrees: CGFloat) -> CATransform3D {
+        let rotation = CATransform3DMakeRotation(degrees * .pi / 180, 0, 0, 1)
+        return CATransform3DScale(rotation, scale + stretch, scale - stretch, 1)
+    }
+}
 
 struct MarbleSilhouette: Shape {
     let glyph: String

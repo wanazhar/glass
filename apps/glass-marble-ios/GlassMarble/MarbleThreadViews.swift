@@ -722,7 +722,10 @@ private struct MarbleJumpTimeline: View {
                         .background(highlight == entry.id ? Color.accentColor.opacity(0.15) : .clear,
                                     in: MarbleTheme.panel)
                     }
-                    ForEach(workingNames, id: \.self) { MarbleThinkingBubble(name: $0) }
+                    ForEach(workingNames, id: \.self) { name in
+                        let agent = store.prism.marbles.first { $0.name == name }
+                        MarbleThinkingBubble(name: name, speaker: agent.map(store.rosterStyle(for:)))
+                    }
                     MarbleTranscriptEnd(bottomPadding: 16)
                 }
                 .marbleHistoryScrollTargets()

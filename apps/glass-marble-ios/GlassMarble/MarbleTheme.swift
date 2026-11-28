@@ -143,6 +143,8 @@ private struct MarbleFloatingMaterial<S: Shape>: ViewModifier {
 /// connected, and a word only when it is not.
 struct MarbleTitleView: View {
     var title: String
+    var avatar: MarbleSpeakerStyle? = nil
+    var avatarWorking = false
     @EnvironmentObject private var store: MarbleStore
 
     private var connectionText: String? {
@@ -160,6 +162,9 @@ struct MarbleTitleView: View {
         let connectionText = connectionText
         VStack(spacing: 0) {
             HStack(spacing: 5) {
+                if let avatar, let hue = avatar.hue {
+                    MarbleAvatar(glyph: avatar.glyph, hue: hue, size: 20, isWorking: avatarWorking)
+                }
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)
@@ -260,11 +265,15 @@ struct MarbleThinkingBubble: View {
     var name: String = "Marble"
     var retrying = false
     var status: String? = nil
+    var speaker: MarbleSpeakerStyle? = nil
 
     private var title: String { retrying ? "\(name) is retrying…" : status ?? "\(name) is working…" }
 
     var body: some View {
         HStack(spacing: 10) {
+            if let speaker, let hue = speaker.hue {
+                MarbleAvatar(glyph: speaker.glyph, hue: hue, size: 22, isWorking: true)
+            }
             MarbleWorkingDots()
                 .padding(.horizontal, 12)
                 .padding(.vertical, 11)

@@ -45,10 +45,10 @@ The first-audit fixes were retested at `63afc126`. The default text size capture
 - The iPhone 17 Pro avatar frames at `63afc126` show [idle breathing](comparisons/a63-light-idle-crops.png) and [a larger rotation and pulse while working](comparisons/a63-light-working-crops.png).
 - The P5 app flow was recorded in [light](recordings/final-iphone17pro-light-main.mp4) and [dark](recordings/final-iphone17pro-dark-main.mp4). The [host version mismatch recording](recordings/final-iphone17pro-light-mm.mp4) uses the disposable fixture.
 
-## Earlier unsigned Release IPA
+## Unsigned Release IPA
 
-[GlassMarble 0.2.0 (6)](GlassMarble-63afc12.ipa) was built for arm64 iOS with Xcode 26.6 from `63afc126a04f23f69bd5ca55f5b3b886180f11e7`.
+[GlassMarble 0.2.0 (6)](GlassMarble-231fbba.ipa) was built for arm64 iOS with Xcode 26.6 from `231fbba68c62647b313fd5b76ca23efa51fc590a`.
 
 | Size | SHA-256 |
 | ---: | --- |
-| 2,359,962 bytes | `b4cffbeb853629220600d67559277c68a5b6891899adfb3988d7dddd462897da` |
+| 2,361,149 bytes | `30ca489ad105ae388555d7e53a6d73e06e260557f73f3b220b5fb2f9918b2779` |

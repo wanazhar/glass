@@ -467,7 +467,6 @@ struct MarbleToolTimeline: View {
                         .accessibilityHidden(true)
                 }
                 .frame(minHeight: 44)
-                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -498,6 +497,7 @@ struct MarbleReasoningRow: View {
                         .font(.caption.weight(.semibold))
                         .accessibilityHidden(true)
                 }
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -596,6 +596,7 @@ struct ComposerBar: View {
     var onSteer: (String) async -> Bool = { _ in false }
     var onStop: () -> Void
     var onDictate: (() -> Void)? = nil
+    var onFocusChange: ((Bool) -> Void)? = nil
     @FocusState private var focused: Bool
 
     private var action: MarbleSteer.Action {
@@ -622,6 +623,7 @@ struct ComposerBar: View {
             }
             field
         }
+        .onChange(of: focused) { _, value in onFocusChange?(value) }
     }
 
     private var field: some View {

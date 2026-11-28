@@ -573,10 +573,13 @@ private struct MarbleLookPicker: View {
 /// One marble's own chat — its durable conversation, which the first message
 /// creates on the host — with its info a tap away.
 struct MarbleChatScreen: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.horizontalSizeClass) private var sizeClass
     var marbleId: String
     @EnvironmentObject private var store: MarbleStore
     @EnvironmentObject private var navigation: MarbleNavigationModel
     @State private var draft = ""
+    @State private var composerFocused = false
     @State private var creatingChat = false
 
     private var marble: MarblePrismMarble? {
@@ -670,8 +673,9 @@ struct MarbleChatScreen: View {
                     } else if entries.isEmpty && store.historyErrors.contains(marble.conversationId) {
                         MarbleHistoryUnavailable { await store.openMarbleHistory(marble) }
                     } else if entries.isEmpty && !thinking {
-                        MarbleEmptyState("Nothing yet",
-                                         description: Text("Say hello — \(marble.name) answers in its own voice."))
+                        let compactEditor = composerFocused && sizeClass == .compact && typeSize >= .xxxLarge
+                        MarbleEmptyState("Nothing yet", description: compactEditor
+                                         ? nil : Text("Say hello — \(marble.name) answers in its own voice."))
                     }
                     let transcript = MarbleReasoningAssociation(entries)
                     ForEach(transcript.standalone, id: \.rowID) { entry in
@@ -727,7 +731,8 @@ struct MarbleChatScreen: View {
                             await store.stop(marble)
                         }
                     }
-                }
+                },
+                onFocusChange: { composerFocused = $0 }
             )
         }
     }
